@@ -4685,7 +4685,8 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, is_bargain, created_at, updated_at
+                       quantity, amount, order_status, is_bargain, created_at, updated_at,
+                       system_shipped, receiver_name, receiver_phone, receiver_address
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
                 ''', (cookie_id, limit))
@@ -4704,7 +4705,11 @@ class DBManager:
                         'status': row[7],
                         'is_bargain': bool(row[8]) if row[8] is not None else False,
                         'created_at': row[9],
-                        'updated_at': row[10]
+                        'updated_at': row[10],
+                        'system_shipped': bool(row[11]) if row[11] is not None else False,
+                        'receiver_name': row[12],
+                        'receiver_phone': row[13],
+                        'receiver_address': row[14]
                     })
 
                 return orders
@@ -4720,7 +4725,8 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at,
+                       system_shipped, receiver_name, receiver_phone, receiver_address
                 FROM orders
                 ORDER BY created_at DESC LIMIT ?
                 ''', (limit,))
@@ -4740,7 +4746,11 @@ class DBManager:
                         'cookie_id': row[8],
                         'is_bargain': bool(row[9]) if row[9] is not None else False,
                         'created_at': row[10],
-                        'updated_at': row[11]
+                        'updated_at': row[11],
+                        'system_shipped': bool(row[12]) if row[12] is not None else False,
+                        'receiver_name': row[13],
+                        'receiver_phone': row[14],
+                        'receiver_address': row[15]
                     })
 
                 return orders

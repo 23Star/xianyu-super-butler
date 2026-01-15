@@ -13,6 +13,12 @@ import type { Order, Account } from '@/types'
 const statusMap: Record<string, { label: string; class: string }> = {
   pending_ship: { label: '待发货', class: 'badge-warning' },
   processing: { label: '处理中', class: 'badge-info' },
+  processed: { label: '已处理', class: 'badge-success' },
+  shipped: { label: '已发货', class: 'badge-success' },
+  completed: { label: '已完成', class: 'badge-success' },
+  refunding: { label: '退款中', class: 'badge-error' },
+  cancelled: { label: '已取消', class: 'badge-gray' },
+  unknown: { label: '未知', class: 'badge-gray' },
 }
 
 export function ManualShip() {
