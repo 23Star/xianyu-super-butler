@@ -220,7 +220,7 @@ class AIReplyEngine:
             logger.error(f"Gemini API 响应格式错误: {result} - {e}")
             raise Exception(f"Gemini API 响应格式错误: {result}")
 
-    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 500, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
         try:
             logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
@@ -233,12 +233,21 @@ class AIReplyEngine:
                 if not base_url.endswith('/'):
                     logger.warning(f"NVIDIA API地址建议以'/'结尾，当前地址: {base_url}")
             
+            # 对于NVIDIA API，使用更大的max_tokens以避免截断
+            if 'nvidia.com' in base_url:
+                max_tokens = 1000
+            
+            logger.info(f"使用max_tokens: {max_tokens}")
+            
             response = client.chat.completions.create(
                 model=settings['model_name'],
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature
             )
+            
+            # 输出完整的响应内容
+            logger.info(f"完整API响应: {response}")
             
             # 添加详细的响应日志
             logger.info(f"API响应类型: {type(response)}")
@@ -270,38 +279,22 @@ class AIReplyEngine:
             
             content = message.content
             if content is None:
-                # 尝试从其他可能的字段获取内容
-                logger.warning("content为None，尝试从其他字段获取")
-                
-                # 检查是否有其他可能的内容字段
-                if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                    content = message.reasoning_content
-                    logger.info(f"从message.reasoning_content字段获取内容: {content}")
-                elif hasattr(message, 'text') and message.text:
-                    content = message.text
-                    logger.info(f"从message.text字段获取内容: {content}")
-                elif hasattr(choice, 'text') and choice.text:
-                    content = choice.text
-                    logger.info(f"从choice.text字段获取内容: {content}")
-                elif hasattr(message, 'refusal') and message.refusal:
-                    content = message.refusal
-                    logger.info(f"从message.refusal字段获取内容: {content}")
-                
-                if content is None:
-                    # 提供更详细的错误信息
-                    error_msg = f"OpenAI API返回的content为None。这可能是因为：\n"
-                    error_msg += f"1. API地址格式不正确: {base_url}\n"
-                    error_msg += f"2. 模型名称不正确: {settings['model_name']}\n"
-                    error_msg += f"3. API密钥无效\n"
-                    error_msg += f"4. 模型不支持当前的请求格式\n"
-                    error_msg += "请检查您的API配置是否正确。"
-                    raise Exception(error_msg)
+                # content为None时直接报错，这是模型问题
+                # reasoning_content是NVIDIA专属扩展字段，用于返回推理过程，不应作为回复内容
+                logger.error("OpenAI API返回的content为None，这是模型问题")
+                error_msg = f"OpenAI API返回的content为None。这可能是因为：\n"
+                error_msg += f"1. 模型配置问题\n"
+                error_msg += f"2. API地址格式不正确: {base_url}\n"
+                error_msg += f"3. 模型名称不正确: {settings['model_name']}\n"
+                error_msg += f"4. API密钥无效\n"
+                error_msg += "请检查您的API配置是否正确。"
+                raise Exception(error_msg)
             
             # 处理content，去除思考部分（如果有）
             # 检查是否包含思考标签，如 <think>...</think> 或 **思考**...</think>
             import re
             # 移除被think相关标签包裹的内容
-            # 模式1: <think>...</think>
+            # 模式1: <think>...</think>（包括多行）
             content = re.sub(r'<think>[\s\S]*?</think>', '', content, flags=re.IGNORECASE)
             # 模式2: **思考**...</**>
             content = re.sub(r'\*\*思考\*\*[\s\S]*?\*\*', '', content, flags=re.IGNORECASE)
@@ -492,7 +485,7 @@ class AIReplyEngine:
                     if not client:
                         return None
                     logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_openai_api(client, settings, messages, max_tokens=500, temperature=0.7)
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
