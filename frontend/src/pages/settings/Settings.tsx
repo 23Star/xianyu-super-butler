@@ -580,6 +580,36 @@ export function Settings() {
                 />
                 <p className="text-xs text-slate-400 mt-1">邮件发件人显示的名称，留空则使用邮箱地址</p>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-700">
+                  <div>
+                    <p className="font-medium text-slate-900 dark:text-slate-100">启用TLS</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">通常用于端口587</p>
+                  </div>
+                  <label className="switch-ios">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings?.smtp_use_tls ?? true)}
+                      onChange={(e) => setSettings(s => s ? { ...s, smtp_use_tls: e.target.checked } : null)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-700">
+                  <div>
+                    <p className="font-medium text-slate-900 dark:text-slate-100">启用SSL</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">通常用于端口465</p>
+                  </div>
+                  <label className="switch-ios">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settings?.smtp_use_ssl ?? false)}
+                      onChange={(e) => setSettings(s => s ? { ...s, smtp_use_ssl: e.target.checked } : null)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
               <button onClick={handleTestEmail} className="btn-ios-secondary">
                 发送测试邮件
               </button>

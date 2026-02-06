@@ -72,7 +72,8 @@ class AIReplyEngine:
             logger.info(f"创建新的OpenAI客户端实例 {cookie_id}: base_url={settings['base_url']}, api_key={'***' + settings['api_key'][-4:] if settings['api_key'] else 'None'}")
             client = OpenAI(
                 api_key=settings['api_key'],
-                base_url=settings['base_url']
+                base_url=settings['base_url'],
+                timeout=60  # 设置60秒超时
             )
             logger.info(f"为账号 {cookie_id} 创建OpenAI客户端成功，实际base_url: {client.base_url}")
             return client
@@ -223,13 +224,84 @@ class AIReplyEngine:
         """调用OpenAI兼容API"""
         try:
             logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
+            
+            # 检查API地址格式
+            base_url = settings.get('base_url', '')
+            if 'nvidia.com' in base_url:
+                logger.info(f"检测到NVIDIA API地址: {base_url}")
+                # 检查NVIDIA API地址格式是否正确
+                if not base_url.endswith('/'):
+                    logger.warning(f"NVIDIA API地址建议以'/'结尾，当前地址: {base_url}")
+            
             response = client.chat.completions.create(
                 model=settings['model_name'],
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            return response.choices[0].message.content.strip()
+            
+            # 添加详细的响应日志
+            logger.info(f"API响应类型: {type(response)}")
+            logger.info(f"choices长度: {len(response.choices)}")
+            
+            if not response.choices:
+                raise Exception("API响应中没有choices字段")
+            
+            choice = response.choices[0]
+            logger.info(f"finish_reason: {choice.finish_reason}")
+            
+            if not hasattr(choice, 'message') or choice.message is None:
+                raise Exception("API响应中没有message字段")
+            
+            message = choice.message
+            logger.info(f"message.role: {message.role}")
+            logger.info(f"content值: {message.content}")
+            logger.info(f"content类型: {type(message.content)}")
+            
+            # 检查是否有其他可能的内容字段
+            if hasattr(message, 'text') and message.text:
+                logger.info(f"发现text字段: {message.text}")
+            if hasattr(message, 'refusal') and message.refusal:
+                logger.info(f"发现refusal字段: {message.refusal}")
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                logger.info(f"发现tool_calls字段: {message.tool_calls}")
+            if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                logger.info(f"发现reasoning_content字段: {message.reasoning_content}")
+            
+            content = message.content
+            if content is None:
+                # 尝试从其他可能的字段获取内容
+                logger.warning("content为None，尝试从其他字段获取")
+                
+                # 检查是否有其他可能的内容字段
+                if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    content = message.reasoning_content
+                    logger.info(f"从message.reasoning_content字段获取内容: {content}")
+                elif hasattr(message, 'text') and message.text:
+                    content = message.text
+                    logger.info(f"从message.text字段获取内容: {content}")
+                elif hasattr(choice, 'text') and choice.text:
+                    content = choice.text
+                    logger.info(f"从choice.text字段获取内容: {content}")
+                elif hasattr(message, 'refusal') and message.refusal:
+                    content = message.refusal
+                    logger.info(f"从message.refusal字段获取内容: {content}")
+                
+                if content is None:
+                    # 提供更详细的错误信息
+                    error_msg = f"OpenAI API返回的content为None。这可能是因为：\n"
+                    error_msg += f"1. API地址格式不正确: {base_url}\n"
+                    error_msg += f"2. 模型名称不正确: {settings['model_name']}\n"
+                    error_msg += f"3. API密钥无效\n"
+                    error_msg += f"4. 模型不支持当前的请求格式\n"
+                    error_msg += "请检查您的API配置是否正确。"
+                    raise Exception(error_msg)
+            
+            # 检查content是否为空字符串
+            if not content or not content.strip():
+                raise Exception("OpenAI API返回的content为空")
+            
+            return content.strip()
         except Exception as e:
             logger.error(f"OpenAI API调用失败: {e}")
             # 如果有详细的错误信息，打印出来

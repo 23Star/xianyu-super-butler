@@ -2936,6 +2936,26 @@ def get_system_settings(_: None = Depends(require_auth)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post('/system-settings/test-email')
+async def test_email(email: str = Query(...), _: None = Depends(require_auth)):
+    """测试邮件发送"""
+    from db_manager import db_manager
+    try:
+        # 生成测试验证码
+        code = db_manager.generate_verification_code()
+        
+        # 发送测试邮件
+        success = await db_manager.send_verification_email(email, code, subject="测试邮件 - 闲鱼自动回复系统")
+        
+        if success:
+            return {"success": True, "message": f"测试邮件已发送到 {email}"}
+        else:
+            raise HTTPException(status_code=400, detail="测试邮件发送失败")
+    except Exception as e:
+        logger.error(f"发送测试邮件失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.put('/system-settings/{key}')
 def update_system_setting(key: str, setting_data: SystemSettingIn, _: None = Depends(require_auth)):
     """更新系统设置"""
