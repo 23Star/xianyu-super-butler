@@ -297,6 +297,19 @@ class AIReplyEngine:
                     error_msg += "请检查您的API配置是否正确。"
                     raise Exception(error_msg)
             
+            # 处理content，去除思考部分（如果有）
+            # 检查是否包含思考标签，如 <think>...</think> 或 **思考**...</think>
+            import re
+            # 移除被think相关标签包裹的内容
+            # 模式1: <think>...</think>
+            content = re.sub(r'<think>[\s\S]*?</think>', '', content, flags=re.IGNORECASE)
+            # 模式2: **思考**...</**>
+            content = re.sub(r'\*\*思考\*\*[\s\S]*?\*\*', '', content, flags=re.IGNORECASE)
+            # 模式3: 数字序号+思考标签，如 "1. **分析请求：**"
+            content = re.sub(r'\d+\.\s*\*\*[^\*]+\*\*\s*:', '', content)
+            # 移除多余的空行
+            content = '\n'.join([line for line in content.split('\n') if line.strip()])
+            
             # 检查content是否为空字符串
             if not content or not content.strip():
                 raise Exception("OpenAI API返回的content为空")
