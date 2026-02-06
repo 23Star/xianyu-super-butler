@@ -2844,12 +2844,11 @@ class DBManager:
                 logger.error(f"验证邮箱验证码失败: {e}")
                 return False
 
-    async def send_verification_email(self, email: str, code: str) -> bool:
+    async def send_verification_email(self, email: str, code: str, subject: str = "闲鱼自动回复系统 - 邮箱验证码") -> bool:
         """发送验证码邮件（支持SMTP和API两种方式）"""
         try:
-            subject = "闲鱼自动回复系统 - 邮箱验证码"
             # 使用简单的纯文本邮件内容
-            text_content = f"""【闲鱼自动回复系统】邮箱验证码
+            text_content = f"""【{subject}】
 
 您好！
 
@@ -2909,6 +2908,8 @@ class DBManager:
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
 
+            logger.info(f"开始SMTP发送邮件: server={smtp_server}, port={smtp_port}, user={smtp_user}, from={smtp_from}, use_tls={smtp_use_tls}, use_ssl={smtp_use_ssl}")
+
             msg = MIMEMultipart()
             msg['Subject'] = subject
             msg['From'] = smtp_from
@@ -2917,16 +2918,23 @@ class DBManager:
             msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
 
             if smtp_use_ssl:
+                logger.info(f"使用SMTP_SSL连接: {smtp_server}:{smtp_port}")
                 server = smtplib.SMTP_SSL(smtp_server, smtp_port)
             else:
+                logger.info(f"使用SMTP连接: {smtp_server}:{smtp_port}")
                 server = smtplib.SMTP(smtp_server, smtp_port)
 
             server.ehlo()
             if smtp_use_tls and not smtp_use_ssl:
+                logger.info("启用TLS加密")
                 server.starttls()
                 server.ehlo()
 
+            logger.info(f"尝试登录SMTP服务器: {smtp_user}")
             server.login(smtp_user, smtp_password)
+            logger.info(f"SMTP登录成功: {smtp_user}")
+
+            logger.info(f"发送邮件到: {email}")
             server.sendmail(smtp_user, [email], msg.as_string())
             server.quit()
 
@@ -2934,6 +2942,7 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"SMTP发送验证码邮件失败: {e}")
+            logger.error(f"SMTP配置详情: server={smtp_server}, port={smtp_port}, user={smtp_user}, from={smtp_from}, use_tls={smtp_use_tls}, use_ssl={smtp_use_ssl}")
             # SMTP发送失败，尝试使用API方式
             logger.info(f"SMTP发送失败，尝试使用API方式发送: {email}")
             return await self._send_email_via_api(email, subject, text_content)

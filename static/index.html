@@ -5,11 +5,23 @@
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>闲鱼智控 Pro - 自动发货与管家系统</title>
-    <meta name="description" content="闲鱼自动回复、自动发货、订单管理、AI智能议价一体化解决方案" />
-    <script type="module" crossorigin src="/static/assets/index-u1_zss0Z.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/assets/index-UZstNwSH.css">
+    <script>
+      (function() {
+        var theme = localStorage.getItem('theme');
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (theme === 'dark' || (!theme && prefersDark)) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="/static/assets/index-CfqkfjFG.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-D2v58SWi.css">
   </head>
   <body>
     <div id="root"></div>
+
   </body>
 </html>

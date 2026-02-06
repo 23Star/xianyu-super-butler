@@ -72,7 +72,8 @@ class AIReplyEngine:
             logger.info(f"创建新的OpenAI客户端实例 {cookie_id}: base_url={settings['base_url']}, api_key={'***' + settings['api_key'][-4:] if settings['api_key'] else 'None'}")
             client = OpenAI(
                 api_key=settings['api_key'],
-                base_url=settings['base_url']
+                base_url=settings['base_url'],
+                timeout=60  # 设置60秒超时
             )
             logger.info(f"为账号 {cookie_id} 创建OpenAI客户端成功，实际base_url: {client.base_url}")
             return client
@@ -219,17 +220,94 @@ class AIReplyEngine:
             logger.error(f"Gemini API 响应格式错误: {result} - {e}")
             raise Exception(f"Gemini API 响应格式错误: {result}")
 
-    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
+    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 500, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
         try:
             logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
+            
+            # 检查API地址格式
+            base_url = settings.get('base_url', '')
+            if 'nvidia.com' in base_url:
+                logger.info(f"检测到NVIDIA API地址: {base_url}")
+                # 检查NVIDIA API地址格式是否正确
+                if not base_url.endswith('/'):
+                    logger.warning(f"NVIDIA API地址建议以'/'结尾，当前地址: {base_url}")
+            
+            # 对于NVIDIA API，使用更大的max_tokens以避免截断
+            if 'nvidia.com' in base_url:
+                max_tokens = 1000
+            
+            logger.info(f"使用max_tokens: {max_tokens}")
+            
             response = client.chat.completions.create(
                 model=settings['model_name'],
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            return response.choices[0].message.content.strip()
+            
+            # 输出完整的响应内容
+            logger.info(f"完整API响应: {response}")
+            
+            # 添加详细的响应日志
+            logger.info(f"API响应类型: {type(response)}")
+            logger.info(f"choices长度: {len(response.choices)}")
+            
+            if not response.choices:
+                raise Exception("API响应中没有choices字段")
+            
+            choice = response.choices[0]
+            logger.info(f"finish_reason: {choice.finish_reason}")
+            
+            if not hasattr(choice, 'message') or choice.message is None:
+                raise Exception("API响应中没有message字段")
+            
+            message = choice.message
+            logger.info(f"message.role: {message.role}")
+            logger.info(f"content值: {message.content}")
+            logger.info(f"content类型: {type(message.content)}")
+            
+            # 检查是否有其他可能的内容字段
+            if hasattr(message, 'text') and message.text:
+                logger.info(f"发现text字段: {message.text}")
+            if hasattr(message, 'refusal') and message.refusal:
+                logger.info(f"发现refusal字段: {message.refusal}")
+            if hasattr(message, 'tool_calls') and message.tool_calls:
+                logger.info(f"发现tool_calls字段: {message.tool_calls}")
+            if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                logger.info(f"发现reasoning_content字段: {message.reasoning_content}")
+            
+            content = message.content
+            if content is None:
+                # content为None时直接报错，这是模型问题
+                # reasoning_content是NVIDIA专属扩展字段，用于返回推理过程，不应作为回复内容
+                logger.error("OpenAI API返回的content为None，这是模型问题")
+                error_msg = f"OpenAI API返回的content为None。这可能是因为：\n"
+                error_msg += f"1. 模型配置问题\n"
+                error_msg += f"2. API地址格式不正确: {base_url}\n"
+                error_msg += f"3. 模型名称不正确: {settings['model_name']}\n"
+                error_msg += f"4. API密钥无效\n"
+                error_msg += "请检查您的API配置是否正确。"
+                raise Exception(error_msg)
+            
+            # 处理content，去除思考部分（如果有）
+            # 检查是否包含思考标签，如 <think>...</think> 或 **思考**...</think>
+            import re
+            # 移除被think相关标签包裹的内容
+            # 模式1: <think>...</think>（包括多行）
+            content = re.sub(r'<think>[\s\S]*?</think>', '', content, flags=re.IGNORECASE)
+            # 模式2: **思考**...</**>
+            content = re.sub(r'\*\*思考\*\*[\s\S]*?\*\*', '', content, flags=re.IGNORECASE)
+            # 模式3: 数字序号+思考标签，如 "1. **分析请求：**"
+            content = re.sub(r'\d+\.\s*\*\*[^\*]+\*\*\s*:', '', content)
+            # 移除多余的空行
+            content = '\n'.join([line for line in content.split('\n') if line.strip()])
+            
+            # 检查content是否为空字符串
+            if not content or not content.strip():
+                raise Exception("OpenAI API返回的content为空")
+            
+            return content.strip()
         except Exception as e:
             logger.error(f"OpenAI API调用失败: {e}")
             # 如果有详细的错误信息，打印出来
@@ -407,7 +485,7 @@ class AIReplyEngine:
                     if not client:
                         return None
                     logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_openai_api(client, settings, messages, max_tokens=500, temperature=0.7)
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
