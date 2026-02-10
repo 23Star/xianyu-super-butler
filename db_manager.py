@@ -669,6 +669,13 @@ class DBManager:
                 self.set_system_setting("db_version", "1.5", "数据库版本号")
                 logger.info("数据库升级到版本1.5完成")
 
+            # 升级到版本1.6 - 为orders表添加receiver_city字段（订单分析地区统计）
+            if current_version < "1.6":
+                logger.info("开始升级数据库到版本1.6...")
+                self.upgrade_orders_table_for_receiver_city(cursor)
+                self.set_system_setting("db_version", "1.6", "数据库版本号")
+                logger.info("数据库升级到版本1.6完成")
+
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
 
@@ -1060,6 +1067,23 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"升级cookies表账号登录字段失败: {e}")
+            raise
+
+    def upgrade_orders_table_for_receiver_city(self, cursor):
+        try:
+            logger.info("开始为orders表添加receiver_city字段...")
+            try:
+                self._execute_sql(cursor, "SELECT receiver_city FROM orders LIMIT 1")
+                logger.info("orders表receiver_city字段已存在")
+            except sqlite3.OperationalError:
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN receiver_city TEXT DEFAULT ''")
+                logger.info("为orders表添加receiver_city字段")
+
+            self._execute_sql(cursor, "CREATE INDEX IF NOT EXISTS idx_orders_receiver_city ON orders(receiver_city)")
+            logger.info("✅ orders表receiver_city字段升级完成")
+            return True
+        except Exception as e:
+            logger.error(f"升级orders表receiver_city字段失败: {e}")
             raise
 
     def migrate_legacy_data(self, cursor):
@@ -5452,6 +5476,9 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                cursor.execute("PRAGMA table_info(orders)")
+                order_columns = {row[1] for row in cursor.fetchall()}
+                has_receiver_city = "receiver_city" in order_columns
 
                 # 构建WHERE条件
                 where_conditions = []
@@ -5544,27 +5571,28 @@ class DBManager:
                     })
 
                 # 4. 按城市统计地区分布（如果有收货城市数据）
-                cursor.execute(f"""
-                    SELECT
-                        receiver_city,
-                        COUNT(DISTINCT order_id) as order_count,
-                        SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as total_amount
-                    FROM orders
-                    {where_clause}
-                    AND receiver_city IS NOT NULL AND receiver_city != ''
-                    AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
-                    GROUP BY receiver_city
-                    ORDER BY order_count DESC
-                    LIMIT 50
-                """, params)
-
                 city_stats = []
-                for row in cursor.fetchall():
-                    city_stats.append({
-                        'city': row[0],
-                        'order_count': row[1],
-                        'total_amount': round(row[2] or 0, 2)
-                    })
+                if has_receiver_city:
+                    cursor.execute(f"""
+                        SELECT
+                            receiver_city,
+                            COUNT(DISTINCT order_id) as order_count,
+                            SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as total_amount
+                        FROM orders
+                        {where_clause}
+                        AND receiver_city IS NOT NULL AND receiver_city != ''
+                        AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
+                        GROUP BY receiver_city
+                        ORDER BY order_count DESC
+                        LIMIT 50
+                    """, params)
+
+                    for row in cursor.fetchall():
+                        city_stats.append({
+                            'city': row[0],
+                            'order_count': row[1],
+                            'total_amount': round(row[2] or 0, 2)
+                        })
 
                 # 5. 商品排行（按订单量）
                 cursor.execute(f"""

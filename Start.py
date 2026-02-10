@@ -568,6 +568,10 @@ from db_manager import db_manager
 from file_log_collector import setup_file_logging
 
 
+API_HOST_OVERRIDE = None
+API_PORT_OVERRIDE = None
+
+
 def _start_api_server():
     """后台线程启动 FastAPI 服务"""
     api_conf = AUTO_REPLY.get('api', {})
@@ -589,6 +593,11 @@ def _start_api_server():
         if parsed.hostname and parsed.hostname != 'localhost':
             host = parsed.hostname
         port = parsed.port or 8080
+
+    if API_HOST_OVERRIDE:
+        host = API_HOST_OVERRIDE
+    if API_PORT_OVERRIDE is not None:
+        port = int(API_PORT_OVERRIDE)
 
     logger.info(f"启动Web服务器: http://{host}:{port}")
     # 在后台线程中创建独立事件循环并直接运行 server.serve()
@@ -706,6 +715,19 @@ async def main():
 
 
 if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--host', '--api-host', dest='host', default=None)
+    parser.add_argument('--port', '--api-port', dest='port', type=int, default=None)
+    args, _unknown = parser.parse_known_args()
+    if args.host:
+        API_HOST_OVERRIDE = args.host
+    if args.port is not None:
+        if not (1 <= args.port <= 65535):
+            raise SystemExit(f"无效端口: {args.port}")
+        API_PORT_OVERRIDE = args.port
+
     # 避免使用被monkey patch的asyncio.run()
     # 使用原生的事件循环管理方式
     try:

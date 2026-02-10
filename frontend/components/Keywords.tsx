@@ -381,7 +381,7 @@ const Keywords: React.FC = () => {
             <Bot className="w-6 h-6" />
             账号默认回复
             {activeTab === 'default' && (
-              <span className="ml-2 px-3 py-1 bg-white/30 rounded-full text-sm">{Object.values(defaultReplies).filter(r => r.enabled).length}</span>
+              <span className="ml-2 px-3 py-1 bg-white/30 rounded-full text-sm">{(Object.values(defaultReplies) as DefaultReply[]).filter(r => r.enabled).length}</span>
             )}
           </button>
         </div>

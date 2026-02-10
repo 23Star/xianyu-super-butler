@@ -1,9 +1,84 @@
-import { get, post, put, del } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
   AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
   Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply
 } from '../types';
+
+type QueryParams = Record<
+  string,
+  string | number | boolean | null | undefined | Array<string | number | boolean>
+>;
+
+const buildUrlWithQuery = (url: string, params?: QueryParams): string => {
+  if (!params) return url;
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) searchParams.append(key, String(item));
+      continue;
+    }
+    searchParams.append(key, String(value));
+  }
+  const queryString = searchParams.toString();
+  if (!queryString) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}${queryString}`;
+};
+
+const parseJsonResponse = async <T>(response: Response): Promise<T> => {
+  if (response.status === 204) return undefined as T;
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) return (await response.json()) as T;
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as T;
+  }
+};
+
+const requestJson = async <T>(
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  url: string,
+  options?: { params?: QueryParams; data?: unknown }
+): Promise<T> => {
+  const token = localStorage.getItem('auth_token');
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const finalUrl = method === 'GET' ? buildUrlWithQuery(url, options?.params) : url;
+  const init: RequestInit = { method, headers };
+
+  if (method !== 'GET' && options?.data !== undefined) {
+    if (options.data instanceof FormData) {
+      init.body = options.data;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(options.data);
+    }
+  }
+
+  const response = await fetch(finalUrl, init);
+  const payload = await parseJsonResponse<T>(response);
+  if (!response.ok) throw payload;
+  return payload;
+};
+
+const get = async <T = unknown>(url: string, params?: QueryParams): Promise<T> => {
+  return requestJson<T>('GET', url, { params });
+};
+
+const post = async <T = unknown>(url: string, data?: unknown): Promise<T> => {
+  return requestJson<T>('POST', url, { data });
+};
+
+const put = async <T = unknown>(url: string, data?: unknown): Promise<T> => {
+  return requestJson<T>('PUT', url, { data });
+};
+
+const del = async <T = unknown>(url: string, data?: unknown): Promise<T> => {
+  return requestJson<T>('DELETE', url, { data });
+};
 
 // Auth
 export const login = async (data: { username?: string; password?: string; email?: string; verification_code?: string }): Promise<LoginResponse> => {
@@ -210,15 +285,15 @@ export const createCard = async (data: Partial<Card>): Promise<{ id: number; mes
   return post('/cards', data);
 };
 
-export const updateCard = async (cardId: string, data: Partial<Card>): Promise<ApiResponse> => {
+export const updateCard = async (cardId: string | number, data: Partial<Card>): Promise<ApiResponse> => {
   return put(`/cards/${cardId}`, data);
 };
 
-export const deleteCard = async (cardId: string): Promise<ApiResponse> => {
+export const deleteCard = async (cardId: string | number): Promise<ApiResponse> => {
   return del(`/cards/${cardId}`);
 };
 
-export const getCardDetails = async (cardId: string): Promise<any> => {
+export const getCardDetails = async (cardId: string | number): Promise<any> => {
   return get(`/cards/${cardId}/details`);
 };
 
