@@ -1201,6 +1201,32 @@ class XianyuLive:
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 在获取锁后检查发现仍在冷却期，跳过发货')
                     return
 
+                from app.services.delivery_block_rules import DeliveryBlockRuleService
+
+                block_result = DeliveryBlockRuleService(db_manager).evaluate(
+                    account_id=self.cookie_id,
+                    order_id=order_id,
+                    buyer_id=send_user_id,
+                    item_id=item_id,
+                )
+                if block_result["hit"]:
+                    self.delivery_blocked_orders.add(order_id)
+                    self.last_delivery_time[order_id] = time.time()
+                    block_message = block_result.get("block_reason") or ""
+                    if block_message:
+                        try:
+                            await self.send_msg(websocket, chat_id, send_user_id, block_message)
+                        except Exception as send_error:
+                            logger.error(
+                                f'[{msg_time}] 【{self.cookie_id}】发送发货拦截提示失败: '
+                                f'{self._safe_str(send_error)}'
+                            )
+                    logger.warning(
+                        f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 已停止自动发货: '
+                        f'{block_result["reason"]}'
+                    )
+                    return
+
                 # 构造用户URL
                 user_url = f'https://www.goofish.com/personal?userId={send_user_id}'
 

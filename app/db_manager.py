@@ -249,6 +249,50 @@ class DBManager:
             )
             ''')
 
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_block_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id TEXT NOT NULL,
+                rule_code TEXT NOT NULL,
+                enabled INTEGER DEFAULT 0,
+                priority INTEGER NOT NULL DEFAULT 99,
+                block_reason TEXT DEFAULT '',
+                auto_close_order INTEGER DEFAULT 0,
+                only_card_after_close INTEGER DEFAULT 0,
+                excluded_item_ids TEXT DEFAULT '[]',
+                config TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(account_id, rule_code),
+                FOREIGN KEY (account_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS personal_blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER NOT NULL,
+                account_id TEXT,
+                buyer_id TEXT NOT NULL,
+                buyer_nick TEXT DEFAULT '',
+                item_id TEXT,
+                reason TEXT DEFAULT '',
+                is_enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_delivery_block_rules_account "
+                "ON delivery_block_rules(account_id, enabled, priority)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_personal_blacklist_owner_buyer "
+                "ON personal_blacklist(owner_id, buyer_id, is_enabled)"
+            )
+
             # 检查并添加 is_bargain 列（用于标记小刀订单）
             try:
                 self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")

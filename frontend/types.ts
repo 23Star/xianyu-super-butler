@@ -143,6 +143,32 @@ export interface ShippingRule {
   enabled: boolean;
 }
 
+export interface DeliveryBlockRule {
+  rule_code: string;
+  rule_name: string;
+  rule_description: string;
+  enabled: boolean;
+  priority: number;
+  block_reason: string;
+  auto_close_order: boolean;
+  only_card_after_close: boolean;
+  excluded_item_ids: string[];
+  config: Record<string, unknown>;
+}
+
+export interface PersonalBlacklistEntry {
+  id: number;
+  owner_id: number;
+  account_id?: string;
+  buyer_id: string;
+  buyer_nick: string;
+  item_id?: string;
+  reason: string;
+  is_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ReplyRule {
   id: string;
   keyword: string;

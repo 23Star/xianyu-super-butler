@@ -2,7 +2,8 @@ import { get, post, put, del } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
   AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
-  Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply
+  Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
+  DeliveryBlockRule, PersonalBlacklistEntry
 } from '../types';
 
 // Auth
@@ -306,6 +307,58 @@ export const updateShippingRule = async (rule: Partial<ShippingRule>): Promise<a
 }
 
 export const deleteShippingRule = async (id: string): Promise<any> => del(`/delivery-rules/${id}`);
+
+export const getDeliveryBlockRules = async (cookieId: string): Promise<DeliveryBlockRule[]> => {
+  const response = await get<{ success: boolean; rules: DeliveryBlockRule[] }>(
+    `/delivery-block-rules/${cookieId}`
+  );
+  return response.rules;
+};
+
+export const updateDeliveryBlockRule = async (
+  cookieId: string,
+  ruleCode: string,
+  changes: Partial<DeliveryBlockRule>
+): Promise<DeliveryBlockRule> => {
+  const response = await put<{ success: boolean; rule: DeliveryBlockRule }>(
+    `/delivery-block-rules/${cookieId}/${ruleCode}`,
+    changes
+  );
+  return response.rule;
+};
+
+export const getPersonalBlacklist = async (cookieId?: string): Promise<PersonalBlacklistEntry[]> => {
+  const response = await get<{ success: boolean; entries: PersonalBlacklistEntry[] }>(
+    '/blacklist',
+    cookieId ? { cookie_id: cookieId } : undefined
+  );
+  return response.entries;
+};
+
+export const createPersonalBlacklist = async (
+  item: Partial<PersonalBlacklistEntry> & { buyer_id: string }
+): Promise<PersonalBlacklistEntry> => {
+  const response = await post<{ success: boolean; entry: PersonalBlacklistEntry }>(
+    '/blacklist',
+    item
+  );
+  return response.entry;
+};
+
+export const updatePersonalBlacklist = async (
+  entryId: number,
+  changes: Partial<PersonalBlacklistEntry>
+): Promise<PersonalBlacklistEntry> => {
+  const response = await put<{ success: boolean; entry: PersonalBlacklistEntry }>(
+    `/blacklist/${entryId}`,
+    changes
+  );
+  return response.entry;
+};
+
+export const deletePersonalBlacklist = async (entryId: number): Promise<void> => {
+  await del(`/blacklist/${entryId}`);
+};
 
 // Rules - 关键词回复规则 (使用关键词API)
 export const getReplyRules = async (cookieId?: string): Promise<ReplyRule[]> => {

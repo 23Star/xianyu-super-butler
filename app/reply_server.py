@@ -24,6 +24,7 @@ from app import cookie_manager
 from app.db_manager import db_manager
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
+from app.routers.delivery_block import create_delivery_block_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
@@ -330,6 +331,9 @@ if CAPTCHA_ROUTER_AVAILABLE:
     logger.info("✅ 已注册刮刮乐远程控制路由: /api/captcha")
 else:
     logger.warning("⚠️ 刮刮乐远程控制路由未注册")
+
+app.include_router(create_delivery_block_router(get_current_user, db_manager))
+logger.info("已注册发货拦截规则路由")
 
 # 初始化文件日志收集器
 setup_file_logging()
@@ -7006,6 +7010,38 @@ async def manual_ship_orders(
                         failed_count += 1
                         continue
 
+                    from app.services.delivery_block_rules import DeliveryBlockRuleService
+
+                    block_result = DeliveryBlockRuleService(db_manager).evaluate(
+                        account_id=cookie_id,
+                        order_id=order_id,
+                        buyer_id=buyer_id,
+                        item_id=item_id,
+                        owner_id=user_id,
+                    )
+                    if block_result["hit"]:
+                        live_instance.delivery_blocked_orders.add(order_id)
+                        live_instance.last_delivery_time[order_id] = time.time()
+                        block_message = block_result.get("block_reason") or ""
+                        if block_message:
+                            try:
+                                await live_instance.send_msg(
+                                    live_instance.ws, chat_id, buyer_id, block_message
+                                )
+                            except Exception as send_error:
+                                log_with_user(
+                                    'warning',
+                                    f"订单 {order_id} 已拦截，但提示消息发送失败: {send_error}",
+                                    current_user,
+                                )
+                        results.append({
+                            'order_id': order_id,
+                            'success': False,
+                            'message': f'发货已被规则“{block_result["rule_name"]}”拦截：{block_result["reason"]}'
+                        })
+                        failed_count += 1
+                        continue
+
                     # 检查多数量发货
                     quantity_to_send = 1
                     multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(cookie_id, item_id)
@@ -7296,7 +7332,7 @@ async def import_orders(
 API_ROOTS = {
     'admin', 'ai-reply-settings', 'ai-reply-test', 'analytics', 'api', 'backup',
     'cards', 'change-admin-password', 'change-password', 'cookie', 'cookies',
-    'debug', 'default-replies', 'delivery-rules', 'face-verification',
+    'blacklist', 'debug', 'default-replies', 'delivery-block-rules', 'delivery-rules', 'face-verification',
     'generate-captcha', 'geetest', 'health', 'item-reply', 'itemReplays', 'items',
     'keywords', 'keywords-export', 'keywords-import', 'keywords-with-item-id',
     'keywords-with-type', 'login', 'login-info-settings', 'login-info-status',

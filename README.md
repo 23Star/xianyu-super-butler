@@ -159,7 +159,28 @@ npm run build
 
 ## 许可与声明
 
+本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发，沿用 [GNU Affero General Public License v3.0](LICENSE) 开源。修改、部署或提供网络服务时，请遵守 AGPL-3.0 的源代码公开义务。
+
 本项目仅供学习、研究和合法的个人自动化使用。使用者应遵守相关法律法规及平台规则，并自行承担使用产生的风险。
+
+## 交流与反馈
+
+<table>
+  <tr>
+    <th align="center">微信群</th>
+    <th align="center">QQ群</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/community/wechat-group.jpg" alt="闲鱼超级管家微信群二维码" width="320"></td>
+    <td align="center"><img src="docs/community/qq-group.jpg" alt="闲鱼超级管家QQ群二维码" width="320"></td>
+  </tr>
+  <tr>
+    <td align="center">二维码可能过期，失效后会在仓库中更新</td>
+    <td align="center">群号：704866149</td>
+  </tr>
+</table>
+
+提交缺陷或功能建议时，也可以直接使用 [GitHub Issues](https://github.com/23Star/xianyu-super-butler/issues)。
 
 ## 支持项目
 
