@@ -3,7 +3,8 @@ import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
   AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
   Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
-  DeliveryBlockRule, PersonalBlacklistEntry
+  DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
+  NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog
 } from '../types';
 
 // Auth
@@ -11,7 +12,7 @@ export const login = async (data: { username?: string; password?: string; email?
   return post('/login', data);
 };
 
-export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?: number; username?: string }> => {
+export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?: number; username?: string; is_admin?: boolean }> => {
   return get('/verify');
 };
 
@@ -455,7 +456,7 @@ export const testAIConnection = async (cookieId: string): Promise<ApiResponse> =
 }
 
 // Notification Channels
-export const getNotificationChannels = async (): Promise<{ success: boolean; data?: any[] }> => {
+export const getNotificationChannels = async (): Promise<{ success: boolean; data: NotificationChannel[] }> => {
   const result = await get<any[]>('/notification-channels');
   const channels = (result || []).map((item: any) => {
     let parsedConfig;
@@ -467,8 +468,8 @@ export const getNotificationChannels = async (): Promise<{ success: boolean; dat
     return {
       id: String(item.id),
       name: item.name,
-      type: item.type,
-      config: parsedConfig,
+      type: item.type as NotificationChannelType,
+      config: parsedConfig || {},
       enabled: item.enabled,
       created_at: item.created_at,
       updated_at: item.updated_at,
@@ -477,7 +478,7 @@ export const getNotificationChannels = async (): Promise<{ success: boolean; dat
   return { success: true, data: channels };
 }
 
-export const createNotificationChannel = async (data: { name: string; type: string; config: Record<string, unknown> }): Promise<ApiResponse> => {
+export const createNotificationChannel = async (data: { name: string; type: NotificationChannelType; config: Record<string, unknown> }): Promise<ApiResponse> => {
   return post('/notification-channels', {
     ...data,
     config: JSON.stringify(data.config)
@@ -497,16 +498,18 @@ export const deleteNotificationChannel = async (channelId: string): Promise<ApiR
 }
 
 // Message Notifications
-export const getMessageNotifications = async (): Promise<{ success: boolean; data?: any[] }> => {
+export const getMessageNotifications = async (): Promise<{ success: boolean; data: MessageNotification[] }> => {
   const result = await get<Record<string, any[]>>('/message-notifications');
-  const notifications = [];
+  const notifications: MessageNotification[] = [];
   for (const [cookieId, channelList] of Object.entries(result || {})) {
     if (Array.isArray(channelList)) {
       for (const item of channelList) {
         notifications.push({
+          id: String(item.id),
           cookie_id: cookieId,
           channel_id: item.channel_id,
           channel_name: item.channel_name,
+          channel_type: item.channel_type,
           enabled: item.enabled,
         });
       }
@@ -526,6 +529,27 @@ export const deleteMessageNotification = async (notificationId: string): Promise
 export const deleteAccountNotifications = async (cookieId: string): Promise<ApiResponse> => {
   return del(`/message-notifications/account/${cookieId}`);
 }
+
+export const getRiskControlLogs = async (params: {
+  cookie_id?: string;
+  processing_status?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<{ success: boolean; data: RiskControlLog[]; total: number; limit: number; offset: number }> => {
+  return get('/risk-control-logs', params);
+};
+
+export const deleteRiskControlLog = async (logId: number): Promise<ApiResponse> => {
+  return del(`/risk-control-logs/${logId}`);
+};
+
+export const getSystemLogs = async (params: {
+  lines?: number;
+  level?: string;
+  source?: string;
+} = {}): Promise<{ success: boolean; logs: SystemLog[]; message?: string }> => {
+  return get('/logs', params);
+};
 
 // Default Reply
 export const getDefaultReplies = async (): Promise<Record<string, DefaultReply>> => {

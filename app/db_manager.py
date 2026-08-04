@@ -5505,7 +5505,14 @@ class DBManager:
             logger.error(f"更新风控日志失败: {e}")
             return False
 
-    def get_risk_control_logs(self, cookie_id: str = None, limit: int = 100, offset: int = 0) -> List[Dict]:
+    def get_risk_control_logs(
+        self,
+        cookie_id: str = None,
+        limit: int = 100,
+        offset: int = 0,
+        user_id: int = None,
+        processing_status: str = None,
+    ) -> List[Dict]:
         """
         获取风控日志列表
 
@@ -5513,6 +5520,7 @@ class DBManager:
             cookie_id: Cookie ID，为None时获取所有日志
             limit: 限制返回数量
             offset: 偏移量
+            processing_status: 处理状态，为None时不过滤
 
         Returns:
             List[Dict]: 风控日志列表
@@ -5521,23 +5529,27 @@ class DBManager:
             with self.lock:
                 cursor = self.conn.cursor()
 
+                conditions = []
+                params = []
                 if cookie_id:
-                    cursor.execute('''
-                        SELECT r.*, c.id as cookie_name
-                        FROM risk_control_logs r
-                        LEFT JOIN cookies c ON r.cookie_id = c.id
-                        WHERE r.cookie_id = ?
-                        ORDER BY r.created_at DESC
-                        LIMIT ? OFFSET ?
-                    ''', (cookie_id, limit, offset))
-                else:
-                    cursor.execute('''
-                        SELECT r.*, c.id as cookie_name
-                        FROM risk_control_logs r
-                        LEFT JOIN cookies c ON r.cookie_id = c.id
-                        ORDER BY r.created_at DESC
-                        LIMIT ? OFFSET ?
-                    ''', (limit, offset))
+                    conditions.append("r.cookie_id = ?")
+                    params.append(cookie_id)
+                if user_id is not None:
+                    conditions.append("c.user_id = ?")
+                    params.append(user_id)
+                if processing_status:
+                    conditions.append("r.processing_status = ?")
+                    params.append(processing_status)
+
+                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                cursor.execute(f'''
+                    SELECT r.*, c.id as cookie_name
+                    FROM risk_control_logs r
+                    JOIN cookies c ON r.cookie_id = c.id
+                    {where_clause}
+                    ORDER BY r.created_at DESC
+                    LIMIT ? OFFSET ?
+                ''', (*params, limit, offset))
 
                 columns = [description[0] for description in cursor.description]
                 logs = []
@@ -5551,12 +5563,18 @@ class DBManager:
             logger.error(f"获取风控日志失败: {e}")
             return []
 
-    def get_risk_control_logs_count(self, cookie_id: str = None) -> int:
+    def get_risk_control_logs_count(
+        self,
+        cookie_id: str = None,
+        user_id: int = None,
+        processing_status: str = None,
+    ) -> int:
         """
         获取风控日志总数
 
         Args:
             cookie_id: Cookie ID，为None时获取所有日志数量
+            processing_status: 处理状态，为None时不过滤
 
         Returns:
             int: 日志总数
@@ -5565,17 +5583,32 @@ class DBManager:
             with self.lock:
                 cursor = self.conn.cursor()
 
+                conditions = []
+                params = []
                 if cookie_id:
-                    cursor.execute('SELECT COUNT(*) FROM risk_control_logs WHERE cookie_id = ?', (cookie_id,))
-                else:
-                    cursor.execute('SELECT COUNT(*) FROM risk_control_logs')
+                    conditions.append("r.cookie_id = ?")
+                    params.append(cookie_id)
+                if user_id is not None:
+                    conditions.append("c.user_id = ?")
+                    params.append(user_id)
+                if processing_status:
+                    conditions.append("r.processing_status = ?")
+                    params.append(processing_status)
+
+                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+                cursor.execute(f'''
+                    SELECT COUNT(*)
+                    FROM risk_control_logs r
+                    JOIN cookies c ON r.cookie_id = c.id
+                    {where_clause}
+                ''', params)
 
                 return cursor.fetchone()[0]
         except Exception as e:
             logger.error(f"获取风控日志数量失败: {e}")
             return 0
 
-    def delete_risk_control_log(self, log_id: int) -> bool:
+    def delete_risk_control_log(self, log_id: int, user_id: int = None) -> bool:
         """
         删除风控日志记录
 
@@ -5588,7 +5621,14 @@ class DBManager:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
-                cursor.execute('DELETE FROM risk_control_logs WHERE id = ?', (log_id,))
+                if user_id is None:
+                    cursor.execute('DELETE FROM risk_control_logs WHERE id = ?', (log_id,))
+                else:
+                    cursor.execute('''
+                        DELETE FROM risk_control_logs
+                        WHERE id = ?
+                          AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                    ''', (log_id, user_id))
                 self.conn.commit()
                 return cursor.rowcount > 0
         except Exception as e:

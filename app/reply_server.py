@@ -1295,19 +1295,99 @@ class DefaultReplyIn(BaseModel):
 
 class NotificationChannelIn(BaseModel):
     name: str
-    type: str = "qq"
+    type: str
     config: str
 
 
 class NotificationChannelUpdate(BaseModel):
-    name: str
-    config: str
-    enabled: bool = True
+    name: Optional[str] = None
+    config: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 class MessageNotificationIn(BaseModel):
     channel_id: int
     enabled: bool = True
+
+
+NOTIFICATION_CHANNEL_REQUIRED_FIELDS = {
+    "dingtalk": ("webhook_url",),
+    "feishu": ("webhook_url",),
+    "bark": ("device_key",),
+    "email": ("smtp_server", "smtp_port", "email_user", "email_password", "recipient_email"),
+    "webhook": ("webhook_url",),
+    "wechat": ("webhook_url",),
+    "telegram": ("bot_token", "chat_id"),
+}
+NOTIFICATION_CHANNEL_TYPE_ALIASES = {
+    "ding_talk": "dingtalk",
+    "lark": "feishu",
+}
+
+
+def validate_notification_channel(
+    name: str,
+    channel_type: str,
+    config: str,
+) -> Tuple[str, str, str]:
+    """Validate and normalize notification channel data before persistence."""
+    normalized_name = (name or "").strip()
+    if not normalized_name:
+        raise ValueError("通知渠道名称不能为空")
+    if len(normalized_name) > 80:
+        raise ValueError("通知渠道名称不能超过 80 个字符")
+
+    normalized_type = (channel_type or "").strip().lower()
+    normalized_type = NOTIFICATION_CHANNEL_TYPE_ALIASES.get(normalized_type, normalized_type)
+    if normalized_type not in NOTIFICATION_CHANNEL_REQUIRED_FIELDS:
+        raise ValueError("不支持的通知渠道类型")
+
+    try:
+        config_data = json.loads(config)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("通知渠道配置必须是有效的 JSON") from exc
+    if not isinstance(config_data, dict):
+        raise ValueError("通知渠道配置必须是 JSON 对象")
+
+    missing_fields = [
+        field
+        for field in NOTIFICATION_CHANNEL_REQUIRED_FIELDS[normalized_type]
+        if config_data.get(field) in (None, "")
+    ]
+    if missing_fields:
+        raise ValueError(f"通知渠道配置缺少字段: {', '.join(missing_fields)}")
+
+    if normalized_type == "email":
+        try:
+            smtp_port = int(config_data["smtp_port"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("SMTP 端口必须是数字") from exc
+        if not 1 <= smtp_port <= 65535:
+            raise ValueError("SMTP 端口必须在 1-65535 之间")
+        config_data["smtp_port"] = smtp_port
+
+    if normalized_type == "webhook":
+        http_method = str(config_data.get("http_method", "POST")).upper()
+        if http_method not in {"POST", "PUT"}:
+            raise ValueError("Webhook 请求方法仅支持 POST 或 PUT")
+        config_data["http_method"] = http_method
+
+        headers = config_data.get("headers")
+        if isinstance(headers, str) and headers.strip():
+            try:
+                parsed_headers = json.loads(headers)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Webhook 请求头必须是有效的 JSON 对象") from exc
+            if not isinstance(parsed_headers, dict):
+                raise ValueError("Webhook 请求头必须是 JSON 对象")
+        elif headers is not None and not isinstance(headers, dict):
+            raise ValueError("Webhook 请求头必须是 JSON 对象")
+
+    return (
+        normalized_name,
+        normalized_type,
+        json.dumps(config_data, ensure_ascii=False, separators=(",", ":")),
+    )
 
 
 class SystemSettingIn(BaseModel):
@@ -2950,10 +3030,15 @@ def create_notification_channel(channel_data: NotificationChannelIn, current_use
     from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
-        channel_id = db_manager.create_notification_channel(
+        name, channel_type, config = validate_notification_channel(
             channel_data.name,
             channel_data.type,
             channel_data.config,
+        )
+        channel_id = db_manager.create_notification_channel(
+            name,
+            channel_type,
+            config,
             user_id
         )
         return {'msg': 'notification channel created', 'id': channel_id}
@@ -2982,11 +3067,20 @@ def update_notification_channel(channel_id: int, channel_data: NotificationChann
     """更新通知渠道"""
     from app.db_manager import db_manager
     try:
+        existing_channel = db_manager.get_notification_channel(channel_id, current_user['user_id'])
+        if not existing_channel:
+            raise HTTPException(status_code=404, detail='通知渠道不存在')
+
+        name, _, config = validate_notification_channel(
+            channel_data.name if channel_data.name is not None else existing_channel["name"],
+            existing_channel["type"],
+            channel_data.config if channel_data.config is not None else existing_channel["config"],
+        )
         success = db_manager.update_notification_channel(
             channel_id,
-            channel_data.name,
-            channel_data.config,
-            channel_data.enabled,
+            name,
+            config,
+            channel_data.enabled if channel_data.enabled is not None else existing_channel["enabled"],
             current_user['user_id']
         )
         if success:
@@ -4956,19 +5050,40 @@ async def get_logs(lines: int = 200, level: str = None, source: str = None,
 @app.get("/risk-control-logs")
 async def get_risk_control_logs(
     cookie_id: str = None,
+    processing_status: str = None,
     limit: int = 100,
     offset: int = 0,
-    admin_user: Dict[str, Any] = Depends(require_admin)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """获取风控日志（管理员专用）"""
+    """获取当前用户账号的风控日志。"""
     try:
-        log_with_user('info', f"查询风控日志: cookie_id={cookie_id}, limit={limit}, offset={offset}", admin_user)
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        if processing_status not in (None, "", "processing", "success", "failed"):
+            raise HTTPException(status_code=400, detail="无效的风控日志处理状态")
+        processing_status = processing_status or None
+        user_id = current_user["user_id"]
+        log_with_user(
+            'info',
+            f"查询风控日志: cookie_id={cookie_id}, processing_status={processing_status}, "
+            f"limit={limit}, offset={offset}",
+            current_user,
+        )
 
-        # 获取风控日志
-        logs = db_manager.get_risk_control_logs(cookie_id=cookie_id, limit=limit, offset=offset)
-        total_count = db_manager.get_risk_control_logs_count(cookie_id=cookie_id)
+        logs = db_manager.get_risk_control_logs(
+            cookie_id=cookie_id,
+            limit=limit,
+            offset=offset,
+            user_id=user_id,
+            processing_status=processing_status,
+        )
+        total_count = db_manager.get_risk_control_logs_count(
+            cookie_id=cookie_id,
+            user_id=user_id,
+            processing_status=processing_status,
+        )
 
-        log_with_user('info', f"风控日志查询成功，共 {len(logs)} 条记录，总计 {total_count} 条", admin_user)
+        log_with_user('info', f"风控日志查询成功，共 {len(logs)} 条记录，总计 {total_count} 条", current_user)
 
         return {
             "success": True,
@@ -4978,8 +5093,10 @@ async def get_risk_control_logs(
             "offset": offset
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        log_with_user('error', f"获取风控日志失败: {str(e)}", admin_user)
+        log_with_user('error', f"获取风控日志失败: {str(e)}", current_user)
         return {
             "success": False,
             "message": f"获取风控日志失败: {str(e)}",
@@ -4991,23 +5108,27 @@ async def get_risk_control_logs(
 @app.delete("/risk-control-logs/{log_id}")
 async def delete_risk_control_log(
     log_id: int,
-    admin_user: Dict[str, Any] = Depends(require_admin)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """删除风控日志记录（管理员专用）"""
+    """删除风控日志记录，普通用户只能删除自己账号的记录。"""
     try:
-        log_with_user('info', f"删除风控日志记录: {log_id}", admin_user)
+        log_with_user('info', f"删除风控日志记录: {log_id}", current_user)
 
-        success = db_manager.delete_risk_control_log(log_id)
+        is_admin = current_user.get("is_admin", False) or current_user.get("username") == ADMIN_USERNAME
+        success = db_manager.delete_risk_control_log(
+            log_id,
+            user_id=None if is_admin else current_user["user_id"],
+        )
 
         if success:
-            log_with_user('info', f"风控日志删除成功: {log_id}", admin_user)
+            log_with_user('info', f"风控日志删除成功: {log_id}", current_user)
             return {"success": True, "message": "删除成功"}
         else:
-            log_with_user('warning', f"风控日志删除失败: {log_id}", admin_user)
-            return {"success": False, "message": "删除失败，记录可能不存在"}
+            log_with_user('warning', f"风控日志删除失败或无权限: {log_id}", current_user)
+            return {"success": False, "message": "删除失败，记录可能不存在或无权访问"}
 
     except Exception as e:
-        log_with_user('error', f"删除风控日志失败: {log_id} - {str(e)}", admin_user)
+        log_with_user('error', f"删除风控日志失败: {log_id} - {str(e)}", current_user)
         return {"success": False, "message": f"删除失败: {str(e)}"}
 
 

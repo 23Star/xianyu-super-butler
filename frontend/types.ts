@@ -169,6 +169,56 @@ export interface PersonalBlacklistEntry {
   updated_at?: string;
 }
 
+export type NotificationChannelType =
+  | 'dingtalk'
+  | 'feishu'
+  | 'bark'
+  | 'email'
+  | 'webhook'
+  | 'wechat'
+  | 'telegram';
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  type: NotificationChannelType;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MessageNotification {
+  id: string;
+  cookie_id: string;
+  channel_id: number;
+  channel_name: string;
+  channel_type?: NotificationChannelType;
+  enabled: boolean;
+}
+
+export interface RiskControlLog {
+  id: number;
+  cookie_id: string;
+  cookie_name?: string;
+  event_type: string;
+  event_description?: string;
+  processing_result?: string;
+  processing_status: 'processing' | 'success' | 'failed' | string;
+  error_message?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface SystemLog {
+  timestamp: string;
+  level: string;
+  source: string;
+  function?: string;
+  line?: number;
+  message: string;
+}
+
 export interface ReplyRule {
   id: string;
   keyword: string;

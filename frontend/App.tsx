@@ -10,6 +10,7 @@ const CardList = lazy(() => import('./components/CardList'));
 const ItemList = lazy(() => import('./components/ItemList'));
 const Settings = lazy(() => import('./components/Settings'));
 const Keywords = lazy(() => import('./components/Keywords'));
+const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 
 const PageLoader = () => (
   <div className="py-24 flex justify-center">
@@ -26,6 +27,7 @@ const App: React.FC = () => {
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Check auth on mount
   useEffect(() => {
@@ -37,6 +39,7 @@ const App: React.FC = () => {
                 localStorage.removeItem('auth_token');
                 return;
               }
+              setIsAdmin(Boolean(result.is_admin));
               setIsLoggedIn(true);
             })
             .catch(() => localStorage.removeItem('auth_token'))
@@ -59,6 +62,7 @@ const App: React.FC = () => {
           const res = await login({ username, password });
           if (res.success && res.token) {
               localStorage.setItem('auth_token', res.token);
+              setIsAdmin(Boolean(res.is_admin));
               setIsLoggedIn(true);
           } else {
               setLoginError(res.message || '账号或密码错误');
@@ -160,6 +164,7 @@ const App: React.FC = () => {
         onMobileClose={() => setMobileMenuOpen(false)}
         onLogout={() => {
             localStorage.removeItem('auth_token');
+            setIsAdmin(false);
             setIsLoggedIn(false);
         }} 
       />
@@ -198,6 +203,11 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'auto-delivery'}>
             <Suspense fallback={activeTab === 'auto-delivery' ? <PageLoader /> : null}><Keywords mode="delivery" /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'notifications'}>
+            <Suspense fallback={activeTab === 'notifications' ? <PageLoader /> : null}>
+              <NotificationsAndLogs isAdmin={isAdmin} />
+            </Suspense>
           </section>
           <section hidden={activeTab !== 'settings'}>
             <Suspense fallback={activeTab === 'settings' ? <PageLoader /> : null}><Settings /></Suspense>

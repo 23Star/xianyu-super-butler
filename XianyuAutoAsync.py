@@ -3948,13 +3948,11 @@ class XianyuLive:
                 channel_type = notification.get('channel_type')
                 channel_config = notification.get('channel_config')
 
-                logger.info(f"📱 渠道类型: {channel_type}, 配置: {channel_config}")
+                logger.info(f"📱 渠道类型: {channel_type}")
 
                 try:
                     # 解析配置数据
                     config_data = self._parse_notification_config(channel_config)
-                    logger.info(f"📱 解析后的配置数据: {config_data}")
-
                     match channel_type:
                         case 'ding_talk' | 'dingtalk':
                             logger.info(f"📱 开始发送钉钉通知...")
@@ -4056,7 +4054,7 @@ class XianyuLive:
             import hashlib
             import base64
 
-            logger.info(f"📱 飞书通知 - 开始处理配置数据: {config_data}")
+            logger.info("📱 飞书通知 - 开始处理")
 
             # 解析配置
             webhook_url = config_data.get('webhook_url', '')
@@ -4129,7 +4127,7 @@ class XianyuLive:
             import json
             from urllib.parse import quote
 
-            logger.info(f"📱 Bark通知 - 开始处理配置数据: {config_data}")
+            logger.info("📱 Bark通知 - 开始处理")
 
             # 解析配置
             server_url = config_data.get('server_url', 'https://api.day.app').rstrip('/')
@@ -4141,7 +4139,7 @@ class XianyuLive:
             url = config_data.get('url', '')
 
             logger.info(f"📱 Bark通知 - 服务器: {server_url}")
-            logger.info(f"📱 Bark通知 - 设备密钥: {device_key[:10]}..." if device_key else "📱 Bark通知 - 设备密钥: 未设置")
+            logger.info(f"📱 Bark通知 - 设备密钥: {'已配置' if device_key else '未设置'}")
             logger.info(f"📱 Bark通知 - 标题: {title}")
 
             if not device_key:
