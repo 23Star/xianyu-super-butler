@@ -6,13 +6,23 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
 
-## Star History
-
-[![Star History](docs/star-history.svg)](STAR_HISTORY.md)
-
-Star 记录由仓库内置 GitHub Action 每日更新，不依赖外部服务或个人访问令牌。
-
 本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发并持续维护。
+
+## 界面预览
+
+### 工作台
+
+![工作台](static/uploads/images/1.png)
+
+### 订单管理
+
+![订单管理](static/uploads/images/2.png)
+
+### 立即发货
+
+![发货方式选择](static/uploads/images/3.png)
+
+![发货处理](static/uploads/images/4.png)
 
 ## 当前功能
 
@@ -150,3 +160,9 @@ npm run build
 ## 许可与声明
 
 本项目仅供学习、研究和合法的个人自动化使用。使用者应遵守相关法律法规及平台规则，并自行承担使用产生的风险。
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=23Star/xianyu-super-butler&type=Date)](https://star-history.com/#23Star/xianyu-super-butler&Date)
+
+图表由 Star History 根据 GitHub 数据动态生成，无需仓库任务或人工更新。
