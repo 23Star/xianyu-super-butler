@@ -1,0 +1,39 @@
+name: Update Star History
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 17 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-star-history
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate Star history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/update_star_history.py
+
+      - name: Commit updated records
+        run: |
+          if git diff --quiet -- STAR_HISTORY.md docs/star-history.json docs/star-history.svg; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STAR_HISTORY.md docs/star-history.json docs/star-history.svg
+          git commit -m "chore: update star history"
+          git push

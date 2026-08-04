@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Star history for 23Star/xianyu-super-butler</title>
+  <desc id="desc">659 current stars from 2026-08-04 to 2026-08-04</desc>
+  <rect width="960" height="360" fill="#ffffff"/>
+  <text x="72" y="30" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#111827">23Star/xianyu-super-butler</text>
+  <text x="932" y="30" text-anchor="end" font-family="Arial, sans-serif" font-size="16" fill="#f59e0b">659 stars</text>
+  <line x1="72" y1="54" x2="72" y2="302" stroke="#d1d5db"/>
+  <line x1="72" y1="302" x2="932" y2="302" stroke="#d1d5db"/>
+  <line x1="72" y1="54" x2="932" y2="54" stroke="#e5e7eb" stroke-dasharray="4 4"/>
+  <line x1="72" y1="178.0" x2="932" y2="178.0" stroke="#e5e7eb" stroke-dasharray="4 4"/>
+  <text x="60" y="59" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">659</text>
+  <text x="60" y="183.0" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">329</text>
+  <text x="60" y="307" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">0</text>
+  <polyline points="72.0,54.0" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+  <text x="72" y="340" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">2026-08-04</text>
+  <text x="932" y="340" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">2026-08-04</text>
+</svg>

@@ -6,6 +6,12 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
 
+## Star History
+
+[![Star History](docs/star-history.svg)](STAR_HISTORY.md)
+
+Star 记录由仓库内置 GitHub Action 每日更新，不依赖外部服务或个人访问令牌。
+
 本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发并持续维护。
 
 ## 当前功能
@@ -117,7 +123,7 @@ docker compose --profile with-nginx up -d --build
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
-.\.venv\Scripts\python.exe -m compileall -q Start.py reply_server.py db_manager.py XianyuAutoAsync.py utils tests
+.\.venv\Scripts\python.exe -m compileall -q Start.py XianyuAutoAsync.py app utils tests
 ```
 
 前端类型与生产构建：
