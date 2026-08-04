@@ -176,3 +176,9 @@ npm run build
 </a>
 
 Star 历史曲线由 Star-history 实时读取 GitHub 数据，无需提交历史数据或运行仓库定时任务。
+
+### Fork 网络总 Star
+
+[![Fork Network Stars](docs/fork-network-stars.svg)](https://github.com/23Star/xianyu-super-butler/network/members)
+
+该统计在主仓库 Star 之外累加全部公开 Fork 获得的 Star，每 6 小时自动刷新。由于同一用户可能同时 Star 多个仓库，此处展示的是各仓库 Star 数之和，不代表去重后的独立用户数。

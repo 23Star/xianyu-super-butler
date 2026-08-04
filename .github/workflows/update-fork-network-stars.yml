@@ -1,0 +1,43 @@
+name: Update fork network stars
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/update-fork-network-stars.yml"
+      - "scripts/update_fork_network_stars.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-fork-network-stars
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Generate fork network star summary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/update_fork_network_stars.py
+
+      - name: Commit changed statistics
+        run: |
+          if git diff --quiet -- docs/fork-network-stars.json docs/fork-network-stars.svg; then
+            echo "Fork network star data is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/fork-network-stars.json docs/fork-network-stars.svg
+          git commit -m "chore: update fork network stars"
+          git push
