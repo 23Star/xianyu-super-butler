@@ -83,18 +83,6 @@ keywords_*.xlsx
 # 上传的文件（保留目录结构，忽略文件内容）
 static/uploads/*
 !static/uploads/.gitkeep
-!static/uploads/images/
-# 项目展示图片
-!static/uploads/images/1.png
-!static/uploads/images/2.png
-!static/uploads/images/3.png
-!static/uploads/images/4.png
-# 忽略其他上传的图片
-static/uploads/images/*.png
-!static/uploads/images/1.png
-!static/uploads/images/2.png
-!static/uploads/images/3.png
-!static/uploads/images/4.png
 
 # 配置文件（包含敏感信息）
 config.local.yml
@@ -260,6 +248,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 package-lock.json
+!frontend/package-lock.json
 yarn.lock
 
 # 前端构建
@@ -806,3 +795,11 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/coverage/
+
+# Local AI assistant and workflow state
+.claude/
+.spec-workflow/
+
+# Keep repository regression tests tracked
+!tests/
+!tests/test_*.py
