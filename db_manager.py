@@ -364,13 +364,15 @@ class DBManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 keyword TEXT NOT NULL,
                 card_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
                 delivery_count INTEGER DEFAULT 1,
                 enabled BOOLEAN DEFAULT TRUE,
                 description TEXT,
                 delivery_times INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             ''')
 
@@ -674,9 +676,12 @@ class DBManager:
             current_version = self.get_system_setting("db_version") or "1.0"
             logger.info(f"当前数据库版本: {current_version}")
 
+            # 结构校验不能只依赖版本号。部分历史数据库已写入较新版本号，
+            # 但 delivery_rules 等表仍可能缺少用户隔离字段。
+            self.update_admin_user_id(cursor)
+
             if current_version == "1.0":
                 logger.info("开始升级数据库到版本1.0...")
-                self.update_admin_user_id(cursor)
                 self.set_system_setting("db_version", "1.0", "数据库版本号")
                 logger.info("数据库升级到版本1.0完成")
             

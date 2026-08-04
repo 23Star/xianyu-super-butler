@@ -12,7 +12,7 @@ const CardList: React.FC = () => {
   const [editForm, setEditForm] = useState<Partial<Card>>({});
   const [addForm, setAddForm] = useState({
     name: '',
-    type: 'text' as 'text' | 'image' | 'api',
+    type: 'text' as Card['type'],
     content: '',
     description: '',
     enabled: true,
@@ -126,8 +126,41 @@ const CardList: React.FC = () => {
   };
 
   const handleAddCard = async () => {
+    const name = addForm.name.trim();
+    const content = addForm.content.trim();
+    if (!name) {
+      alert('请输入卡密名称');
+      return;
+    }
+    if (!content) {
+      alert(addForm.type === 'api' ? '请输入 API 地址' : '请输入卡密内容');
+      return;
+    }
+
     try {
-      await createCard(addForm);
+      const createData: Partial<Card> = {
+        name,
+        type: addForm.type,
+        description: addForm.description.trim(),
+        enabled: addForm.enabled,
+        delay_seconds: addForm.delay_seconds
+      };
+
+      if (addForm.type === 'text') {
+        createData.text_content = content;
+      } else if (addForm.type === 'data') {
+        createData.data_content = content;
+      } else if (addForm.type === 'image') {
+        createData.image_url = content;
+      } else {
+        createData.api_config = {
+          url: content,
+          method: 'GET',
+          timeout: 10
+        };
+      }
+
+      await createCard(createData);
       setShowAddModal(false);
       setAddForm({
         name: '',
@@ -591,7 +624,7 @@ const CardList: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">类型</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <button
                       type="button"
                       onClick={() => setAddForm({ ...addForm, type: 'text' })}
@@ -599,6 +632,14 @@ const CardList: React.FC = () => {
                     >
                       <FileText className="w-5 h-5 mx-auto mb-1" />
                       文本
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddForm({ ...addForm, type: 'data' })}
+                      className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'data' ? 'bg-[#FFE815] text-black' : 'bg-gray-100 text-gray-600'}`}
+                    >
+                      <Package className="w-5 h-5 mx-auto mb-1" />
+                      批量
                     </button>
                     <button
                       type="button"
@@ -621,7 +662,13 @@ const CardList: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">
-                    {addForm.type === 'text' ? '卡密内容（一行一个）' : addForm.type === 'image' ? '图片URL（一行一个）' : 'API地址'}
+                    {addForm.type === 'text'
+                      ? '固定文字'
+                      : addForm.type === 'data'
+                        ? '批量数据（一行一个）'
+                        : addForm.type === 'image'
+                          ? '图片 URL'
+                          : 'API 地址'}
                   </label>
                   {addForm.type === 'api' ? (
                     <input
@@ -636,8 +683,19 @@ const CardList: React.FC = () => {
                       value={addForm.content}
                       onChange={(e) => setAddForm({ ...addForm, content: e.target.value })}
                       className="w-full ios-input px-4 py-3 rounded-xl h-40 resize-none font-mono text-sm"
-                      placeholder={addForm.type === 'text' ? 'CODE-123456\nCODE-789012\n...' : 'https://example.com/image1.jpg\nhttps://example.com/image2.jpg\n...'}
+                      placeholder={
+                        addForm.type === 'text'
+                          ? '请输入自动发送的固定文字'
+                          : addForm.type === 'data'
+                            ? 'CODE-123456\nCODE-789012\n...'
+                            : 'https://example.com/image.jpg'
+                      }
                     />
+                  )}
+                  {addForm.type === 'data' && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      当前库存：{addForm.content.split('\n').filter(line => line.trim()).length} 条
+                    </p>
                   )}
                 </div>
 
