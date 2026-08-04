@@ -2,9 +2,9 @@
 
 Repository: `23Star/xianyu-super-butler`
 
-Current stars: **659**
+Current stars: **660**
 
-Updated at: `2026-08-04T07:02:15+00:00`
+Updated at: `2026-08-04T10:07:29+00:00`
 
 ![Star History](docs/star-history.svg)
 
@@ -187,4 +187,4 @@ Updated at: `2026-08-04T07:02:15+00:00`
 | 2026-08-01 | 648 |
 | 2026-08-02 | 653 |
 | 2026-08-03 | 658 |
-| 2026-08-04 | 659 |
+| 2026-08-04 | 660 |
