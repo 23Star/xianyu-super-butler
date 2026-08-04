@@ -161,8 +161,8 @@ npm run build
 
 本项目仅供学习、研究和合法的个人自动化使用。使用者应遵守相关法律法规及平台规则，并自行承担使用产生的风险。
 
-## Star History
+## 支持项目
 
-[![Star History Chart](https://api.star-history.com/svg?repos=23Star/xianyu-super-butler&type=Date)](https://star-history.com/#23Star/xianyu-super-butler&Date)
+[![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=for-the-badge&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
 
-图表由 Star History 根据 GitHub 数据动态生成，无需仓库任务或人工更新。
+Star 数量由 GitHub 数据动态展示，无需访问令牌或人工更新。
