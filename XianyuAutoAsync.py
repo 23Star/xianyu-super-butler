@@ -7429,6 +7429,46 @@ class XianyuLive:
         
         return None
 
+    def _add_reply_decision_log(self, message_data: dict, **fields):
+        try:
+            from app.db_manager import db_manager
+            return db_manager.add_auto_reply_log(
+                cookie_id=self.cookie_id,
+                source_message_id=self._extract_message_id(message_data),
+                **fields,
+            )
+        except Exception as error:
+            logger.error(f"【{self.cookie_id}】记录自动回复决策失败: {self._safe_str(error)}")
+            return None
+
+    def _update_reply_decision_log(self, log_id, **fields):
+        if not log_id:
+            return
+        try:
+            from app.db_manager import db_manager
+            db_manager.update_auto_reply_log(log_id, **fields)
+        except Exception as error:
+            logger.error(f"【{self.cookie_id}】更新自动回复决策失败: {self._safe_str(error)}")
+
+    def _find_reply_keyword(self, message: str, item_id: str = None):
+        try:
+            from app.db_manager import db_manager
+            keywords = db_manager.get_keywords_with_type(self.cookie_id) or []
+            normalized_message = (message or "").casefold()
+            for item_only in (True, False):
+                for keyword_data in keywords:
+                    keyword_item_id = keyword_data.get("item_id")
+                    if item_only and keyword_item_id != item_id:
+                        continue
+                    if not item_only and keyword_item_id:
+                        continue
+                    keyword = (keyword_data.get("keyword") or "").strip()
+                    if keyword and keyword.casefold() in normalized_message:
+                        return keyword
+        except Exception as error:
+            logger.debug(f"【{self.cookie_id}】读取命中关键词失败: {self._safe_str(error)}")
+        return None
+
     async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket, 
                                        send_user_name: str, send_user_id: str, send_message: str,
                                        item_id: str, msg_time: str):
@@ -7592,9 +7632,46 @@ class XianyuLive:
             chat_id: 聊天ID
             msg_time: 消息时间
         """
+        log_id = None
+        reply_send_failed = False
+        log_context = {
+            "chat_id": chat_id,
+            "item_id": item_id,
+            "sender_user_id": send_user_id,
+            "sender_user_name": send_user_name,
+            "source_message": send_message,
+        }
         try:
+
+            from app.db_manager import db_manager
+            matched_filter = db_manager.matches_message_filter(
+                self.cookie_id, send_message, "skip_reply"
+            )
+            if matched_filter:
+                self._add_reply_decision_log(
+                    message_data,
+                    **log_context,
+                    process_status="skipped",
+                    decision_reason="skip_reply_filter",
+                    reply_strategy="none",
+                    matched_keyword=matched_filter,
+                    send_status="unknown",
+                )
+                logger.info(
+                    f"[{msg_time}] 【{self.cookie_id}】消息命中过滤规则“{matched_filter}”，跳过自动回复"
+                )
+                return
+
             # 自动回复消息
             if not AUTO_REPLY.get('enabled', True):
+                self._add_reply_decision_log(
+                    message_data,
+                    **log_context,
+                    process_status="skipped",
+                    decision_reason="auto_reply_disabled",
+                    reply_strategy="none",
+                    send_status="unknown",
+                )
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】自动回复已禁用")
                 return
 
@@ -7603,6 +7680,14 @@ class XianyuLive:
                 remaining_time = pause_manager.get_remaining_pause_time(chat_id)
                 remaining_minutes = remaining_time // 60
                 remaining_seconds = remaining_time % 60
+                self._add_reply_decision_log(
+                    message_data,
+                    **log_context,
+                    process_status="skipped",
+                    decision_reason="chat_paused",
+                    reply_strategy="none",
+                    send_status="unknown",
+                )
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】chat_id {chat_id} 自动回复已暂停，剩余时间: {remaining_minutes}分{remaining_seconds}秒")
                 return
 
@@ -7610,12 +7695,16 @@ class XianyuLive:
             user_url = f'https://www.goofish.com/personal?userId={send_user_id}'
 
             reply = None
+            reply_strategy = "none"
+            matched_keyword = None
             # 判断是否启用API回复
             if AUTO_REPLY.get('api', {}).get('enabled', False):
                 reply = await self.get_api_reply(
                     msg_time, user_url, send_user_id, send_user_name,
                     item_id, send_message, chat_id
                 )
+                if reply:
+                    reply_strategy = "api"
                 if not reply:
                     logger.error(f"[{msg_time}] 【API调用失败】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): {send_message}")
 
@@ -7628,26 +7717,48 @@ class XianyuLive:
                 reply = await self.get_keyword_reply(send_user_name, send_user_id, send_message, item_id)
                 if reply == "EMPTY_REPLY":
                     # 匹配到关键词但回复内容为空，不进行任何回复
+                    matched_keyword = self._find_reply_keyword(send_message, item_id)
+                    self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="skipped",
+                        decision_reason="empty_reply",
+                        reply_strategy="keyword",
+                        matched_keyword=matched_keyword,
+                        send_status="unknown",
+                    )
                     logger.info(f"[{msg_time}] 【{self.cookie_id}】匹配到空回复关键词，跳过自动回复")
                     return
                 elif reply:
                     reply_source = '关键词'  # 标记为关键词回复
+                    reply_strategy = "keyword"
+                    matched_keyword = self._find_reply_keyword(send_message, item_id)
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
+                        reply_strategy = "ai"
                     else:
                         # 3. 最后使用默认回复
                         default_reply_result = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
                         if default_reply_result == "EMPTY_REPLY":
                             # 默认回复内容为空，不进行任何回复
+                            self._add_reply_decision_log(
+                                message_data,
+                                **log_context,
+                                process_status="skipped",
+                                decision_reason="empty_reply",
+                                reply_strategy="default",
+                                send_status="unknown",
+                            )
                             logger.info(f"[{msg_time}] 【{self.cookie_id}】默认回复内容为空，跳过自动回复")
                             return
                         
                         # 处理默认回复（可能包含图片和文字）
                         if default_reply_result and isinstance(default_reply_result, dict):
                             reply_source = '默认'  # 标记为默认回复
+                            reply_strategy = "default"
                             default_image_url = default_reply_result.get('image_url')
                             default_text = default_reply_result.get('text')
                             
@@ -7704,10 +7815,44 @@ class XianyuLive:
                                     
                                     # 发送图片
                                     if final_image_url:
+                                        log_id = self._add_reply_decision_log(
+                                            message_data,
+                                            **log_context,
+                                            process_status="success",
+                                            decision_reason="reply_selected",
+                                            reply_strategy=reply_strategy,
+                                            reply_text=default_text or final_image_url,
+                                            send_status="unknown",
+                                        )
                                         await self.send_image_msg(websocket, chat_id, send_user_id, final_image_url, image_width, image_height)
+                                        self._update_reply_decision_log(
+                                            log_id,
+                                            decision_reason="reply_sent",
+                                            send_status="success",
+                                        )
                                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                                         logger.info(f"[{msg_time}] 【{reply_source}图片发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 图片 {final_image_url}")
+                                    else:
+                                        reply_send_failed = True
+                                        log_id = self._add_reply_decision_log(
+                                            message_data,
+                                            **log_context,
+                                            process_status="failed",
+                                            decision_reason="send_failed",
+                                            reply_strategy=reply_strategy,
+                                            reply_text=default_text or default_image_url,
+                                            error_message="默认回复图片不可用或上传失败",
+                                            send_status="failed",
+                                        )
                                 except Exception as e:
+                                    reply_send_failed = True
+                                    self._update_reply_decision_log(
+                                        log_id,
+                                        process_status="failed",
+                                        decision_reason="send_failed",
+                                        error_message=self._safe_str(e),
+                                        send_status="failed",
+                                    )
                                     logger.error(f"【{self.cookie_id}】默认回复图片发送失败: {self._safe_str(e)}")
                             
                             # 然后发送文字（如果有）
@@ -7727,6 +7872,17 @@ class XianyuLive:
 
             # 如果有回复内容，发送消息
             if reply:
+                if not log_id:
+                    log_id = self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="success",
+                        decision_reason="reply_selected",
+                        reply_strategy=reply_strategy,
+                        matched_keyword=matched_keyword,
+                        reply_text=reply,
+                        send_status="unknown",
+                    )
                 # 检查是否是图片发送标记
                 if reply.startswith("__IMAGE_SEND__"):
                     # 提取图片URL（关键词回复不包含卡券ID）
@@ -7734,11 +7890,23 @@ class XianyuLive:
                     # 发送图片消息
                     try:
                         await self.send_image_msg(websocket, chat_id, send_user_id, image_url)
+                        self._update_reply_decision_log(
+                            log_id,
+                            decision_reason="reply_sent",
+                            send_status="success",
+                        )
                         # 记录发出的图片消息
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                         logger.info(f"[{msg_time}] 【{reply_source}图片发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 图片 {image_url}")
                     except Exception as e:
                         # 图片发送失败，发送错误提示
+                        self._update_reply_decision_log(
+                            log_id,
+                            process_status="failed",
+                            decision_reason="send_failed",
+                            error_message=self._safe_str(e),
+                            send_status="failed",
+                        )
                         logger.error(f"图片发送失败: {self._safe_str(e)}")
                         await self.send_msg(websocket, chat_id, send_user_id, "抱歉，图片发送失败，请稍后重试。")
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -7746,13 +7914,46 @@ class XianyuLive:
                 else:
                     # 普通文本消息
                     await self.send_msg(websocket, chat_id, send_user_id, reply)
+                    if not reply_send_failed:
+                        self._update_reply_decision_log(
+                            log_id,
+                            decision_reason="reply_sent",
+                            send_status="success",
+                        )
                     # 记录发出的消息
                     msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                     logger.info(f"[{msg_time}] 【{reply_source}发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): {reply}")
             else:
+                self._add_reply_decision_log(
+                    message_data,
+                    **log_context,
+                    process_status="skipped",
+                    decision_reason="no_rule_matched",
+                    reply_strategy="none",
+                    send_status="unknown",
+                )
                 msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】未找到匹配的回复规则，不回复")
         except Exception as e:
+            error_message = self._safe_str(e)
+            if log_id:
+                self._update_reply_decision_log(
+                    log_id,
+                    process_status="failed",
+                    decision_reason="failed",
+                    error_message=error_message,
+                    send_status="failed",
+                )
+            else:
+                self._add_reply_decision_log(
+                    message_data,
+                    **log_context,
+                    process_status="failed",
+                    decision_reason="failed",
+                    reply_strategy="none",
+                    error_message=error_message,
+                    send_status="failed",
+                )
             logger.error(f"处理聊天消息回复时发生错误: {self._safe_str(e)}")
 
     async def handle_message(self, message_data, websocket):
@@ -8037,8 +8238,17 @@ class XianyuLive:
                     if session_type == "30":
                         logger.info(f"📱 检测到群组消息（sessionType=30），跳过消息通知")
                     else:
-                        # 只对个人消息发送通知
-                        await self.send_notification(send_user_name, send_user_id, send_message, item_id, chat_id)
+                        from app.db_manager import db_manager
+                        matched_filter = db_manager.matches_message_filter(
+                            self.cookie_id, send_message, "skip_notify"
+                        )
+                        if matched_filter:
+                            logger.info(
+                                f"📱 消息命中过滤规则“{matched_filter}”，跳过外部通知"
+                            )
+                        else:
+                            # 只对个人消息发送通知
+                            await self.send_notification(send_user_name, send_user_id, send_message, item_id, chat_id)
                 except Exception as notify_error:
                     logger.error(f"📱 发送消息通知失败: {self._safe_str(notify_error)}")
 

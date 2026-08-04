@@ -545,6 +545,59 @@ class DBManager:
             )
             ''')
 
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                filter_type TEXT NOT NULL CHECK (filter_type IN ('skip_reply', 'skip_notify')),
+                enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cookie_id, keyword, filter_type),
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_message_filters_lookup
+            ON message_filters(cookie_id, filter_type, enabled)
+            ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS auto_reply_message_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT,
+                item_id TEXT,
+                source_message_id TEXT,
+                sender_user_id TEXT,
+                sender_user_name TEXT,
+                source_message TEXT,
+                process_status TEXT NOT NULL DEFAULT 'success',
+                decision_reason TEXT,
+                reply_strategy TEXT NOT NULL DEFAULT 'none',
+                matched_keyword TEXT,
+                reply_text TEXT,
+                error_message TEXT,
+                send_status TEXT NOT NULL DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_auto_reply_logs_account_time
+            ON auto_reply_message_logs(cookie_id, created_at DESC)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_auto_reply_logs_status_time
+            ON auto_reply_message_logs(cookie_id, process_status, created_at DESC)
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_auto_reply_logs_strategy_time
+            ON auto_reply_message_logs(reply_strategy, created_at DESC)
+            ''')
+
             # 插入默认系统设置（不包括管理员密码，由reply_server.py初始化）
             cursor.execute('''
             INSERT OR IGNORE INTO system_settings (key, value, description) VALUES
@@ -2600,6 +2653,249 @@ class DBManager:
                 logger.error(f"删除账号通知配置失败: {e}")
                 self.conn.rollback()
                 return False
+
+    # -------------------- 消息过滤规则 --------------------
+    def get_message_filters(
+        self,
+        user_id: int,
+        cookie_id: str = None,
+        filter_type: str = None,
+    ) -> List[Dict[str, any]]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            conditions = ["c.user_id = ?"]
+            params = [user_id]
+            if cookie_id:
+                conditions.append("mf.cookie_id = ?")
+                params.append(cookie_id)
+            if filter_type:
+                conditions.append("mf.filter_type = ?")
+                params.append(filter_type)
+            cursor.execute(f'''
+                SELECT mf.id, mf.cookie_id, mf.keyword, mf.filter_type, mf.enabled,
+                       mf.created_at, mf.updated_at
+                FROM message_filters mf
+                JOIN cookies c ON c.id = mf.cookie_id
+                WHERE {' AND '.join(conditions)}
+                ORDER BY mf.created_at DESC, mf.id DESC
+            ''', params)
+            return [
+                {
+                    "id": row[0],
+                    "cookie_id": row[1],
+                    "keyword": row[2],
+                    "filter_type": row[3],
+                    "enabled": bool(row[4]),
+                    "created_at": row[5],
+                    "updated_at": row[6],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def get_message_filter(self, filter_id: int, user_id: int) -> Optional[Dict[str, any]]:
+        filters = self.get_message_filters(user_id)
+        return next((item for item in filters if item["id"] == filter_id), None)
+
+    def create_message_filter(
+        self,
+        cookie_id: str,
+        keyword: str,
+        filter_type: str,
+        user_id: int,
+        enabled: bool = True,
+    ) -> int:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM cookies WHERE id = ? AND user_id = ?",
+                (cookie_id, user_id),
+            )
+            if not cursor.fetchone():
+                raise PermissionError("无权限操作该账号")
+            cursor.execute('''
+                INSERT INTO message_filters (cookie_id, keyword, filter_type, enabled)
+                VALUES (?, ?, ?, ?)
+            ''', (cookie_id, keyword, filter_type, int(enabled)))
+            self.conn.commit()
+            return cursor.lastrowid
+
+    def update_message_filter(
+        self,
+        filter_id: int,
+        user_id: int,
+        keyword: str = None,
+        filter_type: str = None,
+        enabled: bool = None,
+    ) -> bool:
+        fields = []
+        params = []
+        if keyword is not None:
+            fields.append("keyword = ?")
+            params.append(keyword)
+        if filter_type is not None:
+            fields.append("filter_type = ?")
+            params.append(filter_type)
+        if enabled is not None:
+            fields.append("enabled = ?")
+            params.append(int(enabled))
+        if not fields:
+            return False
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.extend([filter_id, user_id])
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(f'''
+                UPDATE message_filters
+                SET {', '.join(fields)}
+                WHERE id = ?
+                  AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+            ''', params)
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_message_filter(self, filter_id: int, user_id: int) -> bool:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                DELETE FROM message_filters
+                WHERE id = ?
+                  AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+            ''', (filter_id, user_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_message_filters(self, filter_ids: List[int], user_id: int) -> int:
+        if not filter_ids:
+            return 0
+        placeholders = ",".join("?" for _ in filter_ids)
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(f'''
+                DELETE FROM message_filters
+                WHERE id IN ({placeholders})
+                  AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+            ''', (*filter_ids, user_id))
+            self.conn.commit()
+            return cursor.rowcount
+
+    def get_message_filter_keywords(self, cookie_id: str, filter_type: str) -> List[str]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT keyword
+                FROM message_filters
+                WHERE cookie_id = ? AND filter_type = ? AND enabled = 1
+                ORDER BY LENGTH(keyword) DESC, id
+            ''', (cookie_id, filter_type))
+            return [row[0] for row in cursor.fetchall()]
+
+    def matches_message_filter(
+        self,
+        cookie_id: str,
+        message: str,
+        filter_type: str,
+    ) -> Optional[str]:
+        normalized_message = (message or "").casefold()
+        for keyword in self.get_message_filter_keywords(cookie_id, filter_type):
+            if keyword.casefold() in normalized_message:
+                return keyword
+        return None
+
+    # -------------------- 自动回复决策日志 --------------------
+    def add_auto_reply_log(self, **fields) -> int:
+        allowed_fields = (
+            "cookie_id", "chat_id", "item_id", "source_message_id",
+            "sender_user_id", "sender_user_name", "source_message",
+            "process_status", "decision_reason", "reply_strategy",
+            "matched_keyword", "reply_text", "error_message", "send_status",
+        )
+        values = {key: fields.get(key) for key in allowed_fields}
+        values["process_status"] = values["process_status"] or "success"
+        values["reply_strategy"] = values["reply_strategy"] or "none"
+        values["send_status"] = values["send_status"] or "unknown"
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"INSERT INTO auto_reply_message_logs ({columns}) VALUES ({placeholders})",
+                tuple(values.values()),
+            )
+            self.conn.commit()
+            return cursor.lastrowid
+
+    def update_auto_reply_log(self, log_id: int, **fields) -> bool:
+        allowed_fields = {
+            "process_status", "decision_reason", "reply_strategy",
+            "matched_keyword", "reply_text", "error_message", "send_status",
+        }
+        updates = [(key, value) for key, value in fields.items() if key in allowed_fields]
+        if not updates:
+            return False
+        assignments = ", ".join(f"{key} = ?" for key, _ in updates)
+        params = [value for _, value in updates]
+        params.append(log_id)
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"UPDATE auto_reply_message_logs SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                params,
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def _auto_reply_log_filters(
+        self,
+        user_id: int,
+        cookie_id: str = None,
+        process_status: str = None,
+        reply_strategy: str = None,
+        send_status: str = None,
+        keyword: str = None,
+    ):
+        conditions = ["c.user_id = ?"]
+        params = [user_id]
+        for column, value in (
+            ("l.cookie_id", cookie_id),
+            ("l.process_status", process_status),
+            ("l.reply_strategy", reply_strategy),
+            ("l.send_status", send_status),
+        ):
+            if value:
+                conditions.append(f"{column} = ?")
+                params.append(value)
+        if keyword:
+            conditions.append("(l.source_message LIKE ? OR l.reply_text LIKE ?)")
+            pattern = f"%{keyword}%"
+            params.extend([pattern, pattern])
+        return conditions, params
+
+    def get_auto_reply_logs(self, user_id: int, limit: int = 50, offset: int = 0, **filters) -> List[Dict[str, any]]:
+        conditions, params = self._auto_reply_log_filters(user_id, **filters)
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(f'''
+                SELECT l.*
+                FROM auto_reply_message_logs l
+                JOIN cookies c ON c.id = l.cookie_id
+                WHERE {' AND '.join(conditions)}
+                ORDER BY l.created_at DESC, l.id DESC
+                LIMIT ? OFFSET ?
+            ''', (*params, limit, offset))
+            columns = [column[0] for column in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_auto_reply_logs_count(self, user_id: int, **filters) -> int:
+        conditions, params = self._auto_reply_log_filters(user_id, **filters)
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(f'''
+                SELECT COUNT(*)
+                FROM auto_reply_message_logs l
+                JOIN cookies c ON c.id = l.cookie_id
+                WHERE {' AND '.join(conditions)}
+            ''', params)
+            return cursor.fetchone()[0]
 
     # -------------------- 备份和恢复操作 --------------------
     def export_backup(self, user_id: int = None) -> Dict[str, any]:

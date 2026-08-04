@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Users, ShoppingBag, CreditCard, Settings, LogOut, Box, MessageSquare, Truck, X, BellRing } from 'lucide-react';
+import { LayoutDashboard, Users, ShoppingBag, CreditCard, Settings, LogOut, Box, MessageSquare, Truck, X, BellRing, ListFilter } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -18,6 +18,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
     { id: 'cards', icon: CreditCard, label: '卡密' },
     { id: 'auto-reply', icon: MessageSquare, label: '自动回复' },
     { id: 'auto-delivery', icon: Truck, label: '自动发货' },
+    { id: 'messages', icon: ListFilter, label: '消息管理' },
     { id: 'notifications', icon: BellRing, label: '通知与日志' },
     { id: 'settings', icon: Settings, label: '设置' },
   ];

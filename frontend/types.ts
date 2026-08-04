@@ -219,6 +219,38 @@ export interface SystemLog {
   message: string;
 }
 
+export type MessageFilterType = 'skip_reply' | 'skip_notify';
+
+export interface MessageFilter {
+  id: number;
+  cookie_id: string;
+  keyword: string;
+  filter_type: MessageFilterType;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AutoReplyLog {
+  id: number;
+  cookie_id: string;
+  chat_id?: string;
+  item_id?: string;
+  source_message_id?: string;
+  sender_user_id?: string;
+  sender_user_name?: string;
+  source_message?: string;
+  process_status: 'success' | 'skipped' | 'failed' | string;
+  decision_reason?: string;
+  reply_strategy: 'keyword' | 'ai' | 'default' | 'api' | 'none' | string;
+  matched_keyword?: string;
+  reply_text?: string;
+  error_message?: string;
+  send_status: 'success' | 'failed' | 'unknown' | string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface ReplyRule {
   id: string;
   keyword: string;

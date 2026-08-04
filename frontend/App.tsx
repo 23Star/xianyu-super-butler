@@ -10,6 +10,7 @@ const CardList = lazy(() => import('./components/CardList'));
 const ItemList = lazy(() => import('./components/ItemList'));
 const Settings = lazy(() => import('./components/Settings'));
 const Keywords = lazy(() => import('./components/Keywords'));
+const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 
 const PageLoader = () => (
@@ -203,6 +204,9 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'auto-delivery'}>
             <Suspense fallback={activeTab === 'auto-delivery' ? <PageLoader /> : null}><Keywords mode="delivery" /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'messages'}>
+            <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}><MessageManagement /></Suspense>
           </section>
           <section hidden={activeTab !== 'notifications'}>
             <Suspense fallback={activeTab === 'notifications' ? <PageLoader /> : null}>

@@ -4,7 +4,8 @@ import {
   AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
   Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
-  NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog
+  NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
+  MessageFilter, MessageFilterType, AutoReplyLog
 } from '../types';
 
 // Auth
@@ -549,6 +550,78 @@ export const getSystemLogs = async (params: {
   source?: string;
 } = {}): Promise<{ success: boolean; logs: SystemLog[]; message?: string }> => {
   return get('/logs', params);
+};
+
+// Message Filters
+export const getMessageFilters = async (params: {
+  cookie_id?: string;
+  filter_type?: MessageFilterType;
+} = {}): Promise<MessageFilter[]> => {
+  const response = await get<{ success: boolean; data: MessageFilter[] }>('/message-filters', params);
+  return response.data || [];
+};
+
+export const createMessageFilter = async (data: {
+  cookie_id: string;
+  keyword: string;
+  filter_type: MessageFilterType;
+  enabled?: boolean;
+}): Promise<MessageFilter> => {
+  const response = await post<{ success: boolean; data: MessageFilter }>('/message-filters', data);
+  return response.data;
+};
+
+export const batchCreateMessageFilters = async (data: {
+  cookie_id: string;
+  keywords: string[];
+  filter_type: MessageFilterType;
+  enabled?: boolean;
+}): Promise<{ success: boolean; created: number; skipped: number }> => {
+  return post('/message-filters/batch-create', data);
+};
+
+export const updateMessageFilter = async (
+  filterId: number,
+  data: Partial<Pick<MessageFilter, 'keyword' | 'filter_type' | 'enabled'>>
+): Promise<MessageFilter> => {
+  const response = await put<{ success: boolean; data: MessageFilter }>(
+    `/message-filters/${filterId}`,
+    data
+  );
+  return response.data;
+};
+
+export const toggleMessageFilter = async (filterId: number): Promise<MessageFilter> => {
+  const response = await put<{ success: boolean; data: MessageFilter }>(
+    `/message-filters/${filterId}/toggle`,
+    {}
+  );
+  return response.data;
+};
+
+export const deleteMessageFilter = async (filterId: number): Promise<void> => {
+  await del(`/message-filters/${filterId}`);
+};
+
+export const batchDeleteMessageFilters = async (ids: number[]): Promise<number> => {
+  const response = await post<{ success: boolean; deleted: number }>(
+    '/message-filters/batch-delete',
+    { ids }
+  );
+  return response.deleted;
+};
+
+// Auto Reply Decision Logs
+export const getAutoReplyLogs = async (params: {
+  cookie_id?: string;
+  process_status?: string;
+  reply_strategy?: string;
+  send_status?: string;
+  keyword?: string;
+  page?: number;
+  page_size?: number;
+} = {}): Promise<PaginatedResponse<AutoReplyLog>> => {
+  return get('/auto-reply-logs', params);
 };
 
 // Default Reply

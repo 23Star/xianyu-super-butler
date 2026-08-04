@@ -16,6 +16,7 @@ import uvicorn
 import pandas as pd
 import io
 import asyncio
+import sqlite3
 from collections import defaultdict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1308,6 +1309,48 @@ class NotificationChannelUpdate(BaseModel):
 class MessageNotificationIn(BaseModel):
     channel_id: int
     enabled: bool = True
+
+
+class MessageFilterIn(BaseModel):
+    cookie_id: str
+    keyword: str
+    filter_type: str
+    enabled: bool = True
+
+
+class MessageFilterUpdate(BaseModel):
+    keyword: Optional[str] = None
+    filter_type: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class MessageFilterBatchIn(BaseModel):
+    cookie_id: str
+    keywords: List[str]
+    filter_type: str
+    enabled: bool = True
+
+
+class MessageFilterBatchDelete(BaseModel):
+    ids: List[int]
+
+
+MESSAGE_FILTER_TYPES = {"skip_reply", "skip_notify"}
+
+
+def validate_message_filter(cookie_id: str, keyword: str, filter_type: str) -> Tuple[str, str, str]:
+    normalized_cookie_id = (cookie_id or "").strip()
+    normalized_keyword = (keyword or "").strip()
+    normalized_type = (filter_type or "").strip().lower()
+    if not normalized_cookie_id:
+        raise ValueError("账号不能为空")
+    if not normalized_keyword:
+        raise ValueError("过滤关键词不能为空")
+    if len(normalized_keyword) > 200:
+        raise ValueError("过滤关键词不能超过 200 个字符")
+    if normalized_type not in MESSAGE_FILTER_TYPES:
+        raise ValueError("无效的过滤类型")
+    return normalized_cookie_id, normalized_keyword, normalized_type
 
 
 NOTIFICATION_CHANNEL_REQUIRED_FIELDS = {
@@ -3200,6 +3243,210 @@ def delete_message_notification(notification_id: int, current_user: Dict[str, An
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------- 消息过滤与回复决策日志 -------------------------
+
+@app.get('/message-filters')
+def list_message_filters(
+    cookie_id: str = None,
+    filter_type: str = None,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    normalized_type = (filter_type or "").strip().lower() or None
+    if normalized_type and normalized_type not in MESSAGE_FILTER_TYPES:
+        raise HTTPException(status_code=400, detail="无效的过滤类型")
+    if cookie_id and cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权限访问该账号")
+    return {
+        "success": True,
+        "data": db_manager.get_message_filters(
+            current_user["user_id"],
+            cookie_id=(cookie_id or "").strip() or None,
+            filter_type=normalized_type,
+        ),
+    }
+
+
+@app.post('/message-filters')
+def create_message_filter(
+    data: MessageFilterIn,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        cookie_id, keyword, filter_type = validate_message_filter(
+            data.cookie_id, data.keyword, data.filter_type
+        )
+        filter_id = db_manager.create_message_filter(
+            cookie_id, keyword, filter_type, current_user["user_id"], data.enabled
+        )
+        return {
+            "success": True,
+            "data": db_manager.get_message_filter(filter_id, current_user["user_id"]),
+        }
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="相同账号、关键词和类型的规则已存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post('/message-filters/batch-create')
+def batch_create_message_filters(
+    data: MessageFilterBatchIn,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    unique_keywords = []
+    seen = set()
+    for raw_keyword in data.keywords:
+        cookie_id, keyword, filter_type = validate_message_filter(
+            data.cookie_id, raw_keyword, data.filter_type
+        )
+        normalized_key = keyword.casefold()
+        if normalized_key not in seen:
+            seen.add(normalized_key)
+            unique_keywords.append(keyword)
+    if not unique_keywords:
+        raise HTTPException(status_code=400, detail="至少提供一个过滤关键词")
+
+    created = 0
+    skipped = 0
+    for keyword in unique_keywords:
+        try:
+            db_manager.create_message_filter(
+                cookie_id, keyword, filter_type, current_user["user_id"], data.enabled
+            )
+            created += 1
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except sqlite3.IntegrityError:
+            skipped += 1
+    return {"success": True, "created": created, "skipped": skipped}
+
+
+@app.put('/message-filters/{filter_id}')
+def update_message_filter(
+    filter_id: int,
+    data: MessageFilterUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    existing = db_manager.get_message_filter(filter_id, current_user["user_id"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="过滤规则不存在")
+    try:
+        _, keyword, filter_type = validate_message_filter(
+            existing["cookie_id"],
+            data.keyword if data.keyword is not None else existing["keyword"],
+            data.filter_type if data.filter_type is not None else existing["filter_type"],
+        )
+        db_manager.update_message_filter(
+            filter_id,
+            current_user["user_id"],
+            keyword=keyword,
+            filter_type=filter_type,
+            enabled=data.enabled,
+        )
+        return {
+            "success": True,
+            "data": db_manager.get_message_filter(filter_id, current_user["user_id"]),
+        }
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="相同账号、关键词和类型的规则已存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put('/message-filters/{filter_id}/toggle')
+def toggle_message_filter(
+    filter_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    existing = db_manager.get_message_filter(filter_id, current_user["user_id"])
+    if not existing:
+        raise HTTPException(status_code=404, detail="过滤规则不存在")
+    db_manager.update_message_filter(
+        filter_id,
+        current_user["user_id"],
+        enabled=not existing["enabled"],
+    )
+    return {
+        "success": True,
+        "data": db_manager.get_message_filter(filter_id, current_user["user_id"]),
+    }
+
+
+@app.delete('/message-filters/{filter_id}')
+def delete_message_filter(
+    filter_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    if not db_manager.delete_message_filter(filter_id, current_user["user_id"]):
+        raise HTTPException(status_code=404, detail="过滤规则不存在")
+    return {"success": True}
+
+
+@app.post('/message-filters/batch-delete')
+def batch_delete_message_filters(
+    data: MessageFilterBatchDelete,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    ids = list(dict.fromkeys(filter_id for filter_id in data.ids if filter_id > 0))
+    if not ids:
+        raise HTTPException(status_code=400, detail="请选择要删除的过滤规则")
+    return {
+        "success": True,
+        "deleted": db_manager.delete_message_filters(ids, current_user["user_id"]),
+    }
+
+
+@app.get('/auto-reply-logs')
+def list_auto_reply_logs(
+    cookie_id: str = None,
+    process_status: str = None,
+    reply_strategy: str = None,
+    send_status: str = None,
+    keyword: str = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    process_status = (process_status or "").strip() or None
+    reply_strategy = (reply_strategy or "").strip() or None
+    send_status = (send_status or "").strip() or None
+    if process_status not in (None, "success", "skipped", "failed"):
+        raise HTTPException(status_code=400, detail="无效的处理状态")
+    if reply_strategy not in (None, "keyword", "ai", "default", "api", "none"):
+        raise HTTPException(status_code=400, detail="无效的回复策略")
+    if send_status not in (None, "success", "failed", "unknown"):
+        raise HTTPException(status_code=400, detail="无效的发送状态")
+    if cookie_id and cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权限访问该账号")
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    filters = {
+        "cookie_id": (cookie_id or "").strip() or None,
+        "process_status": process_status,
+        "reply_strategy": reply_strategy,
+        "send_status": send_status,
+        "keyword": (keyword or "").strip() or None,
+    }
+    total = db_manager.get_auto_reply_logs_count(current_user["user_id"], **filters)
+    data = db_manager.get_auto_reply_logs(
+        current_user["user_id"],
+        limit=page_size,
+        offset=(page - 1) * page_size,
+        **filters,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
 
 
 # ------------------------- 系统设置接口 -------------------------
