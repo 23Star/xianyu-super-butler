@@ -165,4 +165,8 @@ npm run build
 
 [![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=for-the-badge&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
 
-Star 数量由 GitHub 数据动态展示，无需访问令牌或人工更新。
+当前 Star 数量由 GitHub 数据动态展示。
+
+[![Star History](docs/star-history.svg)](STAR_HISTORY.md)
+
+Star 历史曲线每 30 分钟自动刷新，仅在数据变化时更新，无需个人访问令牌或人工维护。
