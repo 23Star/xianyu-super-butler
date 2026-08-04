@@ -216,7 +216,7 @@ class OrderDetailFetcher:
 
             try:
                 # 首先查询数据库中是否已存在该订单（在初始化浏览器之前）
-                from db_manager import db_manager
+                from app.db_manager import db_manager
                 existing_order = db_manager.get_order_by_id(order_id)
 
                 if existing_order:
@@ -1016,7 +1016,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
     """
     # 先检查数据库中是否有有效数据
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         existing_order = db_manager.get_order_by_id(order_id)
 
         if existing_order:

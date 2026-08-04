@@ -18,10 +18,12 @@ import io
 import asyncio
 from collections import defaultdict
 
-import cookie_manager
-from db_manager import db_manager
-from file_log_collector import setup_file_logging, get_file_log_collector
-from ai_reply_engine import ai_reply_engine
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+from app import cookie_manager
+from app.db_manager import db_manager
+from app.file_log_collector import setup_file_logging, get_file_log_collector
+from app.ai_reply_engine import ai_reply_engine
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
@@ -35,14 +37,14 @@ from loguru import logger
 
 # 刮刮乐远程控制路由
 try:
-    from api_captcha_remote import router as captcha_router
+    from app.api_captcha_remote import router as captcha_router
     CAPTCHA_ROUTER_AVAILABLE = True
 except ImportError:
     logger.warning("⚠️ api_captcha_remote 未找到，刮刮乐远程控制功能不可用")
     CAPTCHA_ROUTER_AVAILABLE = False
 
 # 关键字文件路径
-KEYWORDS_FILE = Path(__file__).parent / "回复关键字.txt"
+KEYWORDS_FILE = PROJECT_ROOT / "回复关键字.txt"
 
 # 简单的用户认证配置
 ADMIN_USERNAME = "admin"
@@ -352,7 +354,7 @@ async def log_requests(request, call_next):
 
 # 提供前端静态文件
 import os
-static_dir = os.path.join(os.path.dirname(__file__), 'static')
+static_dir = str(PROJECT_ROOT / 'static')
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
 
@@ -379,7 +381,7 @@ async def health_check():
         manager_status = "ok" if cookie_manager.manager is not None else "error"
 
         # 检查数据库连接
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         try:
             db_manager.get_all_cookies()
             db_status = "ok"
@@ -450,7 +452,7 @@ async def login_route():
 @app.get('/register.html', response_class=HTMLResponse)
 async def register_page():
     # 检查注册是否开启
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     registration_enabled = db_manager.get_system_setting('registration_enabled')
     if registration_enabled != 'true':
         return HTMLResponse('''
@@ -493,7 +495,7 @@ async def register_route():
 # 登录接口
 @app.post('/login')
 async def login(request: LoginRequest):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     # 判断登录方式
     if request.username and request.password:
@@ -638,7 +640,7 @@ async def logout(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 # 修改管理员密码接口
 @app.post('/change-admin-password')
 async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict[str, Any] = Depends(verify_admin_token)):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         # 验证当前密码（使用用户表验证）
@@ -662,7 +664,7 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
 # 普通用户修改密码接口
 @app.post('/change-password')
 async def change_user_password(request: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         username = current_user.get('username')
@@ -692,7 +694,7 @@ async def change_user_password(request: ChangePasswordRequest, current_user: Dic
 # 检查是否使用默认密码
 @app.get('/api/check-default-password')
 async def check_default_password(current_user: Dict[str, Any] = Depends(get_current_user)):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         username = current_user.get('username')
@@ -719,7 +721,7 @@ async def check_default_password(current_user: Dict[str, Any] = Depends(get_curr
 # 生成图形验证码接口
 @app.post('/generate-captcha')
 async def generate_captcha(request: CaptchaRequest):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         # 生成图形验证码
@@ -762,7 +764,7 @@ async def generate_captcha(request: CaptchaRequest):
 # 验证图形验证码接口
 @app.post('/verify-captcha')
 async def verify_captcha(request: VerifyCaptchaRequest):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         if db_manager.verify_captcha(request.session_id, request.captcha_code):
@@ -962,7 +964,7 @@ async def geetest_validate(request: GeetestValidateRequest):
 # 发送验证码接口（需要先验证图形验证码）
 @app.post('/send-verification-code')
 async def send_verification_code(request: SendCodeRequest):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     try:
         # 检查是否已验证图形验证码
@@ -1030,7 +1032,7 @@ async def send_verification_code(request: SendCodeRequest):
 # 用户注册接口
 @app.post('/register')
 async def register(request: RegisterRequest):
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     # 检查注册是否开启
     registration_enabled = db_manager.get_system_setting('registration_enabled')
@@ -1115,7 +1117,7 @@ def verify_api_key(api_key: str) -> bool:
     """验证API秘钥"""
     try:
         # 从系统设置中获取QQ回复消息秘钥
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         qq_secret_key = db_manager.get_system_setting('qq_reply_secret_key')
 
         # 如果系统设置中没有配置，使用默认值
@@ -1231,7 +1233,7 @@ async def xianyu_reply(req: RequestModel):
 
     if not msg_template:
         # 从数据库获取默认回复
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         default_reply_settings = db_manager.get_default_reply(req.cookie_id)
 
         if default_reply_settings and default_reply_settings.get('enabled', False):
@@ -1261,7 +1263,7 @@ async def xianyu_reply(req: RequestModel):
 
     # 如果是默认回复且开启了"只回复一次"，记录回复记录
     if is_default_reply:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         default_reply_settings = db_manager.get_default_reply(req.cookie_id)
         if default_reply_settings and default_reply_settings.get('reply_once', False):
             db_manager.add_default_reply_record(req.cookie_id, req.chat_id)
@@ -1325,7 +1327,7 @@ def list_cookies(current_user: Dict[str, Any] = Depends(get_current_user)):
 
     # 获取当前用户的cookies
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
     return list(user_cookies.keys())
 
@@ -1338,7 +1340,7 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
 
     # 获取当前用户的cookies
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     result = []
@@ -1374,7 +1376,7 @@ def add_cookie(item: CookieIn, current_user: Dict[str, Any] = Depends(get_curren
     try:
         # 添加cookie时绑定到当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         log_with_user('info', f"尝试添加Cookie: {item.id}, 当前用户ID: {user_id}, 用户名: {current_user.get('username', 'unknown')}", current_user)
 
@@ -1458,7 +1460,7 @@ def update_cookie_login_info(cid: str, update_data: AccountLoginInfoUpdate, curr
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -1524,7 +1526,7 @@ def update_cookie(cid: str, item: CookieIn, current_user: Dict[str, Any] = Depen
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -1570,7 +1572,7 @@ def update_cookie_account_info(cid: str, info: CookieAccountInfo, current_user: 
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -1613,7 +1615,7 @@ def get_cookie_account_details(cid: str, current_user: Dict[str, Any] = Depends(
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -2779,7 +2781,7 @@ def update_cookie_status(cid: str, status_data: CookieStatusIn, current_user: Di
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -2798,7 +2800,7 @@ def update_cookie_status(cid: str, status_data: CookieStatusIn, current_user: Di
 @app.get('/default-replies/{cid}')
 def get_default_reply(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取指定账号的默认回复设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -2821,7 +2823,7 @@ def get_default_reply(cid: str, current_user: Dict[str, Any] = Depends(get_curre
 @app.put('/default-replies/{cid}')
 def update_default_reply(cid: str, reply_data: DefaultReplyIn, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新指定账号的默认回复设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -2841,7 +2843,7 @@ def update_default_reply(cid: str, reply_data: DefaultReplyIn, current_user: Dic
 @app.get('/default-replies')
 def get_all_default_replies(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户所有账号的默认回复设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 只返回当前用户的默认回复设置
         user_id = current_user['user_id']
@@ -2858,7 +2860,7 @@ def get_all_default_replies(current_user: Dict[str, Any] = Depends(get_current_u
 @app.delete('/default-replies/{cid}')
 def delete_default_reply(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除指定账号的默认回复设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -2881,7 +2883,7 @@ def delete_default_reply(cid: str, current_user: Dict[str, Any] = Depends(get_cu
 @app.post('/default-replies/{cid}/clear-records')
 def clear_default_reply_records(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """清空指定账号的默认回复记录"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -2930,7 +2932,7 @@ def clear_default_reply_records_compat(cid: str, current_user: Dict[str, Any] = 
 @app.get('/notification-channels')
 def get_notification_channels(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取所有通知渠道"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
         return db_manager.get_notification_channels(user_id)
@@ -2941,7 +2943,7 @@ def get_notification_channels(current_user: Dict[str, Any] = Depends(get_current
 @app.post('/notification-channels')
 def create_notification_channel(channel_data: NotificationChannelIn, current_user: Dict[str, Any] = Depends(get_current_user)):
     """创建通知渠道"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
         channel_id = db_manager.create_notification_channel(
@@ -2958,7 +2960,7 @@ def create_notification_channel(channel_data: NotificationChannelIn, current_use
 @app.get('/notification-channels/{channel_id}')
 def get_notification_channel(channel_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取指定通知渠道"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         channel = db_manager.get_notification_channel(channel_id, current_user['user_id'])
         if not channel:
@@ -2974,7 +2976,7 @@ def get_notification_channel(channel_id: int, current_user: Dict[str, Any] = Dep
 def update_notification_channel(channel_id: int, channel_data: NotificationChannelUpdate,
                                 current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新通知渠道"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         success = db_manager.update_notification_channel(
             channel_id,
@@ -2996,7 +2998,7 @@ def update_notification_channel(channel_id: int, channel_data: NotificationChann
 @app.delete('/notification-channels/{channel_id}')
 def delete_notification_channel(channel_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除通知渠道"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         success = db_manager.delete_notification_channel(channel_id, current_user['user_id'])
         if success:
@@ -3014,7 +3016,7 @@ def delete_notification_channel(channel_id: int, current_user: Dict[str, Any] = 
 @app.get('/message-notifications')
 def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户所有账号的消息通知配置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 只返回当前用户的消息通知配置
         user_id = current_user['user_id']
@@ -3026,7 +3028,7 @@ def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_cur
 @app.get('/message-notifications/{cid}')
 def get_account_notifications(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取指定账号的消息通知配置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -3045,7 +3047,7 @@ def get_account_notifications(cid: str, current_user: Dict[str, Any] = Depends(g
 @app.post('/message-notifications/{cid}')
 def set_message_notification(cid: str, notification_data: MessageNotificationIn, current_user: Dict[str, Any] = Depends(get_current_user)):
     """设置账号的消息通知"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -3073,7 +3075,7 @@ def set_message_notification(cid: str, notification_data: MessageNotificationIn,
 @app.delete('/message-notifications/account/{cid}')
 def delete_account_notifications(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除账号的所有消息通知配置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         success = db_manager.delete_account_notifications(cid, current_user['user_id'])
         if success:
@@ -3089,7 +3091,7 @@ def delete_account_notifications(cid: str, current_user: Dict[str, Any] = Depend
 @app.delete('/message-notifications/{notification_id}')
 def delete_message_notification(notification_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除消息通知配置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         success = db_manager.delete_message_notification(notification_id, current_user['user_id'])
         if success:
@@ -3107,7 +3109,7 @@ def delete_message_notification(notification_id: int, current_user: Dict[str, An
 @app.get('/system-settings/public')
 def get_public_system_settings():
     """获取公开的系统设置（无需认证）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         all_settings = db_manager.get_all_system_settings()
         # 只返回公开的配置项
@@ -3126,7 +3128,7 @@ def get_public_system_settings():
 @app.get('/system-settings')
 def get_system_settings(_: Dict[str, Any] = Depends(require_admin)):
     """获取系统设置（排除敏感信息）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         settings = db_manager.get_all_system_settings()
         # 移除敏感信息
@@ -3141,7 +3143,7 @@ def get_system_settings(_: Dict[str, Any] = Depends(require_admin)):
 def update_system_setting(key: str, setting_data: SystemSettingIn,
                           _: Dict[str, Any] = Depends(require_admin)):
     """更新系统设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 禁止直接修改密码哈希
         if key == 'admin_password_hash':
@@ -3163,7 +3165,7 @@ def update_system_setting(key: str, setting_data: SystemSettingIn,
 @app.get('/registration-status')
 def get_registration_status():
     """获取注册开关状态（公开接口，无需认证）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         enabled_str = db_manager.get_system_setting('registration_enabled')
         logger.info(f"从数据库获取的注册设置值: '{enabled_str}'")  # 调试信息
@@ -3190,7 +3192,7 @@ def get_registration_status():
 @app.get('/login-info-status')
 def get_login_info_status():
     """获取默认登录信息显示状态（公开接口，无需认证）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         enabled_str = db_manager.get_system_setting('show_default_login_info')
         logger.debug(f"从数据库获取的登录信息显示设置值: '{enabled_str}'")
@@ -3219,7 +3221,7 @@ class LoginInfoSettingUpdate(BaseModel):
 @app.put('/registration-settings')
 def update_registration_settings(setting_data: RegistrationSettingUpdate, admin_user: Dict[str, Any] = Depends(require_admin)):
     """更新注册开关设置（仅管理员）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         enabled = setting_data.enabled
         success = db_manager.set_system_setting(
@@ -3245,7 +3247,7 @@ def update_registration_settings(setting_data: RegistrationSettingUpdate, admin_
 @app.put('/login-info-settings')
 def update_login_info_settings(setting_data: LoginInfoSettingUpdate, admin_user: Dict[str, Any] = Depends(require_admin)):
     """更新默认登录信息显示设置（仅管理员）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         enabled = setting_data.enabled
         success = db_manager.set_system_setting(
@@ -3278,7 +3280,7 @@ def remove_cookie(cid: str, current_user: Dict[str, Any] = Depends(get_current_u
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3312,7 +3314,7 @@ def update_auto_confirm(cid: str, update_data: AutoConfirmUpdate, current_user: 
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3346,7 +3348,7 @@ def get_auto_confirm(cid: str, current_user: Dict[str, Any] = Depends(get_curren
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3372,7 +3374,7 @@ def update_cookie_remark(cid: str, update_data: RemarkUpdate, current_user: Dict
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3402,7 +3404,7 @@ def get_cookie_remark(cid: str, current_user: Dict[str, Any] = Depends(get_curre
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3431,7 +3433,7 @@ def update_cookie_pause_duration(cid: str, update_data: PauseDurationUpdate, cur
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3465,7 +3467,7 @@ def get_cookie_pause_duration(cid: str, current_user: Dict[str, Any] = Depends(g
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cid not in user_cookies:
@@ -3497,7 +3499,7 @@ def get_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current_us
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3527,7 +3529,7 @@ def get_keywords_with_item_id(cid: str, current_user: Dict[str, Any] = Depends(g
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3557,7 +3559,7 @@ def update_keywords(cid: str, body: KeywordIn, current_user: Dict[str, Any] = De
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3580,7 +3582,7 @@ def update_keywords_with_item_id(cid: str, body: KeywordWithItemIdIn, current_us
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3665,7 +3667,7 @@ def get_items_list(cid: str, current_user: Dict[str, Any] = Depends(get_current_
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3706,7 +3708,7 @@ def export_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -3793,7 +3795,7 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
 
     # 检查cookie是否属于当前用户
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     user_cookies = db_manager.get_all_cookies(user_id)
 
     if cid not in user_cookies:
@@ -4094,7 +4096,7 @@ def debug_keywords_table_info(current_user: Dict[str, Any] = Depends(get_current
 def get_cards(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户的卡券列表"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         cards = db_manager.get_all_cards(user_id)
         return cards
@@ -4106,7 +4108,7 @@ def get_cards(current_user: Dict[str, Any] = Depends(get_current_user)):
 def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """创建新卡券"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         card_name = card_data.get('name', '未命名卡券')
 
@@ -4147,7 +4149,7 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
 def get_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取单个卡券详情"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         card = db_manager.get_card_by_id(card_id, user_id)
         if card:
@@ -4164,7 +4166,7 @@ def get_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current_us
 def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新卡券"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         # 验证多规格字段
         is_multi_spec = card_data.get('is_multi_spec')
         if is_multi_spec:
@@ -4238,7 +4240,7 @@ async def update_card_with_image(
         logger.info(f"图片保存成功: {image_url}")
 
         # 更新卡券
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         success = db_manager.update_card(
             card_id=card_id,
             name=name,
@@ -4273,7 +4275,7 @@ async def update_card_with_image(
 def get_delivery_rules(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取发货规则列表"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         rules = db_manager.get_all_delivery_rules(user_id)
         return rules
@@ -4285,7 +4287,7 @@ def get_delivery_rules(current_user: Dict[str, Any] = Depends(get_current_user))
 def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """创建新发货规则"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         rule_id = db_manager.create_delivery_rule(
             keyword=rule_data.get('keyword'),
@@ -4304,7 +4306,7 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
 def get_delivery_rule(rule_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取单个发货规则详情"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         rule = db_manager.get_delivery_rule_by_id(rule_id, user_id)
         if rule:
@@ -4321,7 +4323,7 @@ def get_delivery_rule(rule_id: int, current_user: Dict[str, Any] = Depends(get_c
 def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新发货规则"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         success = db_manager.update_delivery_rule(
             rule_id=rule_id,
@@ -4346,7 +4348,7 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
 def delete_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除卡券"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         success = db_manager.delete_card(card_id, current_user['user_id'])
         if success:
             return {"message": "卡券删除成功"}
@@ -4362,7 +4364,7 @@ def delete_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current
 def delete_delivery_rule(rule_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除发货规则"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         success = db_manager.delete_delivery_rule(rule_id, user_id)
         if success:
@@ -4381,7 +4383,7 @@ def delete_delivery_rule(rule_id: int, current_user: Dict[str, Any] = Depends(ge
 def export_backup(current_user: Dict[str, Any] = Depends(get_current_user)):
     """导出用户备份"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         username = current_user['username']
 
@@ -4416,13 +4418,13 @@ def import_backup(file: UploadFile = File(...), current_user: Dict[str, Any] = D
         backup_data = json.loads(content.decode('utf-8'))
 
         # 导入备份到当前用户
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_id = current_user['user_id']
         success = db_manager.import_backup(backup_data, user_id)
 
         if success:
             # 备份导入成功后，刷新 CookieManager 的内存缓存
-            import cookie_manager
+            from app import cookie_manager
             if cookie_manager.manager:
                 try:
                     cookie_manager.manager.reload_from_db()
@@ -4446,7 +4448,7 @@ def import_backup(file: UploadFile = File(...), current_user: Dict[str, Any] = D
 def reload_cache(_: Dict[str, Any] = Depends(require_admin)):
     """重新加载系统缓存（仅管理员）"""
     try:
-        import cookie_manager
+        from app import cookie_manager
         if cookie_manager.manager:
             success = cookie_manager.manager.reload_from_db()
             if success:
@@ -4469,7 +4471,7 @@ def get_all_items(current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         # 只返回当前用户的商品信息
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         all_items = []
@@ -4558,7 +4560,7 @@ async def check_valid_cookies(
                 "totalCount": 0
             }
 
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         all_cookies = db_manager.get_all_cookies(current_user['user_id'])
 
@@ -4647,7 +4649,7 @@ def get_items_by_cookie(cookie_id: str, current_user: Dict[str, Any] = Depends(g
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4667,7 +4669,7 @@ def get_item_detail(cookie_id: str, item_id: str, current_user: Dict[str, Any] =
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4698,7 +4700,7 @@ def update_item_detail(
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4725,7 +4727,7 @@ def delete_item_info(
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4797,7 +4799,7 @@ def get_ai_reply_settings(cookie_id: str, current_user: Dict[str, Any] = Depends
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4818,7 +4820,7 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -4856,7 +4858,7 @@ def get_all_ai_reply_settings(current_user: Dict[str, Any] = Depends(get_current
     try:
         # 只返回当前用户的AI回复设置
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         all_settings = db_manager.get_all_ai_reply_settings()
@@ -5215,7 +5217,7 @@ async def get_items_by_page(request: dict, current_user: Dict[str, Any] = Depend
 @app.get('/user-settings')
 def get_user_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户的设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
         settings = db_manager.get_user_settings(user_id)
@@ -5226,7 +5228,7 @@ def get_user_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
 @app.put('/user-settings/{key}')
 def update_user_setting(key: str, setting_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新用户设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
         value = setting_data.get('value')
@@ -5250,7 +5252,7 @@ def update_user_setting(key: str, setting_data: dict, current_user: Dict[str, An
 @app.get('/user-settings/{key}')
 def get_user_setting(key: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取用户特定设置"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         user_id = current_user['user_id']
         setting = db_manager.get_user_setting(user_id, key)
@@ -5269,7 +5271,7 @@ def get_user_setting(key: str, current_user: Dict[str, Any] = Depends(get_curren
 @app.get('/admin/users')
 def get_all_users(admin_user: Dict[str, Any] = Depends(require_admin)):
     """获取所有用户信息（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', "查询所有用户信息", admin_user)
         users = db_manager.get_all_users()
@@ -5298,7 +5300,7 @@ def get_all_users(admin_user: Dict[str, Any] = Depends(require_admin)):
 @app.delete('/admin/users/{user_id}')
 def delete_user(user_id: int, admin_user: Dict[str, Any] = Depends(require_admin)):
     """删除用户（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         # 不能删除管理员自己
         if user_id == admin_user['user_id']:
@@ -5371,7 +5373,7 @@ def get_admin_cookies(admin_user: Dict[str, Any] = Depends(require_admin)):
             }
 
         # 获取所有用户的cookies
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         all_users = db_manager.get_all_users()
         all_cookies = []
 
@@ -5566,7 +5568,7 @@ def export_log_file(file: str, admin_user: Dict[str, Any] = Depends(require_admi
 @app.get('/admin/stats')
 def get_system_stats(admin_user: Dict[str, Any] = Depends(require_admin)):
     """获取系统统计信息（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', "查询系统统计信息", admin_user)
 
@@ -5632,7 +5634,7 @@ def get_order_analytics(
         start_date: 开始日期 (格式: YYYY-MM-DD)
         end_date: 结束日期 (格式: YYYY-MM-DD)
     """
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', f"查询订单分析数据: {start_date} - {end_date}", current_user)
 
@@ -5676,7 +5678,7 @@ def get_valid_orders(
         start_date: 开始日期 (格式: YYYY-MM-DD)
         end_date: 结束日期 (格式: YYYY-MM-DD)
     """
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', f"查询有效订单列表: {start_date} - {end_date}", current_user)
 
@@ -5709,7 +5711,7 @@ def get_all_items(current_user: Dict[str, Any] = Depends(get_current_user)):
     try:
         # 只返回当前用户的商品信息
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         all_items = []
@@ -5727,7 +5729,7 @@ def get_items_by_cookie(cookie_id: str, current_user: Dict[str, Any] = Depends(g
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
         if cookie_id not in user_cookies:
@@ -5752,7 +5754,7 @@ def update_item_reply(
     """
     try:
         user_id = current_user['user_id']
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         # 验证cookie是否属于用户
         user_cookies = db_manager.get_all_cookies(user_id)
@@ -5810,7 +5812,7 @@ async def batch_delete_item_reply(
     批量删除商品回复
     """
     user_id = current_user['user_id']
-    from db_manager import db_manager
+    from app.db_manager import db_manager
 
     # 先校验当前用户是否有权限删除每个cookie对应的回复
     user_cookies = db_manager.get_all_cookies(user_id)
@@ -5865,7 +5867,7 @@ def download_database_backup(admin_user: Dict[str, Any] = Depends(require_admin)
         log_with_user('info', "请求下载数据库备份", admin_user)
 
         # 使用db_manager的实际数据库路径
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         db_file_path = db_manager.db_path
 
         # 检查数据库文件是否存在
@@ -5947,7 +5949,7 @@ async def upload_database_backup(admin_user: Dict[str, Any] = Depends(require_ad
             raise HTTPException(status_code=400, detail="无效的数据库文件")
 
         # 备份当前数据库
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         current_db_path = db_manager.db_path
 
         # 生成备份文件路径（与原数据库在同一目录）
@@ -6067,7 +6069,7 @@ async def reload_system_cache(admin_user: Dict[str, Any] = Depends(require_admin
 @app.get('/admin/data/{table_name}')
 def get_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(require_admin)):
     """获取指定表的所有数据（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', f"查询表数据: {table_name}", admin_user)
 
@@ -6105,7 +6107,7 @@ def get_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(require
 @app.delete('/admin/data/{table_name}/{record_id}')
 def delete_table_record(table_name: str, record_id: str, admin_user: Dict[str, Any] = Depends(require_admin)):
     """删除指定表的指定记录（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', f"删除表记录: {table_name}.{record_id}", admin_user)
 
@@ -6145,7 +6147,7 @@ def delete_table_record(table_name: str, record_id: str, admin_user: Dict[str, A
 @app.delete('/admin/data/{table_name}')
 def clear_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(require_admin)):
     """清空指定表的所有数据（管理员专用）"""
-    from db_manager import db_manager
+    from app.db_manager import db_manager
     try:
         log_with_user('info', f"清空表数据: {table_name}", admin_user)
 
@@ -6189,7 +6191,7 @@ def clear_table_data(table_name: str, admin_user: Dict[str, Any] = Depends(requi
 def update_item_multi_spec(cookie_id: str, item_id: str, spec_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新商品的多规格状态"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         if cookie_id not in db_manager.get_all_cookies(current_user['user_id']):
             raise HTTPException(status_code=403, detail="无权限操作该账号")
 
@@ -6213,7 +6215,7 @@ def update_item_multi_spec(cookie_id: str, item_id: str, spec_data: dict, curren
 def update_item_multi_quantity_delivery(cookie_id: str, item_id: str, delivery_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新商品的多数量发货状态"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         if cookie_id not in db_manager.get_all_cookies(current_user['user_id']):
             raise HTTPException(status_code=403, detail="无权限操作该账号")
 
@@ -6247,7 +6249,7 @@ def get_user_orders(
 ):
     """获取当前用户的订单信息（支持分页）"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         user_id = current_user['user_id']
         log_with_user('info', f"查询用户订单信息 (page={page}, page_size={page_size})", current_user)
@@ -6309,7 +6311,7 @@ def get_user_orders(
 def get_order_detail(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取订单详情"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         user_id = current_user['user_id']
         log_with_user('info', f"查询订单详情: {order_id}", current_user)
@@ -6338,7 +6340,7 @@ def get_order_detail(order_id: str, current_user: Dict[str, Any] = Depends(get_c
 def delete_order(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """删除订单"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         user_id = current_user['user_id']
         log_with_user('info', f"删除订单: {order_id}", current_user)
@@ -6376,7 +6378,7 @@ async def refresh_single_order(
 ):
     """刷新单条订单状态"""
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         from utils.order_fetcher_optimized import process_orders_batch
 
         user_id = current_user['user_id']
@@ -6489,7 +6491,7 @@ async def update_order(
     获取完整信息包括：订单ID、商品ID、买家ID、规格、数量、金额、订单状态、收货人信息
     """
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         from utils.order_fetcher_optimized import fetch_order_complete
 
         user_id = current_user['user_id']
@@ -6641,7 +6643,7 @@ async def refresh_orders_status(
     3. 更新数据库中有变化的订单
     """
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         from utils.order_fetcher_optimized import process_orders_batch
 
         user_id = current_user['user_id']
@@ -6841,7 +6843,7 @@ async def manual_ship_orders(
     - full_delivery: 完整发货流程（匹配卡券、发送卡券给买家、标记发货状态）
     """
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
         from XianyuAutoAsync import XianyuLive
         import asyncio
 
@@ -6911,7 +6913,7 @@ async def manual_ship_orders(
 
                     # 创建独立的aiohttp session（避免跨异步上下文问题）
                     import aiohttp
-                    from secure_confirm_decrypted import SecureConfirm
+                    from app.secure_confirm import SecureConfirm
 
                     try:
                         async with aiohttp.ClientSession(
@@ -7164,7 +7166,7 @@ async def import_orders(
     支持批量导入自定义订单数据
     """
     try:
-        from db_manager import db_manager
+        from app.db_manager import db_manager
 
         user_id = current_user['user_id']
         log_with_user('info', f"开始导入订单: 订单数量={len(orders)}", current_user)

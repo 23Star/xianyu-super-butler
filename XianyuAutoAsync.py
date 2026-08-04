@@ -12,17 +12,17 @@ from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
     generate_device_id, generate_sign
 )
-from config import (
+from app.config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
     TOKEN_REFRESH_INTERVAL, TOKEN_RETRY_INTERVAL, COOKIES_STR,
     LOG_CONFIG, AUTO_REPLY, DEFAULT_HEADERS, WEBSOCKET_HEADERS,
     APP_CONFIG, API_ENDPOINTS
 )
-from config import config as cfg  # 导入config实例（不是模块），使用别名避免冲突
+from app.config import config as cfg  # 导入config实例（不是模块），使用别名避免冲突
 import sys
 import aiohttp
 from collections import defaultdict
-from db_manager import db_manager
+from app.db_manager import db_manager
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
@@ -48,7 +48,7 @@ class AutoReplyPauseManager:
         """暂停指定chat_id的自动回复，使用账号特定的暂停时间"""
         # 获取账号特定的暂停时间
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             pause_minutes = db_manager.get_cookie_pause_duration(cookie_id)
         except Exception as e:
             logger.error(f"获取账号 {cookie_id} 暂停时间失败: {e}，使用默认10分钟")
@@ -771,7 +771,7 @@ class XianyuLive:
         """初始化订单状态处理器"""
         try:
             # 直接导入订单状态处理器
-            from order_status_handler import order_status_handler
+            from app.order_status_handler import order_status_handler
             self.order_status_handler = order_status_handler
             logger.info(f"【{self.cookie_id}】订单状态处理器已启用")
         except Exception as e:
@@ -821,7 +821,7 @@ class XianyuLive:
     def is_auto_confirm_enabled(self) -> bool:
         """检查当前账号是否启用自动确认发货"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             return db_manager.get_auto_confirm(self.cookie_id)
         except Exception as e:
             logger.error(f"【{self.cookie_id}】获取自动确认发货设置失败: {self._safe_str(e)}")
@@ -1116,7 +1116,7 @@ class XianyuLive:
             # 检查商品是否属于当前cookies
             if item_id and item_id != "未知商品":
                 try:
-                    from db_manager import db_manager
+                    from app.db_manager import db_manager
                     item_info = db_manager.get_item_info(self.cookie_id, item_id)
                     if not item_info:
                         logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 商品 {item_id} 不属于当前账号，跳过自动发货')
@@ -1135,7 +1135,7 @@ class XianyuLive:
                 return
 
             # 发货前必须确认订单归属和已付款状态，避免伪造文本或旧消息误触发。
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             current_order = db_manager.get_order_by_id(order_id)
             if current_order:
                 if str(current_order.get('cookie_id') or '') != str(self.cookie_id):
@@ -1442,7 +1442,7 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】开始执行Cookie刷新任务...")
             # await self._execute_cookie_refresh(time.time())
             try:
-                from db_manager import db_manager
+                from app.db_manager import db_manager
                 account_info = db_manager.get_cookie_details(self.cookie_id)
                 if account_info and account_info.get('cookie_value'):
                     new_cookies_str = account_info.get('cookie_value')
@@ -1590,7 +1590,7 @@ class XianyuLive:
                         # 添加风控日志记录
                         log_id = None
                         try:
-                            from db_manager import db_manager
+                            from app.db_manager import db_manager
                             success = db_manager.add_risk_control_log(
                                 cookie_id=self.cookie_id,
                                 event_type='slider_captcha',
@@ -1618,7 +1618,7 @@ class XianyuLive:
                                 # 更新风控日志为成功状态
                                 if 'log_id' in locals() and log_id:
                                     try:
-                                        from db_manager import db_manager
+                                        from app.db_manager import db_manager
                                         db_manager.update_risk_control_log(
                                             log_id=log_id,
                                             processing_result=f"滑块验证成功，耗时: {captcha_duration:.2f}秒, cookies长度: {len(new_cookies_str)}",
@@ -1638,7 +1638,7 @@ class XianyuLive:
                                 # 更新风控日志为失败状态
                                 if 'log_id' in locals() and log_id:
                                     try:
-                                        from db_manager import db_manager
+                                        from app.db_manager import db_manager
                                         db_manager.update_risk_control_log(
                                             log_id=log_id,
                                             processing_result=f"滑块验证失败，耗时: {captcha_duration:.2f}秒, 原因: 未获取到新cookies",
@@ -1656,7 +1656,7 @@ class XianyuLive:
                             captcha_duration = time.time() - captcha_start_time if 'captcha_start_time' in locals() else 0
                             if 'log_id' in locals() and log_id:
                                 try:
-                                    from db_manager import db_manager
+                                    from app.db_manager import db_manager
                                     db_manager.update_risk_control_log(
                                         log_id=log_id,
                                         processing_result=f"滑块验证处理异常，耗时: {captcha_duration:.2f}秒",
@@ -2112,7 +2112,7 @@ class XianyuLive:
     async def update_config_cookies(self):
         """更新数据库中的cookies（不会覆盖账号密码等其他字段）"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 更新数据库中的Cookie
             if hasattr(self, 'cookie_id') and self.cookie_id:
@@ -2176,7 +2176,7 @@ class XianyuLive:
 
         try:
             # 从数据库获取账号登录信息
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             account_info = db_manager.get_cookie_details(self.cookie_id)
             
             if not account_info:
@@ -2330,7 +2330,7 @@ class XianyuLive:
         #         self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
             
         #     # 创建临时的确认发货实例
-        #     from secure_confirm_decrypted import SecureConfirm
+        #     from app.secure_confirm import SecureConfirm
         #     confirm_tester = SecureConfirm(
         #         session=self.session,
         #         cookies_str=self.cookies_str,
@@ -2557,7 +2557,7 @@ class XianyuLive:
                 logger.warning(f"跳过保存商品信息：商品标题或详情不完整 - {item_id}")
                 return
 
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 直接使用传入的详情内容
             item_data = item_detail
@@ -2575,7 +2575,7 @@ class XianyuLive:
     async def save_item_detail_only(self, item_id, item_detail):
         """仅保存商品详情（不影响标题等基本信息）"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 使用专门的详情更新方法
             success = db_manager.update_item_detail(self.cookie_id, item_id, item_detail)
@@ -2602,7 +2602,7 @@ class XianyuLive:
         """
         try:
             # 检查是否启用自动获取功能
-            from config import config
+            from app.config import config
             auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
 
             if not auto_fetch_config.get('enabled', True):
@@ -3117,7 +3117,7 @@ class XianyuLive:
             items_list: 从get_item_list_info获取的商品列表
         """
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 准备批量数据
             batch_data = []
@@ -3177,7 +3177,7 @@ class XianyuLive:
 
             # 异步获取缺失的商品详情
             if items_need_detail:
-                from config import config
+                from app.config import config
                 auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
 
                 if auto_fetch_config.get('enabled', True):
@@ -3205,8 +3205,8 @@ class XianyuLive:
         success_count = 0
 
         try:
-            from db_manager import db_manager
-            from config import config
+            from app.db_manager import db_manager
+            from app.config import config
 
             # 从配置获取并发数量和延迟时间
             auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
@@ -3467,7 +3467,7 @@ class XianyuLive:
                   或 "EMPTY_REPLY" (空回复标记)
         """
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 1. 优先检查指定商品回复
             if item_id:
@@ -3548,7 +3548,7 @@ class XianyuLive:
     async def get_keyword_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str = None) -> str:
         """获取关键词匹配回复（支持商品ID优先匹配和图片类型）"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 获取当前账号的关键词列表（包含类型信息）
             keywords = db_manager.get_keywords_with_type(self.cookie_id)
@@ -3750,7 +3750,7 @@ class XianyuLive:
     async def _update_keyword_image_url(self, keyword: str, new_image_url: str):
         """更新关键词的图片URL"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             success = db_manager.update_keyword_image_url(self.cookie_id, keyword, new_image_url)
             if success:
                 logger.info(f"图片URL已更新: {keyword} -> {new_image_url}")
@@ -3762,7 +3762,7 @@ class XianyuLive:
     async def _update_card_image_url(self, card_id: int, new_image_url: str):
         """更新卡券的图片URL"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             success = db_manager.update_card_image_url(card_id, new_image_url)
             if success:
                 logger.info(f"卡券图片URL已更新: 卡券ID={card_id} -> {new_image_url}")
@@ -3774,7 +3774,7 @@ class XianyuLive:
     async def _update_default_reply_image_url(self, new_image_url: str):
         """更新默认回复的图片URL为CDN URL"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             success = db_manager.update_default_reply_image_url(self.cookie_id, new_image_url)
             if success:
                 logger.info(f"【{self.cookie_id}】默认回复图片URL已更新: {new_image_url}")
@@ -3786,7 +3786,7 @@ class XianyuLive:
     async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str):
         """获取AI回复"""
         try:
-            from ai_reply_engine import ai_reply_engine
+            from app.ai_reply_engine import ai_reply_engine
 
             # 检查是否启用AI回复
             if not ai_reply_engine.is_ai_enabled(self.cookie_id):
@@ -3794,7 +3794,7 @@ class XianyuLive:
                 return None
 
             # 从数据库获取商品信息
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             item_info_raw = db_manager.get_item_info(self.cookie_id, item_id)
 
             if not item_info_raw:
@@ -3850,7 +3850,7 @@ class XianyuLive:
     async def send_notification(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str = None, chat_id: str = None):
         """发送消息通知"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             import aiohttp
             import hashlib
 
@@ -4464,7 +4464,7 @@ class XianyuLive:
                 logger.warning(f"Token刷新通知在冷却期内，跳过发送: {notification_type} (还需等待 {time_desc})")
                 return
 
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 获取当前账号的通知配置
             notifications = db_manager.get_account_notifications(self.cookie_id)
@@ -4629,7 +4629,7 @@ class XianyuLive:
     async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str, item_id: str, error_message: str, chat_id: str = None):
         """发送自动发货失败通知"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 获取当前账号的通知配置
             notifications = db_manager.get_account_notifications(self.cookie_id)
@@ -4695,7 +4695,7 @@ class XianyuLive:
             logger.warning(f"【{self.cookie_id}】开始确认发货，订单ID: {order_id}")
 
             # 导入解密后的确认发货模块
-            from secure_confirm_decrypted import SecureConfirm
+            from app.secure_confirm import SecureConfirm
 
             # 创建确认实例，传入主界面类实例
             secure_confirm = SecureConfirm(self.session, self.cookies_str, self.cookie_id, self)
@@ -4731,7 +4731,7 @@ class XianyuLive:
             logger.warning(f"【{self.cookie_id}】开始免拼发货，订单ID: {order_id}")
 
             # 导入解密后的免拼发货模块
-            from secure_freeshipping_decrypted import SecureFreeshipping
+            from app.secure_freeshipping import SecureFreeshipping
 
             # 创建免拼发货实例
             secure_freeshipping = SecureFreeshipping(self.session, self.cookies_str, self.cookie_id)
@@ -4764,7 +4764,7 @@ class XianyuLive:
 
                 # 导入订单详情获取器
                 from utils.order_detail_fetcher import fetch_order_detail_simple
-                from db_manager import db_manager
+                from app.db_manager import db_manager
 
                 # 获取当前账号的cookie字符串
                 cookie_string = self.cookies_str
@@ -4880,7 +4880,7 @@ class XianyuLive:
     async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
         """匹配并取得发货内容；消息发送和确认发货由调用方在成功判定后执行。"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             logger.info(f"开始自动发货检查: 商品ID={item_id}")
 
@@ -4900,7 +4900,7 @@ class XianyuLive:
 
                         # 如果数据库中没有详情，尝试自动获取
                         if not item_detail_db.strip():
-                            from config import config
+                            from app.config import config
                             auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
 
                             if auto_fetch_config.get('enabled', True):
@@ -5022,7 +5022,7 @@ class XianyuLive:
             # 尝试获取商品标题
             item_title_for_save = None
             try:
-                from db_manager import db_manager
+                from app.db_manager import db_manager
                 db_item_info = db_manager.get_item_info(self.cookie_id, item_id)
                 if db_item_info:
                     item_title_for_save = db_item_info.get('item_title', '').strip()
@@ -5062,7 +5062,7 @@ class XianyuLive:
             if order_id:
                 # 保存订单基本信息到数据库（如果还没有详细信息）
                 try:
-                    from db_manager import db_manager
+                    from app.db_manager import db_manager
 
                     # 检查cookie_id是否在cookies表中存在
                     cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
@@ -5290,7 +5290,7 @@ class XianyuLive:
             # 如果有订单ID，获取订单信息
             if order_id:
                 try:
-                    from db_manager import db_manager
+                    from app.db_manager import db_manager
                     # 尝试从数据库获取订单信息
                     order_info = db_manager.get_order_by_id(order_id)
                     if not order_info:
@@ -5309,7 +5309,7 @@ class XianyuLive:
             # 如果有商品ID，获取商品信息
             if item_id:
                 try:
-                    from db_manager import db_manager
+                    from app.db_manager import db_manager
                     item_info = db_manager.get_item_info(self.cookie_id, item_id)
                     if item_info:
                         logger.warning(f"从数据库获取到商品信息: {item_id}")
@@ -5799,7 +5799,7 @@ class XianyuLive:
                         break
 
                     # 从数据库读取最新配置（支持动态更新）
-                    from db_manager import db_manager
+                    from app.db_manager import db_manager
                     item_sync_enabled_str = db_manager.get_system_setting('item_sync_enabled')
                     item_sync_interval_str = db_manager.get_system_setting('item_sync_interval')
                     item_sync_max_pages_str = db_manager.get_system_setting('item_sync_max_pages')
@@ -6337,7 +6337,7 @@ class XianyuLive:
                 logger.info(f"【{target_cookie_id}】Cookie无变化")
 
             # 保存真实Cookie到数据库
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             
             # 检查是否为新账号
             existing_cookie = db_manager.get_cookie_details(target_cookie_id)
@@ -8135,7 +8135,7 @@ class XianyuLive:
                         # 检查商品是否属于当前cookies
                         if item_id and item_id != "未知商品":
                             try:
-                                from db_manager import db_manager
+                                from app.db_manager import db_manager
                                 item_info = db_manager.get_item_info(self.cookie_id, item_id)
                                 if not item_info:
                                     logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 商品 {item_id} 不属于当前账号，跳过免拼发货')
@@ -8153,7 +8153,7 @@ class XianyuLive:
 
                         # 更新订单的is_bargain字段为True（标记为小刀订单）
                         try:
-                            from db_manager import db_manager
+                            from app.db_manager import db_manager
                             db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,

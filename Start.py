@@ -577,10 +577,10 @@ if sys.platform.startswith('linux'):
     except Exception as e:
         logger.debug(f"设置事件循环策略失败: {e}")
 
-from config import AUTO_REPLY, COOKIES_LIST
-import cookie_manager as cm
-from db_manager import db_manager
-from file_log_collector import setup_file_logging
+from app.config import AUTO_REPLY, COOKIES_LIST
+from app import cookie_manager as cm
+from app.db_manager import db_manager
+from app.file_log_collector import setup_file_logging
 
 
 def _start_api_server():
@@ -610,7 +610,7 @@ def _start_api_server():
     # 在后台线程中创建独立事件循环并直接运行 server.serve()
     import uvicorn
     try:
-        config = uvicorn.Config("reply_server:app", host=host, port=port, log_level="info")
+        config = uvicorn.Config("app.reply_server:app", host=host, port=port, log_level="info")
         server = uvicorn.Server(config)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -676,7 +676,7 @@ async def main():
 
         try:
             # 直接启动任务，不重新保存到数据库
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             logger.info(f"正在获取Cookie详细信息: {cid}")
             cookie_info = db_manager.get_cookie_details(cid)
             user_id = cookie_info.get('user_id') if cookie_info else None

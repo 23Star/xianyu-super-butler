@@ -21,7 +21,7 @@ from collections import defaultdict
 
 # 导入配置
 try:
-    from config import SLIDER_VERIFICATION
+    from app.config import SLIDER_VERIFICATION
     SLIDER_MAX_CONCURRENT = SLIDER_VERIFICATION.get('max_concurrent', 3)
     SLIDER_WAIT_TIMEOUT = SLIDER_VERIFICATION.get('wait_timeout', 60)
 except ImportError:

@@ -1,6 +1,6 @@
 """
-自动确认发货模块 - 解密版本
-这是secure_confirm_ultra.py的解密版本，用于自动确认发货功能
+自动确认发货模块。
+用于处理订单的自动确认发货流程。
 """
 
 import asyncio
@@ -47,7 +47,7 @@ class SecureConfirm:
     async def _get_real_item_id(self):
         """从数据库中获取一个真实的商品ID"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             
             # 获取该账号的商品列表
             items = db_manager.get_items_by_cookie(self.cookie_id)
@@ -76,7 +76,7 @@ class SecureConfirm:
     async def _update_config_cookies(self):
         """更新数据库中的Cookie配置"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             # 更新数据库中的cookies
             db_manager.update_cookie_account_info(self.cookie_id, cookie_value=self.cookies_str)
             logger.debug(f"【{self.cookie_id}】已更新数据库中的Cookie")

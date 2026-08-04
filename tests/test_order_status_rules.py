@@ -1,6 +1,6 @@
 import unittest
 
-from order_status_handler import OrderStatusHandler
+from app.order_status_handler import OrderStatusHandler
 from utils.order_status_rules import (
     detect_order_status_from_text,
     get_order_status,

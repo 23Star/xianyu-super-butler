@@ -35,7 +35,7 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
         
         # 获取账号的通知配置
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             notifications = db_manager.get_account_notifications(user_id)
             
             if not notifications:

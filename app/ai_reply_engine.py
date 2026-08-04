@@ -18,7 +18,7 @@ import threading
 from typing import List, Dict, Optional
 from loguru import logger
 from openai import OpenAI
-from db_manager import db_manager
+from app.db_manager import db_manager
 
 
 class AIReplyEngine:

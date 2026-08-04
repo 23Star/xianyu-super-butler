@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from db_manager import DBManager
+from app.db_manager import DBManager
 
 
 class DeliveryRulesMigrationTests(unittest.TestCase):

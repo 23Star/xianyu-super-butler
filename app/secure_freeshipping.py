@@ -26,7 +26,7 @@ class SecureFreeshipping:
     async def update_config_cookies(self):
         """更新数据库中的cookies"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
             
             # 更新数据库中的Cookie
             db_manager.update_config_cookies(self.cookie_id, self.cookies_str)

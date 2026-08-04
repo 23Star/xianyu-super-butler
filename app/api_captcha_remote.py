@@ -6,6 +6,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
+from pathlib import Path
 from typing import Optional, List
 import asyncio
 import os
@@ -13,6 +14,7 @@ from loguru import logger
 
 from utils.captcha_remote_control import captcha_controller
 
+CONTROL_PAGE = Path(__file__).resolve().parent.parent / "static" / "captcha_control.html"
 
 # 创建路由器
 router = APIRouter(prefix="/api/captcha", tags=["captcha"])
@@ -278,10 +280,8 @@ async def get_captcha_status(session_id: str):
 @router.get("/control", response_class=HTMLResponse)
 async def captcha_control_page():
     """返回滑块控制页面"""
-    html_file = "captcha_control.html"
-    
-    if os.path.exists(html_file):
-        return FileResponse(html_file, media_type="text/html")
+    if CONTROL_PAGE.exists():
+        return FileResponse(CONTROL_PAGE, media_type="text/html")
     else:
         # 返回简单的提示页面
         return HTMLResponse(content="""
@@ -302,10 +302,8 @@ async def captcha_control_page():
 @router.get("/control/{session_id}", response_class=HTMLResponse)
 async def captcha_control_page_with_session(session_id: str):
     """返回带会话ID的滑块控制页面"""
-    html_file = "captcha_control.html"
-    
-    if os.path.exists(html_file):
-        with open(html_file, 'r', encoding='utf-8') as f:
+    if CONTROL_PAGE.exists():
+        with CONTROL_PAGE.open('r', encoding='utf-8') as f:
             html_content = f.read()
             # 注入会话ID
             html_content = html_content.replace(
@@ -315,4 +313,3 @@ async def captcha_control_page_with_session(session_id: str):
             return HTMLResponse(content=html_content)
     else:
         raise HTTPException(status_code=404, detail="前端页面不存在")
-

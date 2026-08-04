@@ -634,7 +634,7 @@ class XianyuSearcher:
     async def get_first_valid_cookie(self):
         """获取第一个有效的cookie"""
         try:
-            from db_manager import db_manager
+            from app.db_manager import db_manager
 
             # 获取所有cookies，返回格式是 {id: value}
             cookies = db_manager.get_all_cookies()

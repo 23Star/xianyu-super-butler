@@ -1,6 +1,9 @@
 import os
 import yaml
+from pathlib import Path
 from typing import Dict, Any
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 class Config:
     """配置管理类
@@ -24,7 +27,7 @@ class Config:
         从global_config.yml文件中加载配置信息。
         如果文件不存在则抛出FileNotFoundError异常。
         """
-        config_path = os.path.join(os.path.dirname(__file__), 'global_config.yml')
+        config_path = PROJECT_ROOT / 'global_config.yml'
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"配置文件不存在: {config_path}")
 
@@ -72,7 +75,7 @@ class Config:
         
         将当前配置保存回global_config.yml文件
         """
-        config_path = os.path.join(os.path.dirname(__file__), 'global_config.yml')
+        config_path = PROJECT_ROOT / 'global_config.yml'
         with open(config_path, 'w', encoding='utf-8') as f:
             yaml.safe_dump(self._config, f, allow_unicode=True, default_flow_style=False)
 

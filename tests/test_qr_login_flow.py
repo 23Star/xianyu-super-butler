@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-import reply_server
+from app import reply_server
 
 
 class QrLoginFlowTests(unittest.IsolatedAsyncioTestCase):

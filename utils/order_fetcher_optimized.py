@@ -76,7 +76,7 @@ class OrderFetcherOptimized:
 
             try:
                 # 首先查询数据库中是否已存在该订单
-                from db_manager import db_manager
+                from app.db_manager import db_manager
                 existing_order = db_manager.get_order_by_id(order_id)
 
                 if existing_order:

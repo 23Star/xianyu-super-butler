@@ -1,24 +1,22 @@
-# 确保脚本文件使用Unix换行符(LF)
+# Shell scripts use Unix line endings.
 *.sh text eol=lf
 entrypoint.sh text eol=lf
 
-# 确保Windows批处理文件使用Windows换行符(CRLF)
+# Windows batch files use Windows line endings.
 *.bat text eol=crlf
 
-# 确保Python文件使用Unix换行符(LF)
+# Source and configuration files use Unix line endings.
 *.py text eol=lf
-
-# 确保配置文件使用Unix换行符(LF)
 *.yml text eol=lf
 *.yaml text eol=lf
 *.json text eol=lf
 *.conf text eol=lf
 
-# 确保文档文件使用Unix换行符(LF)
+# Documentation uses Unix line endings.
 *.md text eol=lf
 *.txt text eol=lf
 
-# 二进制文件
+# Binary assets are not normalized.
 *.png binary
 *.jpg binary
 *.jpeg binary
