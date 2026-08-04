@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Dict, Any
 from playwright.async_api import async_playwright
+from utils.order_status_rules import normalize_order_status
 from utils.xianyu_utils import trans_cookies
 
 
@@ -178,11 +179,14 @@ class OrderStatusQueryPlaywright:
                             for btn in button_list
                         )
 
+                        status_code = order_data.get('status')
+                        status_text = order_data.get('utArgs', {}).get('orderStatusName', '')
                         return {
                             'success': True,
                             'order_id': order_id,
-                            'order_status': order_data.get('status'),
-                            'status_text': order_data.get('utArgs', {}).get('orderStatusName', ''),
+                            'order_status': normalize_order_status(status_code, status_text),
+                            'raw_status_code': status_code,
+                            'status_text': status_text,
                             'item_title': item_title,
                             'price': price,
                             'can_rate': can_rate,

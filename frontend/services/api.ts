@@ -25,23 +25,41 @@ export const changePassword = async (currentPassword: string, newPassword: strin
 // Accounts
 export const getAccountDetails = async (): Promise<AccountDetail[]> => {
   const data = await get<any[]>('/cookies/details');
-  // Map backend fields to UI fields if necessary
-  return data.map(item => ({
-    id: item.id,
-    value: item.value,
-    cookie: item.value,
-    enabled: item.enabled,
-    auto_confirm: item.auto_confirm,
-    remark: item.remark,
-    note: item.remark,
-    pause_duration: item.pause_duration,
-    username: item.username,
-    login_password: item.login_password,
-    show_browser: item.show_browser,
-    nickname: item.remark || `Account ${item.id.substring(0,6)}`, // Fallback for UI
-    avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${item.id}`, // Placeholder avatar
-    ai_enabled: false, // 需要从AI设置API获取
+  return Promise.all(data.map(async item => {
+    let details: any = {};
+    try {
+      details = await get(`/cookie/${item.id}/details`);
+    } catch {
+      // 详情加载失败时保留基础账号数据，避免整页不可用。
+    }
+
+    return {
+      ...details,
+      id: item.id,
+      value: item.value,
+      cookie: item.value,
+      enabled: item.enabled,
+      auto_confirm: item.auto_confirm,
+      remark: item.remark,
+      note: item.remark,
+      pause_duration: item.pause_duration,
+      username: details.username,
+      login_password: details.password || details.login_password,
+      show_browser: details.show_browser,
+      nickname: item.nickname || details.nickname || item.remark || details.username || `账号 ${item.id.substring(0, 6)}`,
+      avatar_url: item.avatar_url || details.avatar_url,
+      location: item.location || details.location,
+      bio: item.bio || details.bio,
+      followers: item.followers ?? details.followers,
+      following: item.following ?? details.following,
+      profile_updated_at: item.profile_updated_at || details.profile_updated_at,
+      ai_enabled: false,
+    };
   }));
+};
+
+export const refreshAccountProfile = async (id: string): Promise<{ success: boolean; profile?: Partial<AccountDetail> }> => {
+  return post(`/cookies/${id}/refresh-profile`);
 };
 
 export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string }> => {
@@ -89,6 +107,15 @@ export const getAllAISettings = async (): Promise<Record<string, AIReplySettings
 };
 
 // Orders
+const normalizeOrder = (order: any): Order => {
+  const normalizedStatus = order?.order_status || order?.status || 'processing';
+  return {
+    ...order,
+    status: normalizedStatus,
+    order_status: normalizedStatus,
+  };
+};
+
 export const getOrders = async (
   cookieId?: string,
   status?: string,
@@ -102,7 +129,7 @@ export const getOrders = async (
   const res = await get<any>('/api/orders', params);
 
   // Handle backend response variations
-  const orders = res.orders || res.data || [];
+  const orders = (res.orders || res.data || []).map(normalizeOrder);
   return {
     success: true,
     data: orders,
@@ -115,9 +142,10 @@ export const getOrders = async (
 
 export const getOrderDetail = async (orderId: string): Promise<{ success: boolean; data?: Order }> => {
   const result = await get<{ order?: Order; data?: Order }>(`/api/orders/${orderId}`);
+  const order = result.order || result.data;
   return {
     success: true,
-    data: result.order || result.data
+    data: order ? normalizeOrder(order) : undefined
   };
 };
 
@@ -212,16 +240,16 @@ export const createCard = async (data: Partial<Card>): Promise<{ id: number; mes
   return post('/cards', data);
 };
 
-export const updateCard = async (cardId: string, data: Partial<Card>): Promise<ApiResponse> => {
+export const updateCard = async (cardId: string | number, data: Partial<Card>): Promise<ApiResponse> => {
   return put(`/cards/${cardId}`, data);
 };
 
-export const deleteCard = async (cardId: string): Promise<ApiResponse> => {
+export const deleteCard = async (cardId: string | number): Promise<ApiResponse> => {
   return del(`/cards/${cardId}`);
 };
 
-export const getCardDetails = async (cardId: string): Promise<any> => {
-  return get(`/cards/${cardId}/details`);
+export const getCardDetails = async (cardId: string | number): Promise<any> => {
+  return get(`/cards/${cardId}`);
 };
 
 // Items
@@ -238,12 +266,16 @@ export const deleteItem = async (cookieId: string, itemId: string): Promise<any>
     return del(`/items/${cookieId}/${itemId}`);
 }
 
-export const createItem = async (cookieId: string, data: any): Promise<any> => {
-    return post(`/items/${cookieId}`, data);
+export const updateItemDetail = async (cookieId: string, itemId: string, itemDetail: string): Promise<any> => {
+    return put(`/items/${cookieId}/${itemId}`, { item_detail: itemDetail });
 }
 
-export const updateItem = async (cookieId: string, itemId: string, data: any): Promise<any> => {
-    return put(`/items/${cookieId}/${itemId}`, data);
+export const updateItemMultiSpec = async (cookieId: string, itemId: string, enabled: boolean): Promise<any> => {
+    return put(`/items/${cookieId}/${itemId}/multi-spec`, { is_multi_spec: enabled });
+}
+
+export const updateItemMultiQuantity = async (cookieId: string, itemId: string, enabled: boolean): Promise<any> => {
+    return put(`/items/${cookieId}/${itemId}/multi-quantity-delivery`, { multi_quantity_delivery: enabled });
 }
 
 // Rules - 发货规则 (使用正确的后端API)
@@ -444,11 +476,11 @@ export const deleteAccountNotifications = async (cookieId: string): Promise<ApiR
 
 // Default Reply
 export const getDefaultReplies = async (): Promise<Record<string, DefaultReply>> => {
-  return get('/api/default-replies');
+  return get('/default-replies');
 };
 
 export const getDefaultReply = async (cookieId: string): Promise<DefaultReply> => {
-  const result = await get<any>(`/api/default-reply/${cookieId}`);
+  const result = await get<any>(`/default-replies/${cookieId}`);
   return {
     cookie_id: cookieId,
     enabled: result.enabled || false,
@@ -459,7 +491,7 @@ export const getDefaultReply = async (cookieId: string): Promise<DefaultReply> =
 };
 
 export const updateDefaultReply = async (cookieId: string, data: Partial<DefaultReply>): Promise<ApiResponse> => {
-  return put(`/api/default-reply/${cookieId}`, {
+  return put(`/default-replies/${cookieId}`, {
     enabled: data.enabled ?? false,
     reply_content: data.reply_content || '',
     reply_once: data.reply_once ?? false,
@@ -468,9 +500,9 @@ export const updateDefaultReply = async (cookieId: string, data: Partial<Default
 };
 
 export const deleteDefaultReply = async (cookieId: string): Promise<ApiResponse> => {
-  return del(`/api/default-reply/${cookieId}`);
+  return del(`/default-replies/${cookieId}`);
 };
 
 export const clearDefaultReplyRecords = async (cookieId: string): Promise<ApiResponse> => {
-  return post(`/api/default-reply/${cookieId}/clear-records`, {});
+  return post(`/default-replies/${cookieId}/clear-records`, {});
 };

@@ -287,35 +287,14 @@ class OrderFetcherOptimized:
         result = {}
 
         try:
-            # 定义状态码映射（与 reply_server.py 保持一致）
-            STATUS_CODE_MAP = {
-                '1': 'processing',
-                '2': 'pending_ship',
-                '3': 'shipped',
-                '4': 'completed',
-                '7': 'refunding',
-                '8': 'cancelled',
-                '9': 'refunding',
-                '10': 'cancelled',
-                '11': 'completed',  # 交易完成
-                '12': 'cancelled',  # 交易关闭
-            }
-
             # 提取订单状态
             status_code = order_data.get('status', 'unknown')
-            # 如果是字符串状态，直接使用；如果是数字，映射到字符串
-            if isinstance(status_code, str):
-                if status_code in ['processing', 'pending_ship', 'shipped', 'completed', 'cancelled', 'refunding', 'unknown']:
-                    result['order_status'] = status_code
-                elif status_code.isdigit():
-                    result['order_status'] = STATUS_CODE_MAP.get(status_code, 'unknown')
-                else:
-                    result['order_status'] = status_code
-            else:
-                # 是数字，需要映射
-                result['order_status'] = STATUS_CODE_MAP.get(str(status_code), 'unknown')
-
             result['status_text'] = order_data.get('utArgs', {}).get('orderStatusName', '')
+            from utils.order_status_rules import normalize_order_status
+            result['order_status'] = normalize_order_status(
+                status_code,
+                result['status_text']
+            )
 
             # 提取商品信息
             components = order_data.get('components', [])
@@ -529,8 +508,15 @@ class OrderFetcherOptimized:
                     // 交易关闭 - 最长最具体的优先
                     {text: '买家取消了订单', status: 'cancelled', priority: 100},
                     {text: '卖家取消了订单', status: 'cancelled', priority: 100},
+                    {text: '退款成功', status: 'cancelled', priority: 100},
                     {text: '交易关闭', status: 'cancelled', priority: 90},
                     {text: '订单已关闭', status: 'cancelled', priority: 90},
+                    // 退款状态必须高于历史交易/发货文案
+                    {text: '等待卖家处理退款', status: 'refunding', priority: 89},
+                    {text: '退款申请中', status: 'refunding', priority: 89},
+                    {text: '退货退款中', status: 'refunding', priority: 89},
+                    {text: '退款中', status: 'refunding', priority: 88},
+                    {text: '申请退款', status: 'refunding', priority: 87},
                     // 已发货
                     {text: '卖家已发货，待买家确认收货', status: 'shipped', priority: 85},
                     {text: '已发货，待买家确认收货', status: 'shipped', priority: 80},
@@ -546,9 +532,6 @@ class OrderFetcherOptimized:
                     {text: '交易成功', status: 'completed', priority: 40},
                     {text: '订单完成', status: 'completed', priority: 35},
                     {text: '交易完成', status: 'completed', priority: 30},
-                    // 退款
-                    {text: '退款中', status: 'refunding', priority: 25},
-                    {text: '申请退款', status: 'refunding', priority: 20},
                     // 处理中
                     {text: '处理中', status: 'processing', priority: 10},
                 ];

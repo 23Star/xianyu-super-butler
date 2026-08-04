@@ -83,8 +83,12 @@ class OrderStatusHandler:
         try:
             order_id = None
             
-            # 先查看消息的完整结构
-            logger.info(f"🔍 完整消息结构: {message}")
+            # 原始消息可能包含用户隐私或会话字段，只记录顶层结构。
+            logger.debug(
+                "订单消息结构: type={}, keys={}",
+                type(message).__name__,
+                list(message.keys()) if isinstance(message, dict) else []
+            )
             
             # 检查message['1']的结构，处理可能是列表、字典或字符串的情况
             message_1 = message.get('1', {})
@@ -507,9 +511,13 @@ class OrderStatusHandler:
             if order_id not in self._order_status_history or not self._order_status_history[order_id]:
                 return None
             
-            # 获取最后一次状态变化的目标状态
+            # 退款撤销应恢复到进入退款状态之前的状态，而不是继续停留在退款中。
+            for entry in reversed(self._order_status_history[order_id]):
+                if entry.get('to_status') == 'refunding':
+                    return entry.get('from_status')
+
             last_entry = self._order_status_history[order_id][-1]
-            return last_entry['to_status']
+            return last_entry.get('from_status')
     
     def _add_to_pending_updates(self, order_id: str, new_status: str, cookie_id: str, context: str):
         """添加到待处理更新队列
@@ -721,18 +729,13 @@ class OrderStatusHandler:
             order_id = self.extract_order_id(message)
             if not order_id:
                 # 如果无法提取订单ID，根据配置决定是否添加到待处理队列
-                if self.config.get('use_pending_queue', True):
-                    logger.info(f'[{msg_time}] 【{cookie_id}】{send_message}，暂时无法提取订单ID，添加到待处理队列')
-                else:
+                if not self.config.get('use_pending_queue', True):
                     logger.error(f'[{msg_time}] 【{cookie_id}】{send_message}，无法提取订单ID且未启用待处理队列，跳过处理')
-                return False
+                    return False
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-                
-                # 获取对应的状态
-                new_status = message_status_mapping[send_message]
-                
+
                 # 添加到待处理队列，使用特殊标记
                 self._add_to_pending_updates(
                     order_id=temp_order_id,
@@ -755,7 +758,8 @@ class OrderStatusHandler:
                     'message_hash': hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message)),  # 添加消息哈希用于匹配
                     'timestamp': time.time()  # 添加时间戳用于清理
                 })
-                
+
+                logger.info(f'[{msg_time}] 【{cookie_id}】{send_message}，暂时无法提取订单ID，已添加到待处理队列')
                 return True
             
             # 获取对应的状态（new_status已经在上面通过_check_refund_message或message_status_mapping确定了）
@@ -828,11 +832,9 @@ class OrderStatusHandler:
             order_id = self.extract_order_id(message)
             if not order_id:
                 # 如果无法提取订单ID，根据配置决定是否添加到待处理队列
-                if self.config.get('use_pending_queue', True):
-                    logger.info(f'[{msg_time}] 【{cookie_id}】交易关闭，暂时无法提取订单ID，添加到待处理队列')
-                else:
+                if not self.config.get('use_pending_queue', True):
                     logger.error(f'[{msg_time}] 【{cookie_id}】交易关闭，无法提取订单ID且未启用待处理队列，跳过处理')
-                return False
+                    return False
                 
                 # 创建一个临时的订单ID占位符，用于标识这个待处理的状态更新
                 temp_order_id = f"temp_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
@@ -860,7 +862,8 @@ class OrderStatusHandler:
                     'message_hash': hash(str(sorted(message.items()))) if isinstance(message, dict) else hash(str(message)),  # 添加消息哈希用于匹配
                     'timestamp': time.time()  # 添加时间戳用于清理
                 })
-                
+
+                logger.info(f'[{msg_time}] 【{cookie_id}】交易关闭，暂时无法提取订单ID，已添加到待处理队列')
                 return True
             
             # 更新订单状态为已关闭

@@ -42,6 +42,11 @@ export interface AccountDetail {
   // Frontend helpers
   nickname?: string;
   avatar_url?: string;
+  location?: string;
+  bio?: string;
+  followers?: number;
+  following?: number;
+  profile_updated_at?: string;
   // AI设置
   ai_enabled?: boolean;
   max_discount_percent?: number;
@@ -71,6 +76,7 @@ export interface Order {
   quantity: number;
   amount: string;
   status: OrderStatus;
+  order_status?: OrderStatus;
   receiver_name?: string;
   receiver_phone?: string;
   receiver_address?: string;
@@ -115,11 +121,15 @@ export interface Item {
   cookie_id: string;
   item_id: string;
   item_title?: string;
+  item_description?: string;
+  item_detail?: string;
   item_price?: string;
   item_image?: string; // Inferred from common usage, though not explicitly in list model sometimes
   item_category?: string;
   is_multi_spec?: number | boolean;
+  multi_quantity_delivery?: number | boolean;
   created_at?: string;
+  updated_at?: string;
 }
 
 // Rules

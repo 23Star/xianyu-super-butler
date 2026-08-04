@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AdminStats, OrderAnalytics, Order, OrderStatus, Item } from '../types';
 import { getAdminStats, getOrderAnalytics, getValidOrders, getItems } from '../services/api';
-import { TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, ArrowUpRight, Calendar, X, BarChart3, PackageCheck, ExternalLink, Eye, Edit } from 'lucide-react';
+import { TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, ArrowUpRight, Calendar, X, BarChart3, PackageCheck, ExternalLink, Eye, Edit, RefreshCw } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, Legend } from 'recharts';
 
 // 状态徽章组件
@@ -58,6 +58,9 @@ const Dashboard: React.FC = () => {
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [previousAnalytics, setPreviousAnalytics] = useState<OrderAnalytics | null>(null); // 用于计算趋势
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   // 搜索词
   const [searchTerm, setSearchTerm] = useState('');
@@ -71,7 +74,7 @@ const Dashboard: React.FC = () => {
   // 颜色配置
   const COLORS = ['#FFE815', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
 
-  const loadAnalytics = (range: TimeRange) => {
+  const loadAnalytics = async (range: TimeRange) => {
     // 使用本地时间而不是UTC时间
     const now = new Date();
     const year = now.getFullYear();
@@ -173,11 +176,19 @@ const Dashboard: React.FC = () => {
 
     // 同时获取上一个周期的数据用于趋势对比
     const previousParams = getPreviousPeriodParams(range, now);
-    if (previousParams) {
-      getOrderAnalytics(previousParams).then(setPreviousAnalytics).catch(console.error);
-    }
+    const previousRequest = previousParams
+      ? getOrderAnalytics(previousParams).catch(error => {
+          console.error('加载上期订单分析失败:', error);
+          return null;
+        })
+      : Promise.resolve(null);
 
-    getOrderAnalytics(params).then(setAnalytics).catch(console.error);
+    const [currentAnalytics, previousPeriodAnalytics] = await Promise.all([
+      getOrderAnalytics(params),
+      previousRequest,
+    ]);
+    setAnalytics(currentAnalytics);
+    setPreviousAnalytics(previousPeriodAnalytics);
   };
 
   // 获取上一个时间段的参数
@@ -251,19 +262,43 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    getAdminStats().then(setStats).catch(console.error);
-    loadAnalytics(timeRange);
-    // 获取商品列表
-    getItems().then(items => {
-      setItems(items);
-      // 建立 item_id 到 item_title 的映射
-      const nameMap: Record<string, string> = {};
-      items.forEach(item => {
-        nameMap[item.item_id] = item.item_title || item.item_id;
-      });
-      setItemNames(nameMap);
-    }).catch(console.error);
-  }, [timeRange]);
+    let cancelled = false;
+
+    const loadDashboard = async () => {
+      setDashboardLoading(true);
+      setDashboardError(null);
+
+      try {
+        const [statsData, itemData] = await Promise.all([
+          getAdminStats(),
+          getItems(),
+          loadAnalytics(timeRange),
+        ]);
+
+        if (cancelled) return;
+
+        setStats(statsData);
+        setItems(itemData);
+
+        const nameMap: Record<string, string> = {};
+        itemData.forEach(item => {
+          nameMap[item.item_id] = item.item_title || item.item_id;
+        });
+        setItemNames(nameMap);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('加载仪表盘失败:', error);
+        setDashboardError(error instanceof Error ? error.message : '仪表盘数据加载失败');
+      } finally {
+        if (!cancelled) setDashboardLoading(false);
+      }
+    };
+
+    void loadDashboard();
+    return () => {
+      cancelled = true;
+    };
+  }, [timeRange, reloadToken]);
 
   // 加载订单列表
   useEffect(() => {
@@ -299,7 +334,33 @@ const Dashboard: React.FC = () => {
     return { startDate, endDate };
   };
 
-  if (!stats || !analytics) return <div className="p-8 flex justify-center text-gray-400"><Activity className="w-8 h-8 animate-spin text-[#FFE815]" /></div>;
+  if (dashboardLoading) {
+    return <div className="p-8 flex justify-center text-gray-400"><Activity className="w-8 h-8 animate-spin text-[#FFE815]" /></div>;
+  }
+
+  if (dashboardError || !stats || !analytics) {
+    return (
+      <div className="p-8">
+        <div className="max-w-xl mx-auto border border-red-200 bg-red-50 p-6 rounded-lg">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <h2 className="font-bold text-gray-900">仪表盘加载失败</h2>
+              <p className="text-sm text-gray-600 mt-1">{dashboardError || '服务器未返回完整数据'}</p>
+              <button
+                type="button"
+                onClick={() => setReloadToken(value => value + 1)}
+                className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-semibold hover:bg-black"
+              >
+                <RefreshCw className="w-4 h-4" />
+                重试
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const chartData = analytics.daily_stats?.map(d => ({
       name: d.date.slice(5), // MM-DD
@@ -415,7 +476,7 @@ const Dashboard: React.FC = () => {
               className="px-3 py-2 rounded-xl text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#FFE815]"
             />
             <button
-              onClick={() => loadAnalytics('custom')}
+              onClick={() => setReloadToken(value => value + 1)}
               className="px-4 py-2 rounded-xl text-sm font-bold bg-black text-white hover:bg-gray-800 transition-colors"
             >
               应用

@@ -7,7 +7,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-23Star%2Fxianyu--super--butler-blue?logo=github)](https://github.com/23Star/xianyu-super-butler)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![React](https://img.shields.io/badge/React-18-blue.svg)](https://reactjs.org/)
+[![React](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
 
 基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发 · 全新 UI · 持续更新
 
@@ -113,26 +113,45 @@ python Start.py
 - `Start.py` 启动后端服务（端口 8080），同时提供前端静态文件
 - 前端已构建，无需单独运行前端开发服务器
 
-### 前端开发模式
+### 前端开发
 
-如需修改前端代码（支持热更新）：
+前端修改后运行 `cd frontend && npm run build`，再通过根目录的
+`python Start.py` 提供完整应用。项目不使用独立前端开发服务器，
+统一访问 `http://localhost:8080/`。
 
-```bash
-# 终端1：启动后端
-python Start.py
+### 当前运行基线
 
-# 终端2：启动前端开发服务器
+- 唯一应用入口：`http://localhost:8080/`
+- API 文档：`http://localhost:8080/docs`
+- 前端生产构建由 FastAPI 在 8080 端口提供，`npm run dev` 和
+  `npm run preview` 已禁用，不应启动 3000 端口。
+- 扫码登录在取得并校验核心 Cookie 后立即更新账号状态；耗时的浏览器
+  Cookie 增强在后台继续执行，前端每 800ms 检查一次结果。
+- 商品同步会同时核对闲鱼页面声明数量、接口解析数量和数据库保存数量。
+  2026-08-03 实测账号 `2217097925130` 的在售商品同步结果为 1/1。
+- 订单状态码由 `utils/order_status_rules.py` 统一解释，单条刷新、订单
+  补全和批量刷新共用同一套稳定状态判断。
+
+### 验证命令
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m compileall -q reply_server.py db_manager.py XianyuAutoAsync.py utils tests
 cd frontend
-npm run dev
-
-# 访问 http://localhost:3000
+npx tsc --noEmit
+npm run build
+npm audit
 ```
+
+当前回归覆盖管理员认证、账号状态、Cookie 检查、商品同步、订单查询、
+统计接口，以及 1440x900 和 390x844 两种视口。回归不会自动执行发货、
+发送卡密、删除商品等有副作用操作。
 
 ### 首次使用
 
-1. **注册账号** - 访问 http://localhost:8080/register 创建管理员账号
-2. **添加闲鱼账号** - 支持扫码登录、密码登录、手动输入Cookie
-3. **配置关键词** - 为每个账号配置自动回复关键词和AI智能议价
+1. **登录后台** - 使用默认管理员账号登录并立即修改默认密码
+2. **添加闲鱼账号** - 支持扫码登录、密码登录、手动输入 Cookie
+3. **配置关键词** - 为每个账号配置自动回复关键词和 AI 智能议价
 4. **开始使用** - 系统会自动监听闲鱼消息并自动回复、自动发货
 
 ---
@@ -141,9 +160,22 @@ npm run dev
 
 **后端：** FastAPI · Python 3.11+ · SQLite · Playwright · WebSocket · Asyncio
 
-**前端：** React 18 · TypeScript · Vite · Tailwind CSS · Framer Motion · Zustand
+**前端：** React 19 · TypeScript · Vite · Tailwind CSS
 
 **性能优化：** 浏览器实例池 · 并发处理 · 智能缓存
+
+---
+
+## 安全与升级说明
+
+- 当前默认管理员凭证仍为 `admin / admin123`，密码哈希仍使用无盐
+  SHA-256，仅适合受控本地环境。生产部署应优先实现首次登录强制改密，
+  并迁移到 Argon2id 或 bcrypt。
+- 日志只允许记录阶段、字段数量、值长度、耗时和异常类型，不得记录
+  Cookie、Token、Sign 或 Authorization 明文。
+- Vite、Tailwind CSS、TypeScript、Lucide 和 Node 类型定义存在跨大版本
+  更新。应按“构建工具 -> CSS -> 类型系统 -> 图标库”分阶段升级，每阶段
+  单独执行类型检查、生产构建和浏览器回归，避免一次性升级破坏旧页面。
 
 ---
 
@@ -172,15 +204,15 @@ npm run dev
 - **Bug 修复**：
   - 修复 `aiohttp` Timeout 错误 - 不再复用运行实例的 session，改为创建独立的 `aiohttp.ClientSession`，避免跨异步上下文问题
   - 修复找不到买家 `chat_id` - orders 表新增 `chat_id` 字段，自动发货时自动存储；手动发货优先从订单取，找不到再查 `ai_conversations` 表
-  - `frontend/` 重命名为 `frontend_backup/` - 当前使用的前端目录为 `xy/`
+  - 历史版本曾切换前端目录；当前生产前端统一使用 `frontend/`
   - `vite build` 不再删除 `xianyu_js_version_2.js` - 改为 `emptyOutDir: false`，构建时保留 static 目录中的非构建文件
 - **改动文件**：
   - `reply_server.py` - 重写 `/api/orders/manual-ship` 端点
   - `db_manager.py` - 新增 `chat_id` 字段、`find_chat_id_by_buyer` 方法
   - `XianyuAutoAsync.py` - 发货/标记订单时存储 chat_id
-  - `xy/components/OrderList.tsx` - 新增发货方式选择对话框
-  - `xy/services/api.ts` - 更新 API 类型
-  - `xy/vite.config.ts` - `emptyOutDir: false`
+  - `frontend/components/OrderList.tsx` - 新增发货方式选择对话框
+  - `frontend/services/api.ts` - 更新 API 类型
+  - `frontend/vite.config.ts` - `emptyOutDir: false`
 
 ### 🐛 修复前端加载路径问题 (2026-01-19)
 - 修复 Vite 构建资源路径错误导致的白屏问题

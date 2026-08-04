@@ -60,6 +60,7 @@ class QRLoginSession:
         self.expire_time = 300  # 5分钟过期
         self.params = {}  # 存储登录参数
         self.verification_url = None  # 风控验证URL
+        self.last_remote_status = None
 
     def is_expired(self) -> bool:
         """检查是否过期"""
@@ -329,6 +330,13 @@ class QRLoginManager:
                         .get("data", {})
                         .get("qrCodeStatus")
                     )
+                    if qrcode_status != session.last_remote_status:
+                        logger.info(
+                            f"二维码远端状态变化: {session_id}, "
+                            f"{session.last_remote_status or 'INIT'} -> {qrcode_status or 'EMPTY'}, "
+                            f"响应Cookie字段: {sorted(resp.cookies.keys())}"
+                        )
+                        session.last_remote_status = qrcode_status
 
                     if qrcode_status == "CONFIRMED":
                         # 登录确认
@@ -360,7 +368,15 @@ class QRLoginManager:
                                 if k == 'unb':
                                     session.unb = v
 
-                            logger.info(f"扫码登录成功: {session_id}, UNB: {session.unb}")
+                            cookie_names = sorted(session.cookies.keys())
+                            logger.info(
+                                f"扫码确认成功: {session_id}, UNB: {session.unb or '缺失'}, "
+                                f"Cookie字段数: {len(cookie_names)}, 字段: {cookie_names}"
+                            )
+                            if not session.unb:
+                                logger.error(
+                                    f"扫码确认响应未包含unb，无法创建账号: {session_id}"
+                                )
                             break
 
                     elif qrcode_status == "NEW":
@@ -413,7 +429,10 @@ class QRLoginManager:
             'status': session.status,
             'session_id': session_id
         }
-        logger.info(f"获取会话状态: {result}")
+        logger.debug(
+            f"获取扫码会话状态: session={session_id}, status={session.status}, "
+            f"cookie_count={len(session.cookies)}, has_unb={bool(session.unb)}"
+        )
         # 如果需要验证，返回验证URL
         if session.status == 'verification_required' and session.verification_url:
             result['verification_url'] = session.verification_url

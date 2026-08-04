@@ -17,14 +17,14 @@ FROM node:20-alpine AS frontend-builder
 WORKDIR /frontend
 
 # 复制前端依赖文件
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+COPY frontend/package.json frontend/package-lock.json ./
 
-# 安装 pnpm 并安装依赖
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+# 按锁文件安装依赖
+RUN npm ci
 
 # 复制前端源码并构建
 COPY frontend/ ./
-RUN pnpm build
+RUN VITE_OUT_DIR=dist npm run build
 
 # ==================== Python Builder Stage ====================
 FROM base AS builder

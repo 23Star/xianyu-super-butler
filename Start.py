@@ -300,6 +300,19 @@ def _check_and_install_playwright():
                             return True
         except Exception as e:
             print(f"{_WARN} 提取浏览器文件时出错: {e}")
+
+    # 运行时支持通过 executable_path 回退到系统浏览器，无需阻塞启动下载 Chromium。
+    if not playwright_installed and sys.platform == 'win32':
+        system_browser_candidates = [
+            Path(os.environ.get('PROGRAMFILES', r'C:\Program Files')) / 'Google/Chrome/Application/chrome.exe',
+            Path(os.environ.get('PROGRAMFILES(X86)', r'C:\Program Files (x86)')) / 'Google/Chrome/Application/chrome.exe',
+            Path(os.environ.get('PROGRAMFILES', r'C:\Program Files')) / 'Microsoft/Edge/Application/msedge.exe',
+            Path(os.environ.get('PROGRAMFILES(X86)', r'C:\Program Files (x86)')) / 'Microsoft/Edge/Application/msedge.exe',
+        ]
+        for browser_path in system_browser_candidates:
+            if browser_path.is_file():
+                print(f"{_OK} Playwright Chromium未安装，将使用系统浏览器: {browser_path}")
+                return True
     
     # 如果没找到，尝试安装
     if not playwright_installed:
@@ -422,38 +435,38 @@ except Exception as e:
 # ==================== 自动构建前端 ====================
 def _build_frontend():
     """自动安装依赖并构建前端"""
-    xy_dir = Path("xy")
     frontend_dir = Path("frontend")
     static_dir = Path("static")
 
-    # 优先使用 xy 目录，如果不存在则使用 frontend
-    if xy_dir.exists():
-        build_dir = xy_dir
-        print(f"{_INFO} 使用 xy 目录作为前端源")
-    elif frontend_dir.exists():
-        build_dir = frontend_dir
-        print(f"{_INFO} 使用 frontend 目录作为前端源")
-    else:
-        print(f"{_WARN} xy 和 frontend 目录都不存在，跳过前端构建")
+    if not frontend_dir.exists():
+        print(f"{_WARN} frontend 目录不存在，跳过前端构建")
         return False
 
+    build_dir = frontend_dir
+    print(f"{_INFO} 使用 frontend 目录作为前端源")
     print("检查前端构建状态...")
 
-    # 检查是否需要重新构建
     need_build = False
+    index_html = static_dir / "index.html"
 
-    # 如果 static 目录不存在，需要构建
-    if not static_dir.exists():
+    if not index_html.exists():
         need_build = True
-        print(f"{_INFO} static 目录不存在，需要构建前端")
+        print(f"{_INFO} static/index.html 不存在，需要构建前端")
     else:
-        # 检查 index.html 是否存在
-        index_html = static_dir / "index.html"
-        if not index_html.exists():
+        ignored_dirs = {"node_modules", "dist", ".vite"}
+        source_files = [
+            path for path in frontend_dir.rglob("*")
+            if path.is_file() and not ignored_dirs.intersection(path.parts)
+        ]
+        latest_source_mtime = max(
+            (path.stat().st_mtime for path in source_files),
+            default=0
+        )
+        if latest_source_mtime > index_html.stat().st_mtime:
             need_build = True
-            print(f"{_INFO} static/index.html 不存在，需要构建前端")
+            print(f"{_INFO} 前端源码比构建产物新，需要重新构建")
         else:
-            print(f"{_OK} 前端已构建，跳过")
+            print(f"{_OK} 前端构建产物是最新的，跳过")
 
     # 如果不需要构建，直接返回
     if not need_build:
@@ -472,10 +485,12 @@ def _build_frontend():
         if sys.platform == 'win32' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
             creation_flags = subprocess.CREATE_NO_WINDOW
 
-        # 1. npm install
+        install_command = ['npm', 'ci'] if (build_dir / 'package-lock.json').exists() else ['npm', 'install']
+        install_label = ' '.join(install_command)
+
         try:
             result = subprocess.run(
-                ['npm', 'install'],
+                install_command,
                 cwd=str(build_dir),
                 capture_output=True,
                 text=True,
@@ -486,21 +501,21 @@ def _build_frontend():
             if result.returncode == 0:
                 print(f"{_OK} npm 依赖安装成功")
             else:
-                print(f"{_WARN} npm install 失败")
+                print(f"{_WARN} {install_label} 失败")
                 if result.stdout:
                     print(f"   输出: {result.stdout[-500:]}")
                 if result.stderr:
                     print(f"   错误: {result.stderr[-500:]}")
                 return False
         except subprocess.TimeoutExpired:
-            print(f"{_WARN} npm install 超时（超过5分钟）")
+            print(f"{_WARN} {install_label} 超时（超过5分钟）")
             return False
         except FileNotFoundError:
             print(f"{_WARN} 未找到 npm，请确保已安装 Node.js 和 npm")
             print(f"   你可以手动运行: cd {build_dir} && npm install && npm run build")
             return False
         except Exception as e:
-            print(f"{_WARN} npm install 失败: {e}")
+            print(f"{_WARN} {install_label} 失败: {e}")
             return False
 
         # 2. npm run build
@@ -570,6 +585,7 @@ from file_log_collector import setup_file_logging
 
 def _start_api_server():
     """后台线程启动 FastAPI 服务"""
+    loop = None
     api_conf = AUTO_REPLY.get('api', {})
 
     # 优先使用环境变量配置
@@ -601,13 +617,12 @@ def _start_api_server():
         loop.run_until_complete(server.serve())
     except Exception as e:
         logger.error(f"uvicorn服务器启动失败: {e}")
-        try:
-            # 确保线程内事件循环被正确关闭
-            loop = asyncio.get_event_loop()
+    finally:
+        if loop is not None:
             if loop.is_running():
                 loop.stop()
-        except Exception:
-            pass
+            loop.close()
+        asyncio.set_event_loop(None)
 
 
 
@@ -706,16 +721,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    # 避免使用被monkey patch的asyncio.run()
-    # 使用原生的事件循环管理方式
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 如果事件循环已经在运行，创建任务
-            asyncio.create_task(main())
-        else:
-            # 正常启动事件循环
-            loop.run_until_complete(main())
-    except RuntimeError:
-        # 如果没有事件循环，创建一个新的
-        asyncio.run(main()) 
+    asyncio.run(main())

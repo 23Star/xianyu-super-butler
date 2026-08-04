@@ -23,6 +23,7 @@ import sys
 import aiohttp
 from collections import defaultdict
 from db_manager import db_manager
+from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
@@ -125,7 +126,7 @@ def log_captcha_event(cookie_id: str, event_type: str, success: bool = None, det
 
         log_entry = f"[{timestamp}] 【{cookie_id}】{event_type} - {status}"
         if details:
-            log_entry += f" - {details}"
+            log_entry += f" - {redact_sensitive_text(details)}"
         log_entry += "\n"
 
         with open(log_file, 'a', encoding='utf-8') as f:
@@ -139,6 +140,7 @@ log_dir = 'logs'
 os.makedirs(log_dir, exist_ok=True)
 log_path = os.path.join(log_dir, f"xianyu_{time.strftime('%Y-%m-%d')}.log")
 logger.remove()
+logger.configure(patcher=redact_log_record)
 logger.add(
     log_path,
     rotation=LOG_CONFIG.get('rotation', '1 day'),
@@ -694,6 +696,7 @@ class XianyuLive:
 
         # 自动发货已发送订单记录
         self.delivery_sent_orders = set()  # 记录已发货的订单ID，防止重复发货
+        self.delivery_blocked_orders = set()  # 部分发货或内容已消耗的订单，阻止自动重试造成重复发送
 
         self.session = None  # 用于API调用的aiohttp session
 
@@ -832,6 +835,14 @@ class XianyuLive:
             # 如果没有订单ID，则不进行冷却检查，允许发货
             return True
 
+        if order_id in self.delivery_sent_orders:
+            logger.info(f"【{self.cookie_id}】订单 {order_id} 已完成自动发货，跳过重复发货")
+            return False
+
+        if order_id in self.delivery_blocked_orders:
+            logger.warning(f"【{self.cookie_id}】订单 {order_id} 存在部分发货或内容消耗异常，需要人工处理，跳过自动重试")
+            return False
+
         current_time = time.time()
         last_delivery = self.last_delivery_time.get(order_id, 0)
 
@@ -841,11 +852,16 @@ class XianyuLive:
 
         return True
 
-    def mark_delivery_sent(self, order_id: str):
+    def mark_delivery_sent(self, order_id: str, update_order_status: bool = True):
         """标记订单已发货"""
         self.delivery_sent_orders.add(order_id)
+        self.last_delivery_time[order_id] = time.time()
         logger.info(f"【{self.cookie_id}】订单 {order_id} 已标记为发货")
-        
+
+        if not update_order_status:
+            logger.warning(f"【{self.cookie_id}】订单 {order_id} 的卡券已发送，但闲鱼发货状态未确认")
+            return
+
         # 更新订单状态为已发货
         logger.info(f"【{self.cookie_id}】检查自动发货订单状态处理器: handler_exists={self.order_status_handler is not None}")
         if self.order_status_handler:
@@ -973,29 +989,22 @@ class XianyuLive:
 
     def _is_auto_delivery_trigger(self, message: str) -> bool:
         """检查消息是否为自动发货触发关键字"""
-        # 定义所有自动发货触发关键字
-        auto_delivery_keywords = [
-            # 系统消息
+        auto_delivery_messages = {
             '[我已付款，等待你发货]',
             '[已付款，待发货]',
-            '我已付款，等待你发货',
             '[记得及时发货]',
-        ]
-
-        # 检查消息是否包含任何触发关键字
-        for keyword in auto_delivery_keywords:
-            if keyword in message:
-                return True
-
-        return False
+        }
+        return isinstance(message, str) and message.strip() in auto_delivery_messages
 
     def _extract_order_id(self, message: dict) -> str:
         """从消息中提取订单ID"""
         try:
             order_id = None
 
-            # 先查看消息的完整结构
-            logger.warning(f"【{self.cookie_id}】🔍 完整消息结构: {message}")
+            logger.debug(
+                f"【{self.cookie_id}】消息结构: type={type(message).__name__}, "
+                f"keys={list(message.keys()) if isinstance(message, dict) else []}"
+            )
 
             # 检查message['1']的结构，处理可能是列表、字典或字符串的情况
             message_1 = message.get('1', {})
@@ -1125,8 +1134,39 @@ class XianyuLive:
                 logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，跳过自动发货')
                 return
 
-            # 订单ID已提取，将在自动发货时进行确认发货处理
-            logger.info(f'[{msg_time}] 【{self.cookie_id}】提取到订单ID: {order_id}，将在自动发货时处理确认发货')
+            # 发货前必须确认订单归属和已付款状态，避免伪造文本或旧消息误触发。
+            from db_manager import db_manager
+            current_order = db_manager.get_order_by_id(order_id)
+            if current_order:
+                if str(current_order.get('cookie_id') or '') != str(self.cookie_id):
+                    logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 不属于当前账号，拒绝自动发货')
+                    return
+                if current_order.get('item_id') and str(current_order.get('item_id')) != str(item_id):
+                    logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 商品归属不一致，拒绝自动发货')
+                    return
+                if current_order.get('buyer_id') and str(current_order.get('buyer_id')) != str(send_user_id):
+                    logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 买家归属不一致，拒绝自动发货')
+                    return
+
+            order_status = (current_order or {}).get('order_status')
+            order_detail = None
+            if order_status != 'pending_ship':
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 本地状态为 {order_status or "未记录"}，拉取详情确认付款状态')
+                order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                if order_detail:
+                    order_status = order_detail.get('order_status')
+                if not order_status or order_status == 'unknown':
+                    refreshed_order = db_manager.get_order_by_id(order_id)
+                    order_status = (refreshed_order or {}).get('order_status')
+
+            if order_status != 'pending_ship':
+                logger.warning(
+                    f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 未确认处于待发货状态'
+                    f'（当前: {order_status or "unknown"}），跳过自动发货'
+                )
+                return
+
+            logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 已确认付款并等待发货')
 
             # 使用订单ID作为锁的键
             lock_key = order_id
@@ -1172,7 +1212,6 @@ class XianyuLive:
                     logger.info(f"【{self.cookie_id}】准备自动发货: item_id={item_id}, item_title={item_title}")
 
                     # 检查是否需要多数量发货
-                    from db_manager import db_manager
                     quantity_to_send = 1  # 默认发送1个
 
                     # 检查商品是否开启了多数量发货
@@ -1181,8 +1220,9 @@ class XianyuLive:
                     if multi_quantity_delivery and order_id:
                         logger.info(f"商品 {item_id} 开启了多数量发货，获取订单详情...")
                         try:
-                            # 使用现有方法获取订单详情
-                            order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                            # 付款校验阶段可能已经拉取过详情，优先复用。
+                            if order_detail is None:
+                                order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
                             if order_detail and order_detail.get('quantity'):
                                 try:
                                     order_quantity = int(order_detail['quantity'])
@@ -1204,7 +1244,6 @@ class XianyuLive:
 
                     # 多次调用自动发货方法，每次获取不同的内容
                     delivery_contents = []
-                    success_count = 0
 
                     for i in range(quantity_to_send):
                         try:
@@ -1212,7 +1251,6 @@ class XianyuLive:
                             delivery_content = await self._auto_delivery(item_id, item_title, order_id, send_user_id)
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
-                                success_count += 1
                                 if quantity_to_send > 1:
                                     logger.info(f"第 {i+1}/{quantity_to_send} 个卡券内容获取成功")
                             else:
@@ -1221,22 +1259,6 @@ class XianyuLive:
                             logger.error(f"第 {i+1}/{quantity_to_send} 个卡券获取异常: {self._safe_str(e)}")
 
                     if delivery_contents:
-                        # 标记已发货（防重复）- 基于订单ID
-                        self.mark_delivery_sent(order_id)
-
-                        # 更新订单数据库，标记系统已发货
-                        if order_id:
-                            try:
-                                from db_manager import db_manager
-                                db_manager.insert_or_update_order(
-                                    order_id=order_id,
-                                    system_shipped=True,
-                                    chat_id=chat_id
-                                )
-                                logger.info(f'【{self.cookie_id}】✅ 订单 {order_id} 已标记为系统已发货 (system_shipped=1)')
-                            except Exception as db_e:
-                                logger.error(f'【{self.cookie_id}】❌ 更新订单system_shipped状态失败: {self._safe_str(db_e)}')
-
                         # 标记锁为持有状态，并启动延迟释放任务
                         self._lock_hold_info[lock_key] = {
                             'locked': True,
@@ -1250,6 +1272,8 @@ class XianyuLive:
                         self._lock_hold_info[lock_key]['task'] = delay_task
 
                         # 发送所有获取到的发货内容
+                        sent_count = 0
+                        send_errors = []
                         for i, delivery_content in enumerate(delivery_contents):
                             try:
                                 # 检查是否是图片发送标记
@@ -1291,14 +1315,73 @@ class XianyuLive:
                                     if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
                                         await asyncio.sleep(1)
 
+                                sent_count += 1
                             except Exception as e:
-                                logger.error(f"发送第 {i+1} 条消息失败: {self._safe_str(e)}")
+                                error_message = self._safe_str(e)
+                                send_errors.append(f"第{i + 1}条: {error_message}")
+                                logger.error(f"发送第 {i+1} 条消息失败: {error_message}")
 
-                        # 发送成功通知
-                        if len(delivery_contents) > 1:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {len(delivery_contents)} 个卡券", chat_id)
+                        acquired_all = len(delivery_contents) == quantity_to_send
+                        sent_all = sent_count == len(delivery_contents)
+
+                        if acquired_all and sent_all:
+                            confirm_required = self.is_auto_confirm_enabled()
+                            platform_confirmed = False
+                            confirm_error = None
+
+                            if confirm_required:
+                                try:
+                                    confirm_result = await self.auto_confirm(order_id, item_id)
+                                    platform_confirmed = bool(confirm_result and confirm_result.get('success'))
+                                    if platform_confirmed:
+                                        self.confirmed_orders[order_id] = time.time()
+                                    else:
+                                        confirm_error = (confirm_result or {}).get('error', '未知错误')
+                                except Exception as confirm_exception:
+                                    confirm_error = self._safe_str(confirm_exception)
+
+                            # 卡券全部发送后才记录系统已发货；订单状态只在闲鱼确认成功后推进。
+                            self.mark_delivery_sent(order_id, update_order_status=platform_confirmed)
+                            try:
+                                db_manager.insert_or_update_order(
+                                    order_id=order_id,
+                                    system_shipped=True,
+                                    chat_id=chat_id
+                                )
+                                logger.info(f'【{self.cookie_id}】订单 {order_id} 已标记为系统已发货 (system_shipped=1)')
+                            except Exception as db_e:
+                                logger.error(f'【{self.cookie_id}】更新订单system_shipped状态失败: {self._safe_str(db_e)}')
+
+                            if confirm_required and not platform_confirmed:
+                                await self.send_delivery_failure_notification(
+                                    send_user_name,
+                                    send_user_id,
+                                    item_id,
+                                    f"卡券已全部发送，但闲鱼确认发货失败，请手动确认：{confirm_error}",
+                                    chat_id
+                                )
+                            elif len(delivery_contents) > 1:
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {sent_count} 个卡券", chat_id)
+                            else:
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
                         else:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
+                            # 内容可能已从批量卡池取出，自动重试可能重复消耗或重复发送，转人工处理。
+                            self.delivery_blocked_orders.add(order_id)
+                            self.last_delivery_time[order_id] = time.time()
+                            failure_detail = (
+                                f"应发 {quantity_to_send} 个，获取 {len(delivery_contents)} 个，"
+                                f"成功发送 {sent_count} 个"
+                            )
+                            if send_errors:
+                                failure_detail += f"；发送错误：{'；'.join(send_errors)}"
+                            logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货未完整完成：{failure_detail}")
+                            await self.send_delivery_failure_notification(
+                                send_user_name,
+                                send_user_id,
+                                item_id,
+                                f"自动发货未完整完成（{failure_detail}），已停止自动重试，请人工核对",
+                                chat_id
+                            )
                     else:
                         logger.warning(f'[{msg_time}] 【自动发货】未找到匹配的发货规则或获取发货内容失败')
                         # 发送自动发货失败通知
@@ -1427,55 +1510,14 @@ class XianyuLive:
                 'cookie': self.cookies_str
             }
 
-            # 打印所有请求参数（用于调试）
             api_url = API_ENDPOINTS.get('token')
-            logger.info(f"【{self.cookie_id}】========== Token刷新API调用详情 ==========")
-            logger.info(f"【{self.cookie_id}】API端点: {api_url}")
-            logger.info(f"【{self.cookie_id}】请求方法: POST")
-            logger.info(f"【{self.cookie_id}】")
-            logger.info(f"【{self.cookie_id}】--- URL参数 (params) ---")
-            for key, value in sorted(params.items()):
-                # 对于敏感信息，只显示部分
-                if key == 'sign':
-                    logger.info(f"【{self.cookie_id}】  {key}: {value[:20]}...{value[-10:] if len(value) > 30 else value} (长度: {len(value)})")
-                else:
-                    logger.info(f"【{self.cookie_id}】  {key}: {value}")
-            logger.info(f"【{self.cookie_id}】")
-            logger.info(f"【{self.cookie_id}】--- 请求体 (data) ---")
-            logger.info(f"【{self.cookie_id}】  data: {data_val}")
-            logger.info(f"【{self.cookie_id}】")
-            logger.info(f"【{self.cookie_id}】--- 签名计算信息 ---")
-            logger.info(f"【{self.cookie_id}】  token (从_m_h5_tk提取): {token[:20]}...{token[-10:] if len(token) > 30 else token} (长度: {len(token)})")
-            logger.info(f"【{self.cookie_id}】  timestamp (t): {params['t']}")
-            logger.info(f"【{self.cookie_id}】  app_key: 34839810")
-            logger.info(f"【{self.cookie_id}】  data_val: {data_val}")
-            logger.info(f"【{self.cookie_id}】  计算签名: MD5({token}&{params['t']}&34839810&{data_val})")
-            logger.info(f"【{self.cookie_id}】  最终签名: {sign}")
-            logger.info(f"【{self.cookie_id}】")
-            logger.info(f"【{self.cookie_id}】--- 请求头 (headers) ---")
-            for key, value in sorted(headers.items()):
-                if key == 'cookie':
-                    # Cookie很长，只显示关键信息
-                    cookie_dict = trans_cookies(self.cookies_str)
-                    logger.info(f"【{self.cookie_id}】  {key}: [Cookie字符串，长度: {len(value)}]")
-                    logger.info(f"【{self.cookie_id}】    Cookie字段数: {len(cookie_dict)}")
-                    logger.info(f"【{self.cookie_id}】    关键字段:")
-                    important_keys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie']
-                    for k in important_keys:
-                        if k in cookie_dict:
-                            val = cookie_dict[k]
-                            if len(val) > 50:
-                                logger.info(f"【{self.cookie_id}】      {k}: {val[:30]}...{val[-20:]} (长度: {len(val)})")
-                            else:
-                                logger.info(f"【{self.cookie_id}】      {k}: {val}")
-                else:
-                    logger.info(f"【{self.cookie_id}】  {key}: {value}")
-            logger.info(f"【{self.cookie_id}】")
-            logger.info(f"【{self.cookie_id}】--- 其他信息 ---")
-            logger.info(f"【{self.cookie_id}】  device_id: {self.device_id}")
-            logger.info(f"【{self.cookie_id}】  myid (unb): {self.myid}")
-            logger.info(f"【{self.cookie_id}】  完整Cookie字符串长度: {len(self.cookies_str)}")
-            logger.info(f"【{self.cookie_id}】==========================================")
+            cookie_dict = trans_cookies(self.cookies_str)
+            logger.info(
+                f"【{self.cookie_id}】Token刷新请求: endpoint={api_url}, method=POST, "
+                f"cookie_fields={len(cookie_dict)}, cookie_length={len(self.cookies_str)}, "
+                f"token_present={bool(token)}, token_length={len(token)}, "
+                f"payload_length={len(data_val)}"
+            )
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -1485,13 +1527,21 @@ class XianyuLive:
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
-                    # 打印响应信息
-                    logger.info(f"【{self.cookie_id}】--- API响应信息 ---")
-                    logger.info(f"【{self.cookie_id}】  状态码: {response.status}")
-                    logger.info(f"【{self.cookie_id}】  响应头: {dict(response.headers)}")
+                    logger.info(
+                        f"【{self.cookie_id}】Token刷新响应: status={response.status}, "
+                        f"content_type={response.headers.get('content-type', 'unknown')}"
+                    )
                     
                     res_json = await response.json()
-                    logger.info(f"【{self.cookie_id}】  响应内容: {json.dumps(res_json, ensure_ascii=False, indent=2)}")
+                    response_keys = sorted(res_json.keys()) if isinstance(res_json, dict) else []
+                    response_data = res_json.get("data") if isinstance(res_json, dict) else None
+                    data_keys = sorted(response_data.keys()) if isinstance(response_data, dict) else []
+                    logger.info(
+                        f"【{self.cookie_id}】Token刷新响应结构: "
+                        f"type={type(res_json).__name__}, keys={response_keys}, "
+                        f"data_keys={data_keys}, "
+                        f"has_access_token={isinstance(response_data, dict) and bool(response_data.get('accessToken'))}"
+                    )
                     logger.info(f"【{self.cookie_id}】================================")
 
                     # 检查并更新Cookie
@@ -1637,7 +1687,11 @@ class XianyuLive:
                                 
                                 # 刷新失败时继续执行原有的失败处理逻辑
 
-                    logger.error(f"【{self.cookie_id}】Token刷新失败: {res_json}")
+                    ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
+                    logger.error(
+                        f"【{self.cookie_id}】Token刷新失败: status={response.status}, "
+                        f"ret={ret_value[:3]}, response_type={type(res_json).__name__}"
+                    )
 
                     # 清空当前token，确保下次重试时重新获取
                     self.current_token = None
@@ -1656,7 +1710,10 @@ class XianyuLive:
                             logger.info(f"【{self.cookie_id}】WebSocket连接正常，Token刷新失败可能是暂时的，跳过失败通知")
                         else:
                             logger.warning(f"【{self.cookie_id}】WebSocket未连接，发送Token刷新失败通知")
-                            await self.send_token_refresh_notification(f"Token刷新失败: {res_json}", "token_refresh_failed")
+                            await self.send_token_refresh_notification(
+                                f"Token刷新失败: {ret_value[:3]}",
+                                "token_refresh_failed",
+                            )
                     else:
                         logger.info(f"【{self.cookie_id}】已发送滑块验证相关通知，跳过Token刷新失败通知")
                     return None
@@ -1692,10 +1749,12 @@ class XianyuLive:
             if not isinstance(res_json, dict):
                 return False
 
-            # 记录res_json内容到日志文件
-            import json
-            res_json_str = json.dumps(res_json, ensure_ascii=False, separators=(',', ':'))
-            log_captcha_event(self.cookie_id, "检查滑块验证响应", None, f"res_json内容: {res_json_str}")
+            log_captcha_event(
+                self.cookie_id,
+                "检查滑块验证响应",
+                None,
+                f"响应字段: {sorted(res_json.keys())}",
+            )
 
             # 检查返回的错误信息
             ret_value = res_json.get('ret', [])
@@ -1834,10 +1893,8 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】滑块验证成功后，数据库cookies已自动更新")
 
                             
-                        # 记录成功更新到日志文件，包含x5相关的cookie信息
-                        x5sec_cookies_str = "; ".join([f"{k}={v}" for k, v in x5sec_cookies.items()]) if x5sec_cookies else "无"
                         log_captcha_event(self.cookie_id, "滑块验证成功并自动更新数据库", True,
-                            f"cookies长度: {len(cookies_str)}, 新增{new_cookie_count}个x5, 更新{updated_cookie_count}个x5, 总计{len(updated_cookies)}个cookie项, x5 cookies: {x5sec_cookies_str}")
+                            f"cookies长度: {len(cookies_str)}, 新增{new_cookie_count}个x5, 更新{updated_cookie_count}个x5, 总计{len(updated_cookies)}个cookie项, x5字段: {sorted(x5sec_cookies.keys())}")
 
                         # 发送成功通知
                         await self.send_token_refresh_notification(
@@ -1852,10 +1909,8 @@ class XianyuLive:
                         self.cookies_str = old_cookies_str
                         self.cookies = old_cookies_dict
 
-                        # 记录更新失败到日志文件，包含获取到的x5 cookies
-                        x5sec_cookies_str = "; ".join([f"{k}={v}" for k, v in x5sec_cookies.items()]) if x5sec_cookies else "无"
                         log_captcha_event(self.cookie_id, "滑块验证成功但数据库更新失败", False,
-                            f"更新异常: {self._safe_str(update_e)[:100]}, 获取到的x5 cookies: {x5sec_cookies_str}")
+                            f"更新异常: {self._safe_str(update_e)[:100]}, x5字段: {sorted(x5sec_cookies.keys())}")
 
                         # 发送更新失败通知
                         await self.send_token_refresh_notification(
@@ -2181,7 +2236,10 @@ class XianyuLive:
             
             if result:
                 logger.info(f"【{self.cookie_id}】密码登录成功，获取到Cookie")
-                logger.info(f"【{self.cookie_id}】Cookie内容: {result}")
+                logger.info(
+                    f"【{self.cookie_id}】Cookie读取完成: "
+                    f"fields={len(result)}, names={sorted(result.keys())}"
+                )
                 
                 # 打印密码登录获取的Cookie字段详情
                 logger.info(f"【{self.cookie_id}】========== 密码登录Cookie字段详情 ==========")
@@ -2206,7 +2264,10 @@ class XianyuLive:
                 
                 # 将cookie字典转换为字符串格式
                 new_cookies_str = '; '.join([f"{k}={v}" for k, v in result.items()])
-                logger.info(f"【{self.cookie_id}】Cookie字符串格式: {new_cookies_str[:200]}..." if len(new_cookies_str) > 200 else f"【{self.cookie_id}】Cookie字符串格式: {new_cookies_str}")
+                logger.info(
+                    f"【{self.cookie_id}】密码登录Cookie已获取: "
+                    f"字段数={len(result)}, 字符串长度={len(new_cookies_str)}"
+                )
                 
                 # 记录密码登录时间，防止重复登录
                 XianyuLive._last_password_login_time[self.cookie_id] = time.time()
@@ -2644,6 +2705,278 @@ class XianyuLive:
             # 如果被取消，确保锁能正确释放
             raise
 
+    def _get_playwright_launch_options(self, playwright, browser_args, purpose: str) -> dict:
+        """构造浏览器启动参数，Playwright浏览器缺失时回退到系统Chrome/Edge。"""
+        launch_options = {
+            'headless': True,
+            'args': browser_args,
+        }
+        bundled_executable = playwright.chromium.executable_path
+        if os.path.exists(bundled_executable):
+            logger.info(f"【{self.cookie_id}】{purpose}使用Playwright Chromium")
+            return launch_options
+
+        system_browser_candidates = [
+            ("Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            ("Chrome", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            ("Edge", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            ("Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        ]
+        system_browser = next(
+            (
+                (name, path)
+                for name, path in system_browser_candidates
+                if os.path.exists(path)
+            ),
+            None
+        )
+        if not system_browser:
+            raise RuntimeError(
+                f"{purpose}未找到可用浏览器；Playwright预期路径不存在，"
+                "系统Chrome/Edge也未找到"
+            )
+
+        browser_name, browser_path = system_browser
+        launch_options['executable_path'] = browser_path
+        logger.warning(
+            f"【{self.cookie_id}】{purpose}的Playwright Chromium未安装，"
+            f"回退使用系统{browser_name}: {browser_path}"
+        )
+        return launch_options
+
+    @staticmethod
+    def _parse_profile_count(value):
+        """将“116”或“1.2万”转换为整数。"""
+        text = str(value or '').strip().replace(',', '')
+        if not text:
+            return None
+        multiplier = 10000 if text.endswith('万') else 1
+        if multiplier > 1:
+            text = text[:-1]
+        try:
+            return int(float(text) * multiplier)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_account_profile_snapshot(cls, snapshot, account_id=''):
+        """从个人页的语义文本和图片元数据中提取公开账号资料。"""
+        if not isinstance(snapshot, dict):
+            return {}
+
+        lines = [
+            re.sub(r'\s+', ' ', str(line or '')).strip()
+            for line in snapshot.get('body_lines', [])
+        ]
+        lines = [line for line in lines if line]
+        title = re.sub(r'\s+', ' ', str(snapshot.get('title') or '')).strip()
+        nickname = re.sub(r'[_\-\s]*闲鱼\s*$', '', title).strip()
+        if not nickname or nickname in ('闲鱼', 'Goofish'):
+            nickname = next(
+                (
+                    line for line in lines
+                    if line not in ('订单', '我的闲鱼') and len(line) <= 40
+                ),
+                '',
+            )
+
+        followers = None
+        following = None
+        follower_index = None
+        following_index = None
+        for index, line in enumerate(lines):
+            follower_match = re.fullmatch(r'([\d,.]+(?:\.\d+)?万?)\s*粉丝', line)
+            following_match = re.fullmatch(r'([\d,.]+(?:\.\d+)?万?)\s*关注', line)
+            if follower_match and followers is None:
+                followers = cls._parse_profile_count(follower_match.group(1))
+                follower_index = index
+            if following_match and following is None:
+                following = cls._parse_profile_count(following_match.group(1))
+                following_index = index
+
+        location = ''
+        if follower_index is not None and follower_index > 0:
+            candidate = lines[follower_index - 1]
+            if candidate != nickname and len(candidate) <= 40:
+                location = candidate
+
+        bio = ''
+        if following_index is not None:
+            stop_texts = {'编辑资料', '宝贝', '信用及评价', '综合', '在售', '已售出'}
+            for candidate in lines[following_index + 1:following_index + 5]:
+                if candidate in stop_texts:
+                    break
+                if candidate != nickname and len(candidate) <= 160:
+                    bio = candidate
+                    break
+
+        avatar_url = ''
+        avatar_candidates = []
+        for image in snapshot.get('images', []):
+            if not isinstance(image, dict):
+                continue
+            src = str(image.get('src') or '').strip()
+            if src.startswith('//'):
+                src = f'https:{src}'
+            if not src.startswith(('http://', 'https://')):
+                continue
+            lower_src = src.lower()
+            if 'mtopupload' not in lower_src and 'avatar' not in str(
+                image.get('class_name') or ''
+            ).lower():
+                continue
+            width = int(image.get('natural_width') or 0)
+            height = int(image.get('natural_height') or 0)
+            score = width * height
+            if account_id and account_id in src:
+                score += 100000
+            if 'mtopupload' in lower_src:
+                score += 50000
+            avatar_candidates.append((score, src))
+        if avatar_candidates:
+            avatar_url = max(avatar_candidates, key=lambda item: item[0])[1]
+
+        profile = {
+            'nickname': nickname,
+            'avatar_url': avatar_url,
+            'location': location,
+            'bio': bio,
+            'followers': followers,
+            'following': following,
+        }
+        return {
+            key: value
+            for key, value in profile.items()
+            if value not in (None, '')
+        }
+
+    async def fetch_account_profile(self):
+        """使用当前账号Cookie只读抓取闲鱼个人页公开资料。"""
+        playwright = None
+        browser = None
+        context = None
+        started_at = time.perf_counter()
+        try:
+            from playwright.async_api import async_playwright
+
+            playwright = await asyncio.wait_for(async_playwright().start(), timeout=30)
+            browser_args = [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-extensions',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--no-default-browser-check',
+                '--no-pings',
+            ]
+            launch_options = self._get_playwright_launch_options(
+                playwright,
+                browser_args,
+                "账号资料抓取",
+            )
+            browser = await playwright.chromium.launch(**launch_options)
+            context = await browser.new_context(
+                viewport={'width': 1440, 'height': 900},
+                user_agent=(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/138.0.0.0 Safari/537.36'
+                ),
+            )
+
+            browser_cookies = []
+            for cookie_pair in self.cookies_str.split(';'):
+                cookie_pair = cookie_pair.strip()
+                if '=' not in cookie_pair:
+                    continue
+                name, value = cookie_pair.split('=', 1)
+                browser_cookies.append({
+                    'name': name.strip(),
+                    'value': value.strip(),
+                    'domain': '.goofish.com',
+                    'path': '/',
+                })
+            await context.add_cookies(browser_cookies)
+
+            page = await context.new_page()
+            await page.goto(
+                f'https://www.goofish.com/personal?userId={self.myid}',
+                wait_until='domcontentloaded',
+                timeout=30000,
+            )
+            try:
+                await page.wait_for_function(
+                    "() => document.body && document.body.innerText.includes('粉丝')",
+                    timeout=10000,
+                )
+            except Exception:
+                logger.warning(
+                    f"【{self.cookie_id}】账号资料页未在等待时间内出现粉丝信息，继续解析已加载内容"
+                )
+
+            snapshot = await page.evaluate(
+                """() => ({
+                    title: document.title || '',
+                    body_lines: (document.body?.innerText || '')
+                        .split(/\\r?\\n/)
+                        .map(line => line.trim())
+                        .filter(Boolean),
+                    images: Array.from(document.images).map(image => ({
+                        src: image.currentSrc || image.src || '',
+                        class_name: String(image.className || ''),
+                        natural_width: image.naturalWidth || 0,
+                        natural_height: image.naturalHeight || 0
+                    }))
+                })"""
+            )
+            profile = self._parse_account_profile_snapshot(snapshot, self.myid)
+            if not profile.get('nickname') and not profile.get('avatar_url'):
+                raise RuntimeError("个人页未返回可识别的账号资料")
+
+            logger.info(
+                f"【{self.cookie_id}】账号资料抓取完成，"
+                f"字段={sorted(profile.keys())}，"
+                f"耗时={time.perf_counter() - started_at:.2f}s"
+            )
+            return {'success': True, 'profile': profile}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】账号资料抓取失败，"
+                f"异常类型={type(exc).__name__}，"
+                f"耗时={time.perf_counter() - started_at:.2f}s"
+            )
+            return {
+                'success': False,
+                'error': '未能从闲鱼个人页获取账号资料',
+                'error_type': type(exc).__name__,
+            }
+        finally:
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
+
     async def _fetch_item_detail_from_browser(self, item_id: str) -> str:
         """使用浏览器获取商品详情"""
         playwright = None
@@ -2696,10 +3029,12 @@ class XianyuLive:
                     '--use-mock-keychain'
                 ])
 
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
+            launch_options = self._get_playwright_launch_options(
+                playwright,
+                browser_args,
+                "商品详情获取"
             )
+            browser = await playwright.chromium.launch(**launch_options)
 
             # 创建浏览器上下文
             context = await browser.new_context(
@@ -2821,6 +3156,7 @@ class XianyuLive:
                     'item_description': '',  # 暂时为空
                     'item_category': str(item.get('category_id', '')),
                     'item_price': item.get('price_text', ''),
+                    'item_image': item.get('item_image', ''),
                     'item_detail': json.dumps(item_detail, ensure_ascii=False)
                 })
 
@@ -2959,7 +3295,7 @@ class XianyuLive:
         token = trans_cookies(self.cookies_str).get('_m_h5_tk', '').split('_')[0] if trans_cookies(self.cookies_str).get('_m_h5_tk') else ''
 
         if token:
-            logger.warning(f"使用cookies中的_m_h5_tk token: {token}")
+            logger.info("获取商品详情，_m_h5_tk字段存在")
         else:
             logger.warning("cookies中没有找到_m_h5_tk token")
 
@@ -4542,7 +4878,7 @@ class XianyuLive:
                 return None
 
     async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
-        """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
+        """匹配并取得发货内容；消息发送和确认发货由调用方在成功判定后执行。"""
         try:
             from db_manager import db_manager
 
@@ -4721,32 +5057,6 @@ class XianyuLive:
                 logger.info(f"检测到发货延时设置: {delay_seconds}秒，开始延时...")
                 await asyncio.sleep(delay_seconds)
                 logger.info(f"延时完成")
-
-            # 如果有订单ID，执行确认发货
-            if order_id:
-                # 检查是否启用自动确认发货
-                if not self.is_auto_confirm_enabled():
-                    logger.info(f"自动确认发货已关闭，跳过订单 {order_id}")
-                else:
-                    # 检查确认发货冷却时间
-                    current_time = time.time()
-                    should_confirm = True
-
-                    if order_id in self.confirmed_orders:
-                        last_confirm_time = self.confirmed_orders[order_id]
-                        if current_time - last_confirm_time < self.order_confirm_cooldown:
-                            logger.info(f"订单 {order_id} 已在 {self.order_confirm_cooldown} 秒内确认过，跳过重复确认")
-                            should_confirm = False
-
-                    if should_confirm:
-                        logger.info(f"开始自动确认发货: 订单ID={order_id}, 商品ID={item_id}")
-                        confirm_result = await self.auto_confirm(order_id, item_id)
-                        if confirm_result.get('success'):
-                            self.confirmed_orders[order_id] = current_time
-                            logger.info(f"🎉 自动确认发货成功！订单ID: {order_id}")
-                        else:
-                            logger.warning(f"⚠️ 自动确认发货失败: {confirm_result.get('error', '未知错误')}")
-                            # 即使确认发货失败，也继续发送发货内容
 
             # 检查是否存在订单ID，只有存在订单ID才处理发货内容
             if order_id:
@@ -5528,7 +5838,18 @@ class XianyuLive:
                                 total_count = result.get('total_count', 0)
                                 saved_count = result.get('total_saved', 0)
                                 self.last_item_sync_time = current_time
-                                logger.info(f"【{self.cookie_id}】✅ 商品同步完成: 共 {total_count} 件商品，保存/更新 {saved_count} 件")
+                                if result.get('confirmed_empty'):
+                                    account_id = result.get('account_id') or self.myid
+                                    group_name = result.get('group_name', '在售')
+                                    logger.info(
+                                        f"【{self.cookie_id}】商品同步完成: 闲鱼接口确认账号 "
+                                        f"{account_id} 的“{group_name}”分组当前为 0 件"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"【{self.cookie_id}】✅ 商品同步完成: 共 {total_count} 件商品，"
+                                        f"保存/更新 {saved_count} 件"
+                                    )
                             else:
                                 error_msg = result.get('error', '未知错误')
                                 logger.warning(f"【{self.cookie_id}】❌ 商品同步失败: {error_msg}")
@@ -5735,7 +6056,10 @@ class XianyuLive:
 
             # 解析扫码登录的cookie
             qr_cookies_dict = trans_cookies(qr_cookies_str)
-            logger.info(f"【{target_cookie_id}】扫码cookie字段数: {len(qr_cookies_dict)}")
+            logger.info(
+                f"【{target_cookie_id}】扫码cookie字段数: {len(qr_cookies_dict)}, "
+                f"字段: {sorted(qr_cookies_dict.keys())}"
+            )
 
             # Docker环境下修复asyncio子进程问题
             is_docker = os.getenv('DOCKER_ENV') or os.path.exists('/.dockerenv')
@@ -5836,11 +6160,50 @@ class XianyuLive:
                     '--use-mock-keychain'
                 ])
 
-            # 使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,  # 改回无头模式
-                args=browser_args
-            )
+            # 优先使用Playwright自带Chromium；未安装时回退到系统Chrome/Edge。
+            bundled_executable = playwright.chromium.executable_path
+            system_browser_candidates = [
+                ("Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                ("Chrome", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+                ("Edge", r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+                ("Edge", r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ]
+            launch_options = {
+                'headless': True,
+                'args': browser_args,
+            }
+
+            if os.path.exists(bundled_executable):
+                logger.info(
+                    f"【{target_cookie_id}】使用Playwright Chromium: {bundled_executable}"
+                )
+            else:
+                system_browser = next(
+                    (
+                        (name, path)
+                        for name, path in system_browser_candidates
+                        if os.path.exists(path)
+                    ),
+                    None
+                )
+                if not system_browser:
+                    logger.error(
+                        f"【{target_cookie_id}】未找到可用浏览器。"
+                        f"Playwright预期路径不存在: {bundled_executable}；"
+                        "系统Chrome/Edge也未找到。请执行: python -m playwright install chromium"
+                    )
+                    return False
+
+                browser_name, browser_path = system_browser
+                launch_options['executable_path'] = browser_path
+                logger.warning(
+                    f"【{target_cookie_id}】Playwright Chromium未安装，"
+                    f"回退使用系统{browser_name}: {browser_path}"
+                )
+
+            logger.info(f"【{target_cookie_id}】正在启动无头浏览器")
+            browser = await playwright.chromium.launch(**launch_options)
+            logger.info(f"【{target_cookie_id}】无头浏览器启动成功")
 
             # 创建浏览器上下文
             context_options = {
@@ -5865,12 +6228,10 @@ class XianyuLive:
                     })
 
             await context.add_cookies(cookies)
-            logger.info(f"【{target_cookie_id}】已设置 {len(cookies)} 个扫码Cookie到浏览器")
-
-            # 打印设置的扫码Cookie详情
-            logger.info(f"【{target_cookie_id}】=== 设置到浏览器的扫码Cookie ===")
-            for i, cookie in enumerate(cookies, 1):
-                logger.info(f"【{target_cookie_id}】{i:2d}. {cookie['name']}: {cookie['value'][:50]}{'...' if len(cookie['value']) > 50 else ''}")
+            logger.info(
+                f"【{target_cookie_id}】已设置 {len(cookies)} 个扫码Cookie到浏览器，"
+                f"字段: {sorted(cookie['name'] for cookie in cookies)}"
+            )
 
             # 创建页面
             page = await context.new_page()
@@ -5933,43 +6294,20 @@ class XianyuLive:
             real_cookies_str = '; '.join([f"{k}={v}" for k, v in real_cookies_dict.items()])
 
             logger.info(f"【{target_cookie_id}】真实Cookie已获取，包含 {len(real_cookies_dict)} 个字段")
-            
-            # 打印扫码登录获取的真实Cookie字段详情
-            logger.info(f"【{target_cookie_id}】========== 扫码登录真实Cookie字段详情 ==========")
-            logger.info(f"【{target_cookie_id}】Cookie字段数: {len(real_cookies_dict)}")
-            logger.info(f"【{target_cookie_id}】Cookie字段列表:")
-            for i, (key, value) in enumerate(real_cookies_dict.items(), 1):
-                if len(str(value)) > 50:
-                    logger.info(f"【{target_cookie_id}】  {i:2d}. {key}: {str(value)[:30]}...{str(value)[-20:]} (长度: {len(str(value))})")
-                else:
-                    logger.info(f"【{target_cookie_id}】  {i:2d}. {key}: {value}")
-            
+
             # 检查关键字段
             important_keys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'cna']
-            logger.info(f"【{target_cookie_id}】关键字段检查:")
+            key_status = []
             for key in important_keys:
                 if key in real_cookies_dict:
                     val = real_cookies_dict[key]
-                    logger.info(f"【{target_cookie_id}】  ✅ {key}: {'存在' if val else '为空'} (长度: {len(str(val)) if val else 0})")
+                    key_status.append(f"{key}=存在({len(str(val)) if val else 0})")
                 else:
-                    logger.info(f"【{target_cookie_id}】  ❌ {key}: 缺失")
-            logger.info(f"【{target_cookie_id}】==========================================")
-
-            # 打印完整的真实Cookie内容
-            logger.info(f"【{target_cookie_id}】=== 完整真实Cookie内容 ===")
-            logger.info(f"【{target_cookie_id}】Cookie字符串长度: {len(real_cookies_str)}")
-            logger.info(f"【{target_cookie_id}】Cookie完整内容:")
-            logger.info(f"【{target_cookie_id}】{real_cookies_str}")
-
-            # 打印所有Cookie字段的详细信息
-            logger.info(f"【{target_cookie_id}】=== Cookie字段详细信息 ===")
-            for i, (name, value) in enumerate(real_cookies_dict.items(), 1):
-                # 对于长值，显示前后部分
-                if len(value) > 50:
-                    display_value = f"{value[:20]}...{value[-20:]}"
-                else:
-                    display_value = value
-                logger.info(f"【{target_cookie_id}】{i:2d}. {name}: {display_value}")
+                    key_status.append(f"{key}=缺失")
+            logger.info(
+                f"【{target_cookie_id}】真实Cookie摘要: 长度={len(real_cookies_str)}, "
+                f"字段={sorted(real_cookies_dict.keys())}, 关键字段=[{', '.join(key_status)}]"
+            )
 
             # 打印原始扫码Cookie对比
             logger.info(f"【{target_cookie_id}】=== 扫码Cookie对比 ===")
@@ -5997,31 +6335,6 @@ class XianyuLive:
                 logger.info(f"【{target_cookie_id}】新增的Cookie字段 ({len(new_cookies)}个): {', '.join(new_cookies)}")
             if not changed_cookies and not new_cookies:
                 logger.info(f"【{target_cookie_id}】Cookie无变化")
-
-            # 打印重要Cookie字段的完整详情
-            important_cookies = ['_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'unb', 'uc1', 'uc3', 'uc4']
-            logger.info(f"【{target_cookie_id}】=== 重要Cookie字段完整详情 ===")
-            for cookie_name in important_cookies:
-                if cookie_name in real_cookies_dict:
-                    cookie_value = real_cookies_dict[cookie_name]
-
-                    # 标记是否发生了变化
-                    change_mark = " [已变化]" if cookie_name in changed_cookies else " [新增]" if cookie_name in new_cookies else " [无变化]"
-
-                    # 显示完整的cookie值
-                    logger.info(f"【{target_cookie_id}】{cookie_name}{change_mark}:")
-                    logger.info(f"【{target_cookie_id}】  值: {cookie_value}")
-                    logger.info(f"【{target_cookie_id}】  长度: {len(cookie_value)}")
-
-                    # 如果有对应的扫码cookie值，显示对比
-                    if cookie_name in qr_cookies_dict:
-                        old_value = qr_cookies_dict[cookie_name]
-                        if old_value != cookie_value:
-                            logger.info(f"【{target_cookie_id}】  原值: {old_value}")
-                            logger.info(f"【{target_cookie_id}】  原长度: {len(old_value)}")
-                    logger.info(f"【{target_cookie_id}】  ---")
-                else:
-                    logger.info(f"【{target_cookie_id}】{cookie_name}: [不存在]")
 
             # 保存真实Cookie到数据库
             from db_manager import db_manager
@@ -6221,11 +6534,12 @@ class XianyuLive:
                     '--use-mock-keychain'
                 ])
 
-            # 使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
+            launch_options = self._get_playwright_launch_options(
+                playwright,
+                browser_args,
+                "浏览器页面刷新"
             )
+            browser = await playwright.chromium.launch(**launch_options)
 
             # 创建浏览器上下文
             context_options = {
@@ -6313,7 +6627,10 @@ class XianyuLive:
             real_cookies_str = '; '.join([f"{k}={v}" for k, v in real_cookies_dict.items()])
 
             logger.info(f"【{self.cookie_id}】真实Cookie已获取，包含 {len(real_cookies_dict)} 个字段")
-            logger.info(f"【{self.cookie_id}】真实Cookie: {real_cookies_str}")
+            logger.info(
+                f"【{self.cookie_id}】真实Cookie采集完成: "
+                f"fields={len(real_cookies_dict)}, length={len(real_cookies_str)}"
+            )
             # 检查关键字段
             important_keys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'cna']
             logger.info(f"【{self.cookie_id}】关键字段检查:")
@@ -6524,11 +6841,12 @@ class XianyuLive:
                     '--use-mock-keychain'
                 ])
 
-            # Cookie刷新模式使用无头浏览器
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=browser_args
+            launch_options = self._get_playwright_launch_options(
+                playwright,
+                browser_args,
+                "定时Cookie刷新"
             )
+            browser = await playwright.chromium.launch(**launch_options)
 
             # 创建浏览器上下文
             context_options = {
@@ -6654,24 +6972,22 @@ class XianyuLive:
             if not changed_cookies and not new_cookies:
                 logger.info(f"【{self.cookie_id}】Cookie无变化")
 
-            # 打印完整的更新后Cookie（可选择性启用）
-            logger.info(f"【{self.cookie_id}】更新后的完整Cookie: {self.cookies_str}")
+            logger.info(
+                f"【{self.cookie_id}】更新后Cookie字段名: "
+                f"{', '.join(sorted(new_cookies_dict.keys()))}"
+            )
 
-            # 打印主要的Cookie字段详情
+            # 只记录关键字段是否存在，不记录任何Cookie值或片段。
             important_cookies = ['_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'unb', 'uc1', 'uc3', 'uc4']
-            logger.info(f"【{self.cookie_id}】重要Cookie字段详情:")
-            for cookie_name in important_cookies:
-                if cookie_name in new_cookies_dict:
-                    cookie_value = new_cookies_dict[cookie_name]
-                    # 对于敏感信息，只显示前后几位
-                    if len(cookie_value) > 20:
-                        display_value = f"{cookie_value[:8]}...{cookie_value[-8:]}"
-                    else:
-                        display_value = cookie_value
-
-                    # 标记是否发生了变化
-                    change_mark = " [已变化]" if cookie_name in changed_cookies else " [新增]" if cookie_name in new_cookies else ""
-                    logger.info(f"【{self.cookie_id}】  {cookie_name}: {display_value}{change_mark}")
+            present_important_cookies = [
+                cookie_name
+                for cookie_name in important_cookies
+                if cookie_name in new_cookies_dict
+            ]
+            logger.info(
+                f"【{self.cookie_id}】关键Cookie字段检查: "
+                f"{', '.join(present_important_cookies) or '无'}"
+            )
 
             # 更新数据库中的Cookie
             await self.update_config_cookies()
@@ -8259,235 +8575,404 @@ class XianyuLive:
             self._unregister_instance()
             logger.info(f"【{self.cookie_id}】XianyuLive主程序已完全退出")
 
+    @staticmethod
+    def _select_item_group(groups):
+        """优先选择当前账号的“在售”分组。"""
+        if not isinstance(groups, list):
+            return None
+        for group in groups:
+            if isinstance(group, dict) and group.get('groupName') == '在售':
+                return group
+        for group in groups:
+            conditions = group.get('searchCondition') if isinstance(group, dict) else None
+            if isinstance(conditions, list) and any(
+                str(condition.get('status')) == '0'
+                for condition in conditions
+                if isinstance(condition, dict)
+            ):
+                return group
+        return None
+
+    @staticmethod
+    def _extract_item_image(*sources):
+        """从不同版本的商品卡片结构中选出最可信的主图。"""
+        candidates = []
+        image_keys = ('image', 'pic', 'cover', 'thumb', 'poster')
+
+        def visit(node, key_hint='', depth=0):
+            if depth > 8:
+                return
+            if isinstance(node, str):
+                value = node.strip()
+                lower_value = value.lower()
+                lower_key = key_hint.lower()
+                is_url = value.startswith(('http://', 'https://', '//'))
+                looks_like_image = any(
+                    marker in lower_value
+                    for marker in ('.jpg', '.jpeg', '.png', '.webp', '.avif', 'alicdn.com')
+                )
+                if is_url and looks_like_image:
+                    score = 0
+                    if any(marker in lower_key for marker in image_keys):
+                        score += 40
+                    if any(marker in lower_key for marker in ('main', 'cover', 'item')):
+                        score += 40
+                    if 'xy_item' in lower_value:
+                        score += 100
+                    if 'bao/uploaded' in lower_value:
+                        score += 20
+                    if any(marker in lower_key for marker in ('avatar', 'head', 'user', 'seller')):
+                        score -= 100
+                    candidates.append((score, value))
+                return
+            if isinstance(node, list):
+                for child in node:
+                    visit(child, key_hint, depth + 1)
+                return
+            if not isinstance(node, dict):
+                return
+
+            priority_keys = (
+                'mainPic', 'mainImage', 'coverImage', 'itemImage', 'picUrl',
+                'imageUrl', 'picInfo', 'image', 'pic', 'cover', 'url', 'src'
+            )
+            visited = set()
+            for key in priority_keys:
+                if key in node:
+                    visited.add(key)
+                    visit(node[key], key, depth + 1)
+            for key, value in node.items():
+                if key not in visited and isinstance(value, (dict, list)):
+                    visit(value, key, depth + 1)
+
+        for source in sources:
+            visit(source)
+        if not candidates:
+            return ''
+        return max(enumerate(candidates), key=lambda entry: (entry[1][0], -entry[0]))[1][1]
+
+    @staticmethod
+    def _normalize_item_card(card):
+        """兼容旧cardList和新版itemTopicList中的商品对象。"""
+        if not isinstance(card, dict):
+            return None
+        card_data = card.get('cardData') if isinstance(card.get('cardData'), dict) else card
+        for key in ('itemInfo', 'itemData', 'item'):
+            if isinstance(card_data.get(key), dict):
+                card_data = card_data[key]
+                break
+
+        detail_params = card_data.get('detailParams', {})
+        if not isinstance(detail_params, dict):
+            detail_params = {}
+        item_id = (
+            detail_params.get('itemId')
+            or card_data.get('itemId')
+            or card_data.get('auctionId')
+            or card_data.get('id')
+        )
+        if not item_id:
+            return None
+
+        price_info = card_data.get('priceInfo', {})
+        if not isinstance(price_info, dict):
+            price_info = {}
+        price = price_info.get('price', card_data.get('price', ''))
+        pic_info = card_data.get('picInfo', card.get('picInfo', {}))
+        if not isinstance(pic_info, (dict, list, str)):
+            pic_info = {}
+        item_image = XianyuLive._extract_item_image(pic_info, card_data, card)
+
+        return {
+            'id': str(item_id),
+            'title': card_data.get('title') or card_data.get('itemTitle') or card_data.get('name') or '',
+            'price': price,
+            'price_text': f"{price_info.get('preText', '')}{price}" if price_info else str(price or ''),
+            'category_id': card_data.get('categoryId', ''),
+            'auction_type': card_data.get('auctionType', ''),
+            'item_status': card_data.get('itemStatus', 0),
+            'detail_url': card_data.get('detailUrl', ''),
+            'web_url': f'https://www.goofish.com/item?id={item_id}',
+            'pic_info': pic_info,
+            'item_image': item_image,
+            'detail_params': detail_params,
+            'track_params': card_data.get('trackParams', {}),
+            'item_label_data': card_data.get('itemLabelDataVO', {}),
+            'card_type': card.get('cardType', 0)
+        }
+
+    @classmethod
+    def _extract_items_from_response(cls, items_data):
+        """从新旧商品列表结构中递归提取商品，并按ID去重。"""
+        candidates = list(items_data.get('cardList', []) or [])
+
+        def visit(node):
+            if isinstance(node, list):
+                for child in node:
+                    visit(child)
+                return
+            if not isinstance(node, dict):
+                return
+            if isinstance(node.get('cardData'), dict):
+                candidates.append(node)
+                return
+            has_item_id = any(key in node for key in ('itemId', 'auctionId'))
+            has_item_shape = any(
+                key in node
+                for key in ('title', 'itemTitle', 'priceInfo', 'detailParams', 'itemInfo', 'itemData')
+            )
+            if has_item_id and has_item_shape:
+                candidates.append(node)
+                return
+            for child in node.values():
+                if isinstance(child, (dict, list)):
+                    visit(child)
+
+        visit(items_data.get('itemTopicList', []) or [])
+        items = []
+        seen_ids = set()
+        for candidate in candidates:
+            item = cls._normalize_item_card(candidate)
+            if item and item['id'] not in seen_ids:
+                seen_ids.add(item['id'])
+                items.append(item)
+        return items
+
     async def get_item_list_info(self, page_number=1, page_size=20, retry_count=0):
-        """获取商品信息，自动处理token失效的情况
-
-        Args:
-            page_number (int): 页码，从1开始
-            page_size (int): 每页数量，默认20
-            retry_count (int): 重试次数，内部使用
-        """
-        if retry_count >= 4:  # 最多重试3次
-            logger.error("获取商品信息失败，重试次数过多")
-            return {"error": "获取商品信息失败，重试次数过多"}
-
-        # 确保session已创建
+        """动态发现当前账号的在售分组并获取商品列表。"""
+        if retry_count >= 4:
+            return {'error': '获取商品信息失败，重试次数过多'}
         if not self.session:
             await self.create_session()
 
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time.time()) * 1000),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.idle.web.xyh.item.list',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.collection.menu.1.272b5141NafCNK'
-        }
+        async def request_item_api(data):
+            params = {
+                'jsv': '2.7.2',
+                'appKey': '34839810',
+                't': str(int(time.time()) * 1000),
+                'sign': '',
+                'v': '1.0',
+                'type': 'originaljson',
+                'accountSite': 'xianyu',
+                'dataType': 'json',
+                'timeout': '20000',
+                'api': 'mtop.idle.web.xyh.item.list',
+                'sessionOption': 'AutoLoginOnly',
+                'spm_cnt': 'a21ybx.personal.0.0'
+            }
+            cookie_dict = trans_cookies(self.cookies_str)
+            token_value = cookie_dict.get('_m_h5_tk', '')
+            token = token_value.split('_')[0] if token_value else ''
+            if not token:
+                logger.warning(f"【{self.cookie_id}】商品同步Cookie缺少_m_h5_tk字段")
 
-        data = {
-            'needGroupInfo': False,
-            'pageNumber': page_number,
-            'pageSize': page_size,
-            'groupName': '在售',
-            'groupId': '58877261',
-            'defaultGroup': True,
-            "userId": self.myid
-        }
-
-        # 始终从最新的cookies中获取_m_h5_tk token（刷新后cookies会被更新）
-        token = trans_cookies(self.cookies_str).get('_m_h5_tk', '').split('_')[0] if trans_cookies(self.cookies_str).get('_m_h5_tk') else ''
-
-        logger.warning(f"准备获取商品列表，token: {token}")
-        if token:
-            logger.warning(f"使用cookies中的_m_h5_tk token: {token}")
-        else:
-            logger.warning("cookies中没有找到_m_h5_tk token")
-
-        # 生成签名
-        data_val = json.dumps(data, separators=(',', ':'))
-        sign = generate_sign(params['t'], token, data_val)
-        params['sign'] = sign
-
-        try:
+            data_val = json.dumps(data, separators=(',', ':'))
+            params['sign'] = generate_sign(params['t'], token, data_val)
             async with self.session.post(
                 'https://h5api.m.goofish.com/h5/mtop.idle.web.xyh.item.list/1.0/',
                 params=params,
                 data={'data': data_val}
             ) as response:
                 res_json = await response.json()
-
-                # 检查并更新Cookie
                 if 'set-cookie' in response.headers:
                     new_cookies = {}
                     for cookie in response.headers.getall('set-cookie', []):
                         if '=' in cookie:
                             name, value = cookie.split(';')[0].split('=', 1)
                             new_cookies[name.strip()] = value.strip()
-
-                    # 更新cookies
                     if new_cookies:
                         self.cookies.update(new_cookies)
-                        # 生成新的cookie字符串
-                        self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
-                        # 更新数据库中的Cookie
+                        self.cookies_str = '; '.join(f"{key}={value}" for key, value in self.cookies.items())
+                        self.session.headers['cookie'] = self.cookies_str
                         await self.update_config_cookies()
-                        logger.warning("已更新Cookie到数据库")
+                        logger.info(
+                            f"【{self.cookie_id}】商品同步响应更新了"
+                            f"{len(new_cookies)}个Cookie字段"
+                        )
+                return res_json
 
-                logger.info(f"商品信息获取响应: {res_json}")
-
-                # 检查响应是否成功
-                if res_json.get('ret') and res_json['ret'][0] == 'SUCCESS::调用成功':
-                    items_data = res_json.get('data', {})
-                    # 从cardList中提取商品信息
-                    card_list = items_data.get('cardList', [])
-
-                    # 解析cardList中的商品信息
-                    items_list = []
-                    for card in card_list:
-                        card_data = card.get('cardData', {})
-                        if card_data:
-                            # 提取商品基本信息
-                            detail_params = card_data.get('detailParams', {})
-                            item_id = detail_params.get('itemId', card_data.get('id', ''))
-
-                            item_info = {
-                                'id': item_id,
-                                'title': card_data.get('title', ''),
-                                'price': card_data.get('priceInfo', {}).get('price', ''),
-                                'price_text': card_data.get('priceInfo', {}).get('preText', '') + card_data.get('priceInfo', {}).get('price', ''),
-                                'category_id': card_data.get('categoryId', ''),
-                                'auction_type': card_data.get('auctionType', ''),
-                                'item_status': card_data.get('itemStatus', 0),
-                                'detail_url': card_data.get('detailUrl', ''),
-                                # Web可访问的商品URL（用于浏览器打开）
-                                'web_url': f'https://www.goofish.com/item?id={item_id}',
-                                'pic_info': card_data.get('picInfo', {}),
-                                'detail_params': detail_params,
-                                'track_params': card_data.get('trackParams', {}),
-                                'item_label_data': card_data.get('itemLabelDataVO', {}),
-                                'card_type': card.get('cardType', 0)
-                            }
-                            items_list.append(item_info)
-
-                    logger.info(f"成功获取到 {len(items_list)} 个商品")
-
-                    # 打印商品详细信息到控制台
-                    print("\n" + "="*80)
-                    print(f"📦 账号 {self.myid} 的商品列表 (第{page_number}页，{len(items_list)} 个商品)")
-                    print("="*80)
-
-                    for i, item in enumerate(items_list, 1):
-                        print(f"\n🔸 商品 {i}:")
-                        print(f"   商品ID: {item.get('id', 'N/A')}")
-                        print(f"   商品标题: {item.get('title', 'N/A')}")
-                        print(f"   价格: {item.get('price_text', 'N/A')}")
-                        print(f"   分类ID: {item.get('category_id', 'N/A')}")
-                        print(f"   商品状态: {item.get('item_status', 'N/A')}")
-                        print(f"   拍卖类型: {item.get('auction_type', 'N/A')}")
-                        print(f"   详情链接: {item.get('detail_url', 'N/A')}")
-                        if item.get('pic_info'):
-                            pic_info = item['pic_info']
-                            print(f"   图片信息: {pic_info.get('width', 'N/A')}x{pic_info.get('height', 'N/A')}")
-                            print(f"   图片链接: {pic_info.get('picUrl', 'N/A')}")
-                        print(f"   完整信息: {json.dumps(item, ensure_ascii=False, indent=2)}")
-
-                    print("\n" + "="*80)
-                    print("✅ 商品列表获取完成")
-                    print("="*80)
-
-                    # 自动保存商品信息到数据库
-                    if items_list:
-                        saved_count = await self.save_items_list_to_db(items_list)
-                        logger.info(f"已将 {saved_count} 个商品信息保存到数据库")
-
-                    return {
-                        "success": True,
-                        "page_number": page_number,
-                        "page_size": page_size,
-                        "current_count": len(items_list),
-                        "items": items_list,
-                        "saved_count": saved_count if items_list else 0,
-                        "raw_data": items_data  # 保留原始数据以备调试
-                    }
-                else:
-                    # 检查是否是token失效
-                    error_msg = res_json.get('ret', [''])[0] if res_json.get('ret') else ''
-                    if 'FAIL_SYS_TOKEN_EXOIRED' in error_msg or 'token' in error_msg.lower():
-                        logger.warning(f"Token失效，准备重试: {error_msg}")
+        try:
+            item_group = getattr(self, '_item_list_group', None)
+            if page_number == 1 or not item_group:
+                discovery_response = await request_item_api({
+                    'needGroupInfo': True,
+                    'pageNumber': 1,
+                    'pageSize': page_size,
+                    'userId': self.myid
+                })
+                discovery_ret = discovery_response.get('ret', [])
+                if not discovery_ret or not str(discovery_ret[0]).startswith('SUCCESS::'):
+                    error_msg = discovery_ret[0] if discovery_ret else '未知错误'
+                    if 'TOKEN' in str(error_msg).upper():
                         await asyncio.sleep(0.5)
                         return await self.get_item_list_info(page_number, page_size, retry_count + 1)
-                    else:
-                        logger.error(f"获取商品信息失败: {res_json}")
-                        return {"error": f"获取商品信息失败: {error_msg}"}
+                    return {'error': f"商品分组发现失败: {error_msg}"}
 
+                groups = discovery_response.get('data', {}).get('itemGroupList', [])
+                group_summary = [
+                    {
+                        'name': group.get('groupName'),
+                        'id': group.get('groupId'),
+                        'count': group.get('itemNumber')
+                    }
+                    for group in groups
+                    if isinstance(group, dict)
+                ]
+                logger.info(
+                    f"【{self.cookie_id}】商品分组发现: account={self.myid}, "
+                    f"groups={group_summary}"
+                )
+                item_group = self._select_item_group(groups)
+                if not item_group:
+                    return {
+                        'error': '闲鱼接口未返回“在售”分组，无法确认商品列表',
+                        'response_fields': sorted(discovery_response.get('data', {}).keys())
+                    }
+                self._item_list_group = item_group
+
+            group_id = item_group.get('groupId')
+            group_name = item_group.get('groupName', '在售')
+            res_json = await request_item_api({
+                'needGroupInfo': False,
+                'pageNumber': page_number,
+                'pageSize': page_size,
+                'groupName': group_name,
+                'groupId': str(group_id),
+                'defaultGroup': bool(item_group.get('defaultGroup', True)),
+                'userId': self.myid
+            })
+            response_ret = res_json.get('ret', [])
+            if not response_ret or not str(response_ret[0]).startswith('SUCCESS::'):
+                error_msg = response_ret[0] if response_ret else '未知错误'
+                if 'TOKEN' in str(error_msg).upper():
+                    await asyncio.sleep(0.5)
+                    return await self.get_item_list_info(page_number, page_size, retry_count + 1)
+                return {'error': f"获取商品信息失败: {error_msg}"}
+
+            items_data = res_json.get('data', {})
+            items_list = self._extract_items_from_response(items_data)
+            total_count = int(items_data.get('totalCount') or 0)
+            declared_count = int(item_group.get('itemNumber') or 0)
+            effective_total_count = max(total_count, declared_count, len(items_list))
+            response_fields = sorted(items_data.keys())
+            logger.info(
+                f"【{self.cookie_id}】商品列表响应: account={self.myid}, "
+                f"group={group_name}({group_id}), page={page_number}, "
+                f"fields={response_fields}, totalCount={total_count}, "
+                f"groupItemNumber={declared_count}, parsed={len(items_list)}, "
+                f"effectiveTotal={effective_total_count}, "
+                f"nextPage={bool(items_data.get('nextPage'))}"
+            )
+
+            if total_count > 0 and not items_list:
+                return {
+                    'error': f"闲鱼接口显示“{group_name}”有 {total_count} 件商品，但当前响应结构无法解析",
+                    'response_fields': response_fields
+                }
+            if total_count == 0 and declared_count > 0 and not items_list:
+                return {
+                    'error': f"闲鱼分组显示“{group_name}”有 {declared_count} 件商品，但列表接口返回0件，请稍后重试",
+                    'response_fields': response_fields
+                }
+            if items_list and total_count == 0:
+                logger.warning(
+                    f"【{self.cookie_id}】闲鱼商品列表 totalCount=0，"
+                    f"但实际解析到 {len(items_list)} 件，按商品数组继续同步"
+                )
+
+            saved_count = 0
+            if items_list:
+                saved_count = await self.save_items_list_to_db(items_list)
+
+            return {
+                'success': True,
+                'page_number': page_number,
+                'page_size': page_size,
+                'current_count': len(items_list),
+                'total_count': effective_total_count,
+                'api_total_count': total_count,
+                'group_declared_count': declared_count,
+                'count_reconciled': effective_total_count != total_count,
+                'items': items_list,
+                'saved_count': saved_count,
+                'next_page': bool(items_data.get('nextPage')),
+                'confirmed_empty': not items_list and total_count == 0 and declared_count == 0,
+                'group_name': group_name,
+                'group_id': group_id,
+                'account_id': self.myid,
+                'response_fields': response_fields
+            }
         except Exception as e:
             logger.error(f"商品信息API请求异常: {self._safe_str(e)}")
             await asyncio.sleep(0.5)
             return await self.get_item_list_info(page_number, page_size, retry_count + 1)
 
     async def get_all_items(self, page_size=20, max_pages=None):
-        """获取所有商品信息（自动分页）
-
-        Args:
-            page_size (int): 每页数量，默认20
-            max_pages (int): 最大页数限制，None表示无限制
-
-        Returns:
-            dict: 包含所有商品信息的字典
-        """
+        """获取所有在售商品信息（自动分页）。"""
         all_items = []
         page_number = 1
+        pages_fetched = 0
         total_saved = 0
+        confirmed_empty = False
+        group_name = '在售'
+        api_total_count = 0
+        group_declared_count = 0
+        count_reconciled = False
 
         logger.info(f"开始获取所有商品信息，每页{page_size}条")
-
         while True:
             if max_pages and page_number > max_pages:
                 logger.info(f"达到最大页数限制 {max_pages}，停止获取")
                 break
 
-            logger.info(f"正在获取第 {page_number} 页...")
             result = await self.get_item_list_info(page_number, page_size)
-
-            if not result.get("success"):
+            if not result.get('success'):
                 logger.error(f"获取第 {page_number} 页失败: {result}")
-                break
+                return {
+                    'success': False,
+                    'error': result.get('error', '商品同步失败'),
+                    'details': result
+                }
 
-            current_items = result.get("items", [])
+            pages_fetched += 1
+            current_items = result.get('items', [])
+            confirmed_empty = result.get('confirmed_empty', False)
+            group_name = result.get('group_name', group_name)
+            api_total_count = max(api_total_count, result.get('api_total_count', 0))
+            group_declared_count = max(
+                group_declared_count,
+                result.get('group_declared_count', 0)
+            )
+            count_reconciled = count_reconciled or result.get('count_reconciled', False)
             if not current_items:
-                logger.info(f"第 {page_number} 页没有数据，获取完成")
                 break
 
             all_items.extend(current_items)
-            total_saved += result.get("saved_count", 0)
-
-            logger.info(f"第 {page_number} 页获取到 {len(current_items)} 个商品")
-
-            # 如果当前页商品数量少于页面大小，说明已经是最后一页
-            if len(current_items) < page_size:
-                logger.info(f"第 {page_number} 页商品数量({len(current_items)})少于页面大小({page_size})，获取完成")
+            total_saved += result.get('saved_count', 0)
+            if not result.get('next_page', len(current_items) >= page_size):
                 break
 
             page_number += 1
-
-            # 添加延迟避免请求过快
             await asyncio.sleep(1)
 
-        logger.info(f"所有商品获取完成，共 {len(all_items)} 个商品，保存了 {total_saved} 个")
-
+        logger.info(
+            f"【{self.cookie_id}】商品获取完成: account={self.myid}, "
+            f"group={group_name}, total={len(all_items)}, saved={total_saved}, "
+            f"confirmed_empty={confirmed_empty}"
+        )
         return {
-            "success": True,
-            "total_pages": page_number,
-            "total_count": len(all_items),
-            "total_saved": total_saved,
-            "items": all_items
+            'success': True,
+            'total_pages': pages_fetched,
+            'total_count': len(all_items),
+            'total_saved': total_saved,
+            'items': all_items,
+            'api_total_count': api_total_count,
+            'group_declared_count': group_declared_count,
+            'parsed_count': len(all_items),
+            'count_reconciled': count_reconciled,
+            'confirmed_empty': confirmed_empty,
+            'group_name': group_name,
+            'account_id': self.myid
         }
 
     async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None):

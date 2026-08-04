@@ -28,14 +28,15 @@ body {
 /* 闲鱼风格卡片 */
 .ios-card {
   background: #FFFFFF;
-  border-radius: 24px;
-  border: 1px solid rgba(0, 0, 0, 0.02);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 8px;
+  border: 1px solid #E5E7EB;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .ios-card:hover {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.06);
+  border-color: #D1D5DB;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 /* 闲鱼风格输入框 */
@@ -71,13 +72,12 @@ body {
 
 .ios-btn-primary:hover:not(:disabled) {
   background: #FFD600;
-  transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(255, 214, 0, 0.3);
+  box-shadow: 0 2px 6px rgba(255, 214, 0, 0.25);
 }
 
 .ios-btn-primary:active:not(:disabled) {
-  transform: translateY(1px);
-  box-shadow: 0 2px 8px rgba(255, 214, 0, 0.2);
+  background: #F5C800;
+  box-shadow: none;
 }
 
 .ios-btn-primary:disabled {
@@ -285,8 +285,8 @@ body {
   display: flex;
   flex-direction: column;
   background-color: white;
-  border-radius: 2.5rem;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  box-shadow: 0 20px 40px -16px rgba(0, 0, 0, 0.28);
   overflow: hidden;
 }
 
@@ -340,15 +340,15 @@ body {
   display: flex;
   flex-direction: column;
   background-color: white;
-  border-radius: 2.5rem;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  box-shadow: 0 20px 40px -16px rgba(0, 0, 0, 0.28);
   overflow: hidden;
 }
 
 /* 响应式工具类 */
 @media (max-width: 768px) {
   .ios-card {
-    border-radius: 16px;
+    border-radius: 8px;
   }
 
   .ios-input {
@@ -358,7 +358,7 @@ body {
   .modal-container {
     max-width: calc(100% - 2rem);
     max-height: 90vh;
-    border-radius: 1.5rem;
+    border-radius: 8px;
   }
 
   .modal-header,

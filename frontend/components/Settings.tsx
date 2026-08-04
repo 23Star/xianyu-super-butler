@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { getSystemSettings, updateSystemSettings } from '../services/api';
 import { SystemSettings } from '../types';
 import {
-  Bot, Save, Lock, Sparkles, Mail, Settings as SettingsIcon,
-  Eye, EyeOff, RefreshCw, Database, ToggleLeft, ToggleRight
+  Save, Sparkles, Mail, Settings as SettingsIcon,
+  Eye, EyeOff, RefreshCw, Database
 } from 'lucide-react';
 
 const Settings: React.FC = () => {
@@ -40,15 +40,15 @@ const Settings: React.FC = () => {
   if (!settings) return <div className="p-8 text-center text-gray-400">加载配置中...</div>;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 animate-fade-in pb-24">
+    <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 bg-gray-100 rounded-2xl flex items-center justify-center">
               <SettingsIcon className="w-6 h-6 text-gray-600" />
           </div>
           <div>
-              <h2 className="text-3xl font-extrabold text-gray-900">系统设置</h2>
+              <h2 className="text-2xl font-bold text-gray-900">系统设置</h2>
               <p className="text-gray-500 mt-1 text-sm font-medium">配置全局自动化规则与系统参数</p>
           </div>
         </div>
@@ -73,7 +73,7 @@ const Settings: React.FC = () => {
                 基础设置
             </h3>
 
-            <div className="ios-card rounded-[2rem] p-6 bg-white space-y-4">
+            <div className="ios-card p-6 bg-white space-y-4">
               <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
                 <div>
                   <div className="font-bold text-gray-900">允许用户注册</div>
@@ -190,7 +190,7 @@ const Settings: React.FC = () => {
                 AI 智能回复配置
             </h3>
 
-            <div className="ios-card rounded-[2rem] p-6 bg-white space-y-6">
+            <div className="ios-card p-6 bg-white space-y-6">
               <div className="space-y-3">
                 <label className="block text-sm font-bold text-gray-800">API 地址</label>
                 <input
@@ -269,7 +269,7 @@ const Settings: React.FC = () => {
                 SMTP 邮件配置
             </h3>
 
-            <div className="ios-card rounded-[2rem] p-6 bg-white space-y-6">
+            <div className="ios-card p-6 bg-white space-y-6">
               <p className="text-sm text-gray-500">配置SMTP服务器用于发送注册验证码等邮件通知</p>
 
               <div className="grid grid-cols-2 gap-4">
@@ -343,13 +343,13 @@ const Settings: React.FC = () => {
       </div>
 
       {/* Save Button */}
-      <div className="fixed bottom-10 right-10 z-30">
+      <div className="sticky bottom-0 z-20 flex justify-end border-t border-gray-200 bg-[#F4F5F7]/95 py-4 backdrop-blur-sm">
         <button
             onClick={handleSave}
             disabled={saving}
-            className="ios-btn-primary px-10 py-5 rounded-[2rem] text-lg shadow-2xl shadow-yellow-200 flex items-center gap-3 transform hover:scale-105 active:scale-95 transition-all disabled:opacity-70"
+            className="ios-btn-primary flex w-full items-center justify-center gap-2 rounded-lg px-6 py-3 disabled:opacity-70 sm:w-auto"
         >
-            <Save className="w-6 h-6" />
+            <Save className="w-5 h-5" />
             {saving ? '保存中...' : '保存所有配置'}
         </button>
       </div>

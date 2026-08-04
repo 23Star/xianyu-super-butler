@@ -154,24 +154,24 @@ const CardList: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex justify-between items-center">
+    <div className="space-y-5 animate-fade-in">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-gray-900">卡密库存</h2>
-          <p className="text-gray-500 mt-2 text-sm">管理自动发货的卡密、链接或图片资源。</p>
+          <h2 className="text-2xl font-bold text-gray-900">卡密库存</h2>
+          <p className="mt-1 text-sm text-gray-500">管理自动发货的卡密、链接或图片资源。</p>
         </div>
         <button
             onClick={() => setShowAddModal(true)}
-            className="ios-btn-primary flex items-center gap-2 px-6 py-3 rounded-2xl font-bold shadow-lg shadow-yellow-200 transition-transform hover:scale-105 active:scale-95"
+            className="ios-btn-primary flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-bold sm:w-auto"
         >
           <Plus className="w-5 h-5" />
           添加新卡密
         </button>
       </div>
 
-      <div className="ios-card rounded-[2rem] overflow-hidden shadow-lg border-0 bg-white">
+      <div className="ios-card overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="min-w-[900px] w-full text-left border-collapse">
             <thead>
               <tr className="bg-white text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-50">
                 <th className="px-8 py-5 w-[15%]">卡密名称</th>
@@ -238,6 +238,8 @@ const CardList: React.FC = () => {
                         className={`w-12 h-8 rounded-full relative transition-colors ${
                           card.enabled ? 'bg-green-500' : 'bg-gray-300'
                         }`}
+                        title={card.enabled ? '停用' : '启用'}
+                        aria-label={`${card.enabled ? '停用' : '启用'}卡密 ${card.name}`}
                       >
                         <div className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-sm transition-transform ${
                           card.enabled ? 'left-5' : 'left-1'
@@ -248,14 +250,17 @@ const CardList: React.FC = () => {
                       <div className="flex items-center justify-end gap-2">
                         <button
                           onClick={() => handleEdit(card)}
-                          className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl transition-colors"
+                          className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
                           title="编辑"
+                          aria-label={`编辑卡密 ${card.name}`}
                         >
                           <Edit className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => handleDelete(card.id)}
-                          className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                          className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                          title="删除"
+                          aria-label={`删除卡密 ${card.name}`}
                         >
                           <Trash2 className="w-5 h-5" />
                         </button>

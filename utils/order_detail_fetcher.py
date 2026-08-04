@@ -790,8 +790,15 @@ class OrderDetailFetcher:
                     // 交易关闭 - 最长最具体的优先
                     {text: '买家取消了订单', status: 'cancelled', priority: 100},
                     {text: '卖家取消了订单', status: 'cancelled', priority: 100},
+                    {text: '退款成功', status: 'cancelled', priority: 100},
                     {text: '交易关闭', status: 'cancelled', priority: 90},
                     {text: '订单已关闭', status: 'cancelled', priority: 90},
+                    // 退款状态必须高于历史交易/发货文案
+                    {text: '等待卖家处理退款', status: 'refunding', priority: 89},
+                    {text: '退款申请中', status: 'refunding', priority: 89},
+                    {text: '退货退款中', status: 'refunding', priority: 89},
+                    {text: '退款中', status: 'refunding', priority: 88},
+                    {text: '申请退款', status: 'refunding', priority: 87},
                     // 已发货
                     {text: '卖家已发货，待买家确认收货', status: 'shipped', priority: 85},
                     {text: '已发货，待买家确认收货', status: 'shipped', priority: 80},
@@ -807,9 +814,6 @@ class OrderDetailFetcher:
                     {text: '交易成功', status: 'completed', priority: 40},
                     {text: '订单完成', status: 'completed', priority: 35},
                     {text: '交易完成', status: 'completed', priority: 30},
-                    // 退款
-                    {text: '退款中', status: 'refunding', priority: 25},
-                    {text: '申请退款', status: 'refunding', priority: 20},
                     // 处理中
                     {text: '处理中', status: 'processing', priority: 10},
                 ];
@@ -827,7 +831,7 @@ class OrderDetailFetcher:
                 const maxNodes = 5000; // 限制遍历的节点数量
 
                 let node;
-                while(node = walker.nextNode() && nodeCount < maxNodes) {
+                while((node = walker.nextNode()) && nodeCount < maxNodes) {
                     nodeCount++;
                     const text = node.textContent?.trim();
                     if(!text || text.length < 2 || text.length > 100) continue;

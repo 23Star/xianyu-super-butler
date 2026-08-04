@@ -2111,9 +2111,6 @@ def patch_login_with_password_headful():
                                     logger.success("✅ 登录成功！Cookie有效")
                                     logger.info(f"获取到 {len(cookies_dict)} 个Cookie字段")
                                     
-                                    # 生成Cookie字符串
-                                    cookie_str = '; '.join([f"{k}={v}" for k, v in cookies_dict.items()])
-                                    logger.info(f"Cookie字符串:" + cookie_str)
                                     return cookies_dict
                                 else:
                                     logger.error("❌ 登录验证失败，页面元素未找到")
@@ -2200,4 +2197,3 @@ if __name__ != "__main__":
         apply_patches()
     except:
         pass  # 如果导入失败，忽略错误
-

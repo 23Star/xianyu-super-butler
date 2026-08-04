@@ -4,7 +4,12 @@ import { AccountDetail, ShippingRule, ReplyRule, DefaultReply } from '../types';
 import { getAccountDetails, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
 import { Plus, Trash2, MessageSquare, X, Save, Loader2, Key, Truck, Power, PowerOff, Edit2, RefreshCw, Sparkles, Bot } from 'lucide-react';
 
-type TabType = 'reply' | 'delivery' | 'default';
+type ReplyTabType = 'reply' | 'default';
+type KeywordsMode = 'reply' | 'delivery';
+
+interface KeywordsProps {
+  mode: KeywordsMode;
+}
 
 interface Keyword {
   id: string;
@@ -29,10 +34,10 @@ interface DefaultReplyForm {
   reply_image_url: string;
 }
 
-const Keywords: React.FC = () => {
+const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<TabType>('reply');
+  const [activeTab, setActiveTab] = useState<ReplyTabType>('reply');
 
   // 关键词回复相关状态
   const [keywords, setKeywords] = useState<Keyword[]>([]);
@@ -70,23 +75,27 @@ const Keywords: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (mode === 'delivery') {
+      loadShippingRules();
+      loadCards();
+      return;
+    }
+
     getAccountDetails().then((data) => {
       setAccounts(data);
       // 默认选择第一个账号
-      if (data && data.length > 0 && !selectedAccount) {
-        setSelectedAccount(data[0].id);
+      if (data && data.length > 0) {
+        setSelectedAccount((current) => current || data[0].id);
       }
     });
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
-    if (selectedAccount) {
+    if (mode === 'reply' && selectedAccount) {
       loadKeywords();
-      loadShippingRules();
-      loadCards();
       loadDefaultReplies();
     }
-  }, [selectedAccount]);
+  }, [mode, selectedAccount]);
 
   const loadDefaultReplies = async () => {
     try {
@@ -129,14 +138,14 @@ const Keywords: React.FC = () => {
   };
 
   const handleAdd = () => {
-    if (activeTab === 'reply') {
-      setEditingKeyword(null);
-      setReplyForm({ keyword: '', reply_content: '' });
-      setShowReplyModal(true);
-    } else if (activeTab === 'delivery') {
+    if (mode === 'delivery') {
       setEditingDeliveryRule(null);
       setDeliveryForm({ keyword: '', card_id: '', description: '', enabled: true });
       setShowDeliveryModal(true);
+    } else if (activeTab === 'reply') {
+      setEditingKeyword(null);
+      setReplyForm({ keyword: '', reply_content: '' });
+      setShowReplyModal(true);
     } else {
       // default tab - 编辑选中账号的默认回复
       if (!selectedAccount) return;
@@ -330,70 +339,64 @@ const Keywords: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 animate-fade-in">
+    <div className="space-y-5 animate-fade-in">
       {/* Header */}
-      <div className="flex justify-between items-end">
+      <div className="flex items-end justify-between">
         <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">关键词管理</h2>
-          <p className="text-gray-500 mt-2 font-medium">配置自动回复和关键词发货规则</p>
+          <h2 className="text-2xl font-bold text-gray-900">
+            {mode === 'reply' ? '自动回复' : '自动发货'}
+          </h2>
+          <p className="mt-1 text-sm text-gray-500">
+            {mode === 'reply'
+              ? '配置关键词回复和账号默认回复'
+              : '配置关键词触发的卡密发货规则'}
+          </p>
         </div>
       </div>
 
-      {/* Tab 切换 - 精美设计 */}
-      <div className="flex justify-center">
-        <div className="inline-flex bg-gradient-to-br from-gray-100 to-gray-200 p-2 rounded-3xl shadow-xl">
+      {/* Tab 切换 */}
+      {mode === 'reply' && <div className="overflow-x-auto">
+        <div className="inline-flex min-w-max rounded-lg bg-gray-100 p-1">
           <button
             onClick={() => setActiveTab('reply')}
-            className={`flex items-center gap-3 px-6 py-4 rounded-2xl font-bold text-lg transition-all duration-300 ${
+            className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-bold transition-colors sm:px-4 ${
               activeTab === 'reply'
-                ? 'bg-gradient-to-r from-[#FFE815] to-[#FFD700] text-gray-900 shadow-2xl scale-105'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-white/50'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:bg-white/60 hover:text-gray-700'
             }`}
           >
             <MessageSquare className="w-6 h-6" />
             关键词回复
             {activeTab === 'reply' && (
-              <span className="ml-2 px-3 py-1 bg-white/30 rounded-full text-sm">{keywords.length}</span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('delivery')}
-            className={`flex items-center gap-3 px-6 py-4 rounded-2xl font-bold text-lg transition-all duration-300 ${
-              activeTab === 'delivery'
-                ? 'bg-gradient-to-r from-[#FFE815] to-[#FFD700] text-gray-900 shadow-2xl scale-105'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-white/50'
-            }`}
-          >
-            <Truck className="w-6 h-6" />
-            关键词发货
-            {activeTab === 'delivery' && (
-              <span className="ml-2 px-3 py-1 bg-white/30 rounded-full text-sm">{shippingRules.length}</span>
+              <span className="ml-1 rounded bg-gray-100 px-2 py-0.5 text-xs">{keywords.length}</span>
             )}
           </button>
           <button
             onClick={() => setActiveTab('default')}
-            className={`flex items-center gap-3 px-6 py-4 rounded-2xl font-bold text-lg transition-all duration-300 ${
+            className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-bold transition-colors sm:px-4 ${
               activeTab === 'default'
-                ? 'bg-gradient-to-r from-[#FFE815] to-[#FFD700] text-gray-900 shadow-2xl scale-105'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-white/50'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:bg-white/60 hover:text-gray-700'
             }`}
           >
             <Bot className="w-6 h-6" />
             账号默认回复
             {activeTab === 'default' && (
-              <span className="ml-2 px-3 py-1 bg-white/30 rounded-full text-sm">{Object.values(defaultReplies).filter(r => r.enabled).length}</span>
+              <span className="ml-1 rounded bg-gray-100 px-2 py-0.5 text-xs">
+                {(Object.values(defaultReplies) as DefaultReply[]).filter(reply => reply.enabled).length}
+              </span>
             )}
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* 操作栏 */}
-      <div className="bg-white rounded-3xl shadow-xl p-6">
+      <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
         <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-          <div className="flex items-center gap-4 w-full sm:w-auto">
+          {mode === 'reply' ? <div className="flex items-center gap-4 w-full sm:w-auto">
             <label className="text-sm font-bold text-gray-700 whitespace-nowrap">选择账号</label>
             <select
-              className="flex-1 sm:w-64 ios-input px-5 py-3 rounded-2xl font-medium border-2 border-gray-200 focus:border-[#FFE815] focus:ring-4 focus:ring-[#FFE815]/20 transition-all"
+              className="ios-input flex-1 rounded-lg border border-gray-200 px-4 py-2.5 font-medium transition-colors focus:border-[#FFE815] sm:w-64"
               value={selectedAccount}
               onChange={(e) => setSelectedAccount(e.target.value)}
             >
@@ -404,41 +407,46 @@ const Keywords: React.FC = () => {
                 </option>
               ))}
             </select>
-          </div>
+          </div> : <p className="w-full text-sm text-gray-500 sm:w-auto">按买家消息关键词匹配卡密并自动发货</p>}
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
               onClick={() => {
-                if (activeTab === 'reply') loadKeywords();
-                else if (activeTab === 'delivery') loadShippingRules();
-                else loadDefaultReplies();
+                if (mode === 'delivery') {
+                  loadShippingRules();
+                  loadCards();
+                } else if (activeTab === 'reply') {
+                  loadKeywords();
+                } else {
+                  loadDefaultReplies();
+                }
               }}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-2xl font-bold bg-gradient-to-br from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 transition-all shadow-lg"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-2.5 font-bold transition-colors hover:bg-gray-200 sm:flex-none"
             >
               <RefreshCw className="w-5 h-5" />
               刷新
             </button>
             <button
               onClick={handleAdd}
-              disabled={!selectedAccount}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-8 py-3 rounded-2xl font-bold bg-gradient-to-r from-[#FFE815] to-[#FFD700] hover:from-[#FFD700] hover:to-[#FFC800] text-gray-900 shadow-xl hover:shadow-2xl hover:scale-105 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={mode === 'reply' && !selectedAccount}
+              className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-bold disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
             >
               <Plus className="w-5 h-5" />
-              {activeTab === 'reply' ? '添加关键词' : activeTab === 'delivery' ? '添加发货规则' : '编辑默认回复'}
+              {mode === 'delivery' ? '添加发货规则' : activeTab === 'reply' ? '添加关键词' : '编辑默认回复'}
             </button>
           </div>
         </div>
       </div>
 
       {/* 内容区域 */}
-      {!selectedAccount ? (
-        <div className="py-24 text-center bg-gradient-to-br from-white to-gray-50 rounded-[2.5rem] border-3 border-dashed border-gray-300 shadow-xl">
-          <div className="w-24 h-24 bg-gradient-to-br from-[#FFE815]/20 to-[#FFD700]/20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-            <MessageSquare className="w-12 h-12 text-[#FFE815]" />
+      {mode === 'reply' && !selectedAccount ? (
+        <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white py-16 text-center">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-yellow-50">
+            <MessageSquare className="h-8 w-8 text-yellow-500" />
           </div>
-          <h3 className="text-2xl font-bold text-gray-900 mb-2">请选择账号</h3>
-          <p className="text-gray-500 text-lg">选择一个账号以管理其关键词规则</p>
+          <h3 className="mb-1 text-lg font-bold text-gray-900">请选择账号</h3>
+          <p className="text-sm text-gray-500">选择一个账号以管理其关键词规则</p>
         </div>
-      ) : activeTab === 'reply' ? (
+      ) : mode === 'reply' && activeTab === 'reply' ? (
         // 关键词回复列表
         loading ? (
           <div className="py-24 flex justify-center">
@@ -449,48 +457,47 @@ const Keywords: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {keywords.map((keyword, index) => (
+            {keywords.map((keyword) => (
               <div
                 key={keyword.id}
-                className="group relative bg-gradient-to-br from-white to-gray-50 rounded-3xl p-6 shadow-lg hover:shadow-2xl transition-all duration-300 border-2 border-transparent hover:border-[#FFE815]/30 overflow-hidden"
+                className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm transition-colors hover:border-yellow-300"
               >
-                {/* 背景装饰 */}
-                <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#FFE815]/10 to-transparent rounded-full -translate-y-1/2 translate-x-1/2 group-hover:scale-150 transition-transform duration-500"></div>
-
-                <div className="relative flex items-center gap-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                   {/* 图标 */}
                   <div className="flex-shrink-0">
-                    <div className="w-16 h-16 bg-gradient-to-br from-[#FFF9C4] to-[#FFE815] rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 group-hover:rotate-12 transition-all duration-300">
-                      <Key className="w-8 h-8 text-yellow-800" />
+                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-yellow-50">
+                      <Key className="h-6 w-6 text-yellow-700" />
                     </div>
                   </div>
 
                   {/* 内容 */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-3">
-                      <h3 className="text-xl font-black text-gray-900">{keyword.keyword}</h3>
-                      <span className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-green-400 to-green-500 text-white text-xs font-bold shadow-md">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <h3 className="font-bold text-gray-900">{keyword.keyword}</h3>
+                      <span className="rounded bg-green-50 px-2 py-1 text-xs font-bold text-green-700">
                         精确匹配
                       </span>
                     </div>
-                    <p className="text-gray-600 bg-white/70 backdrop-blur-sm rounded-2xl px-4 py-3 line-clamp-2 shadow-inner border border-gray-100">
-                      💬 {keyword.reply_content || '无回复内容'}
+                    <p className="line-clamp-2 rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                      {keyword.reply_content || '无回复内容'}
                     </p>
                   </div>
 
                   {/* 操作按钮 */}
-                  <div className="flex gap-2 flex-shrink-0">
+                  <div className="flex flex-shrink-0 justify-end gap-2">
                     <button
                       onClick={() => handleEdit(keyword)}
-                      className="p-3.5 bg-gradient-to-br from-amber-50 to-amber-100 text-amber-600 rounded-2xl hover:from-amber-100 hover:to-amber-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                      className="rounded-lg bg-amber-50 p-2.5 text-amber-700 transition-colors hover:bg-amber-100"
                       title="编辑"
+                      aria-label={`编辑关键词 ${keyword.keyword}`}
                     >
                       <Edit2 className="w-5 h-5" />
                     </button>
                     <button
                       onClick={() => handleDelete(keyword.id)}
-                      className="p-3.5 bg-gradient-to-br from-red-50 to-red-100 text-red-500 rounded-2xl hover:from-red-100 hover:to-red-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                      className="rounded-lg bg-red-50 p-2.5 text-red-600 transition-colors hover:bg-red-100"
                       title="删除"
+                      aria-label={`删除关键词 ${keyword.keyword}`}
                     >
                       <Trash2 className="w-5 h-5" />
                     </button>
@@ -500,72 +507,69 @@ const Keywords: React.FC = () => {
             ))}
 
             {keywords.length === 0 && (
-              <div className="py-24 text-center bg-gradient-to-br from-white to-gray-50 rounded-[2.5rem] border-3 border-dashed border-gray-300 shadow-xl">
-                <div className="w-24 h-24 bg-gradient-to-br from-[#FFE815]/20 to-[#FFD700]/20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-                  <MessageSquare className="w-12 h-12 text-[#FFE815]" />
+              <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white py-16 text-center">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-yellow-50">
+                  <MessageSquare className="h-8 w-8 text-yellow-500" />
                 </div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-2">暂无关键词</h3>
-                <p className="text-gray-500 text-lg">点击右上角添加新的关键词规则</p>
+                <h3 className="mb-1 text-lg font-bold text-gray-900">暂无关键词</h3>
+                <p className="text-sm text-gray-500">使用上方按钮添加新的关键词规则</p>
               </div>
             )}
           </div>
         )
-      ) : activeTab === 'delivery' ? (
+      ) : mode === 'delivery' ? (
         // 关键词发货列表
         <div className="space-y-4">
           {shippingRules.map((rule) => (
             <div
               key={rule.id}
-              className={`group relative bg-gradient-to-br ${rule.enabled ? 'from-white to-blue-50/30' : 'from-gray-100 to-gray-150'} rounded-3xl p-6 shadow-lg hover:shadow-2xl transition-all duration-300 border-2 ${rule.enabled ? 'border-transparent hover:border-blue-400/30' : 'border-gray-200'} overflow-hidden`}
+              className={`rounded-lg border p-4 shadow-sm transition-colors ${
+                rule.enabled ? 'border-gray-100 bg-white hover:border-blue-300' : 'border-gray-200 bg-gray-50'
+              }`}
             >
-              {/* 背景装饰 */}
-              {rule.enabled && (
-                <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-blue-400/10 to-transparent rounded-full -translate-y-1/2 translate-x-1/2 group-hover:scale-150 transition-transform duration-500"></div>
-              )}
-
-              <div className="relative flex items-center gap-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                 {/* 图标 */}
                 <div className="flex-shrink-0">
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-all duration-300 ${
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-lg ${
                     rule.enabled
-                      ? 'bg-gradient-to-br from-blue-400 to-blue-500 group-hover:rotate-12'
-                      : 'bg-gradient-to-br from-gray-300 to-gray-400'
+                      ? 'bg-blue-500'
+                      : 'bg-gray-300'
                   }`}>
-                    <Truck className="w-8 h-8 text-white" />
+                    <Truck className="h-6 w-6 text-white" />
                   </div>
                 </div>
 
                 {/* 内容 */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-3">
-                    <h3 className="text-xl font-black text-gray-900">{rule.item_keyword}</h3>
-                    <span className={`px-3 py-1.5 rounded-xl text-xs font-bold shadow-md ${
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <h3 className="font-bold text-gray-900">{rule.item_keyword}</h3>
+                    <span className={`rounded px-2 py-1 text-xs font-bold ${
                       rule.enabled
-                        ? 'bg-gradient-to-r from-green-400 to-green-500 text-white'
-                        : 'bg-gradient-to-r from-gray-400 to-gray-500 text-white'
+                        ? 'bg-green-50 text-green-700'
+                        : 'bg-gray-200 text-gray-600'
                     }`}>
                       {rule.enabled ? '已启用' : '已禁用'}
                     </span>
                   </div>
-                  <p className="text-gray-600 bg-white/70 backdrop-blur-sm rounded-2xl px-4 py-3 shadow-inner border border-gray-100">
-                    🎁 卡券：{rule.card_group_name || `ID: ${rule.card_group_id}`}
+                  <p className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                    卡券：{rule.card_group_name || `ID: ${rule.card_group_id}`}
                     {rule.name && (
                       <>
                         <span className="mx-2 text-gray-300">|</span>
-                        📝 {rule.name}
+                        {rule.name}
                       </>
                     )}
                   </p>
                 </div>
 
                 {/* 操作按钮 */}
-                <div className="flex gap-2 flex-shrink-0">
+                <div className="flex flex-shrink-0 justify-end gap-2">
                   <button
                     onClick={() => handleToggleDelivery(rule)}
-                    className={`p-3.5 rounded-2xl transition-all shadow-md hover:shadow-lg hover:scale-110 ${
+                    className={`rounded-lg p-2.5 transition-colors ${
                       rule.enabled
-                        ? 'bg-gradient-to-br from-amber-50 to-amber-100 text-amber-600 hover:from-amber-100 hover:to-amber-200'
-                        : 'bg-gradient-to-br from-green-50 to-green-100 text-green-600 hover:from-green-100 hover:to-green-200'
+                        ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                        : 'bg-green-50 text-green-700 hover:bg-green-100'
                     }`}
                     title={rule.enabled ? '禁用' : '启用'}
                   >
@@ -573,14 +577,14 @@ const Keywords: React.FC = () => {
                   </button>
                   <button
                     onClick={() => handleEditDelivery(rule)}
-                    className="p-3.5 bg-gradient-to-br from-amber-50 to-amber-100 text-amber-600 rounded-2xl hover:from-amber-100 hover:to-amber-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                    className="rounded-lg bg-amber-50 p-2.5 text-amber-700 transition-colors hover:bg-amber-100"
                     title="编辑"
                   >
                     <Edit2 className="w-5 h-5" />
                   </button>
                   <button
                     onClick={() => handleDeleteDelivery(rule.id)}
-                    className="p-3.5 bg-gradient-to-br from-red-50 to-red-100 text-red-500 rounded-2xl hover:from-red-100 hover:to-red-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                    className="rounded-lg bg-red-50 p-2.5 text-red-600 transition-colors hover:bg-red-100"
                     title="删除"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -591,16 +595,16 @@ const Keywords: React.FC = () => {
           ))}
 
           {shippingRules.length === 0 && (
-            <div className="py-24 text-center bg-gradient-to-br from-white to-gray-50 rounded-[2.5rem] border-3 border-dashed border-gray-300 shadow-xl">
-              <div className="w-24 h-24 bg-gradient-to-br from-blue-400/20 to-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-                <Truck className="w-12 h-12 text-blue-400" />
+            <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white py-16 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
+                <Truck className="h-8 w-8 text-blue-500" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-2">暂无发货规则</h3>
-              <p className="text-gray-500 text-lg">点击右上角添加新的发货规则</p>
+              <h3 className="mb-1 text-lg font-bold text-gray-900">暂无发货规则</h3>
+              <p className="text-sm text-gray-500">使用上方按钮添加新的发货规则</p>
             </div>
           )}
         </div>
-      ) : activeTab === 'default' ? (
+      ) : mode === 'reply' && activeTab === 'default' ? (
         // 账号默认回复列表
         <div className="space-y-4">
           {accounts.map((account) => {
@@ -609,54 +613,51 @@ const Keywords: React.FC = () => {
             return (
               <div
                 key={account.id}
-                className={`group relative bg-gradient-to-br ${hasDefaultReply ? 'from-white to-purple-50/30' : 'from-gray-100 to-gray-150'} rounded-3xl p-6 shadow-lg hover:shadow-2xl transition-all duration-300 border-2 ${hasDefaultReply ? 'border-transparent hover:border-purple-400/30' : 'border-gray-200'} overflow-hidden`}
+                className={`rounded-lg border p-4 shadow-sm transition-colors ${
+                  hasDefaultReply ? 'border-gray-100 bg-white hover:border-purple-300' : 'border-gray-200 bg-gray-50'
+                }`}
               >
-                {/* 背景装饰 */}
-                {hasDefaultReply && (
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-purple-400/10 to-transparent rounded-full -translate-y-1/2 translate-x-1/2 group-hover:scale-150 transition-transform duration-500"></div>
-                )}
-
-                <div className="relative flex items-center gap-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                   {/* 图标 */}
                   <div className="flex-shrink-0">
-                    <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-all duration-300 ${
+                    <div className={`flex h-12 w-12 items-center justify-center rounded-lg ${
                       hasDefaultReply
-                        ? 'bg-gradient-to-br from-purple-400 to-purple-500 group-hover:rotate-12'
-                        : 'bg-gradient-to-br from-gray-300 to-gray-400'
+                        ? 'bg-purple-500'
+                        : 'bg-gray-300'
                     }`}>
-                      <Bot className="w-8 h-8 text-white" />
+                      <Bot className="h-6 w-6 text-white" />
                     </div>
                   </div>
 
                   {/* 内容 */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-3">
-                      <h3 className="text-xl font-black text-gray-900">{account.nickname}</h3>
-                      <span className={`px-3 py-1.5 rounded-xl text-xs font-bold shadow-md ${
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <h3 className="font-bold text-gray-900">{account.nickname}</h3>
+                      <span className={`rounded px-2 py-1 text-xs font-bold ${
                         hasDefaultReply
-                          ? 'bg-gradient-to-r from-green-400 to-green-500 text-white'
-                          : 'bg-gradient-to-r from-gray-400 to-gray-500 text-white'
+                          ? 'bg-green-50 text-green-700'
+                          : 'bg-gray-200 text-gray-600'
                       }`}>
                         {hasDefaultReply ? '已启用' : '未设置'}
                       </span>
                       {defaultReply?.reply_once && (
-                        <span className="px-3 py-1.5 rounded-xl bg-purple-100 text-purple-700 text-xs font-bold shadow-md">
+                        <span className="rounded bg-purple-100 px-2 py-1 text-xs font-bold text-purple-700">
                           只回复一次
                         </span>
                       )}
                     </div>
                     {hasDefaultReply && (
-                      <p className="text-gray-600 bg-white/70 backdrop-blur-sm rounded-2xl px-4 py-3 line-clamp-2 shadow-inner border border-gray-100">
-                        💬 {defaultReply.reply_content || '无回复内容'}
+                      <p className="line-clamp-2 rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                        {defaultReply.reply_content || '无回复内容'}
                       </p>
                     )}
                   </div>
 
                   {/* 操作按钮 */}
-                  <div className="flex gap-2 flex-shrink-0">
+                  <div className="flex flex-shrink-0 justify-end gap-2">
                     <button
                       onClick={() => loadDefaultReplyForEdit(account.id)}
-                      className="p-3.5 bg-gradient-to-br from-purple-50 to-purple-100 text-purple-600 rounded-2xl hover:from-purple-100 hover:to-purple-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                      className="rounded-lg bg-purple-50 p-2.5 text-purple-700 transition-colors hover:bg-purple-100"
                       title="编辑"
                     >
                       <Edit2 className="w-5 h-5" />
@@ -665,14 +666,14 @@ const Keywords: React.FC = () => {
                       <>
                         <button
                           onClick={() => handleClearRecords(account.id)}
-                          className="p-3.5 bg-gradient-to-br from-blue-50 to-blue-100 text-blue-600 rounded-2xl hover:from-blue-100 hover:to-blue-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                          className="rounded-lg bg-blue-50 p-2.5 text-blue-700 transition-colors hover:bg-blue-100"
                           title="清空回复记录"
                         >
                           <RefreshCw className="w-5 h-5" />
                         </button>
                         <button
                           onClick={() => handleDeleteDefault(account.id)}
-                          className="p-3.5 bg-gradient-to-br from-red-50 to-red-100 text-red-500 rounded-2xl hover:from-red-100 hover:to-red-200 transition-all shadow-md hover:shadow-lg hover:scale-110"
+                          className="rounded-lg bg-red-50 p-2.5 text-red-600 transition-colors hover:bg-red-100"
                           title="删除"
                         >
                           <Trash2 className="w-5 h-5" />
@@ -686,19 +687,19 @@ const Keywords: React.FC = () => {
           })}
 
           {accounts.length === 0 && (
-            <div className="py-24 text-center bg-gradient-to-br from-white to-gray-50 rounded-[2.5rem] border-3 border-dashed border-gray-300 shadow-xl">
-              <div className="w-24 h-24 bg-gradient-to-br from-purple-400/20 to-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-                <Bot className="w-12 h-12 text-purple-400" />
+            <div className="rounded-lg border-2 border-dashed border-gray-200 bg-white py-16 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-purple-50">
+                <Bot className="h-8 w-8 text-purple-500" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-2">暂无账号</h3>
-              <p className="text-gray-500 text-lg">请先添加账号</p>
+              <h3 className="mb-1 text-lg font-bold text-gray-900">暂无账号</h3>
+              <p className="text-sm text-gray-500">请先添加账号</p>
             </div>
           )}
         </div>
       ) : null}
 
       {/* 关键词回复弹窗 */}
-      {showReplyModal && createPortal(
+      {mode === 'reply' && showReplyModal && createPortal(
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden animate-scale-in">
             {/* Header */}
@@ -778,7 +779,7 @@ const Keywords: React.FC = () => {
       )}
 
       {/* 关键词发货弹窗 */}
-      {showDeliveryModal && createPortal(
+      {mode === 'delivery' && showDeliveryModal && createPortal(
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden animate-scale-in">
             {/* Header */}
@@ -898,7 +899,7 @@ const Keywords: React.FC = () => {
       )}
 
       {/* 账号默认回复弹窗 */}
-      {showDefaultModal && createPortal(
+      {mode === 'reply' && showDefaultModal && createPortal(
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden animate-scale-in">
             {/* Header */}

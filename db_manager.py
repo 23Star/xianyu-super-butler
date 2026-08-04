@@ -118,6 +118,13 @@ class DBManager:
                 username TEXT DEFAULT '',
                 password TEXT DEFAULT '',
                 show_browser INTEGER DEFAULT 0,
+                nickname TEXT DEFAULT '',
+                avatar_url TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                bio TEXT DEFAULT '',
+                followers INTEGER,
+                following INTEGER,
+                profile_updated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
@@ -229,6 +236,13 @@ class DBManager:
                 order_status TEXT DEFAULT 'unknown',
                 cookie_id TEXT,
                 is_bargain INTEGER DEFAULT 0,
+                receiver_name TEXT DEFAULT '',
+                receiver_phone TEXT DEFAULT '',
+                receiver_address TEXT DEFAULT '',
+                receiver_city TEXT DEFAULT '',
+                system_shipped INTEGER DEFAULT 0,
+                version INTEGER DEFAULT 1,
+                chat_id TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
@@ -254,6 +268,14 @@ class DBManager:
                 self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN receiver_phone TEXT DEFAULT ''")
                 self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN receiver_address TEXT DEFAULT ''")
                 logger.info("orders 表收货人信息列添加完成")
+
+            # receiver_city 由订单分析和地址更新逻辑使用，旧数据库需要独立迁移。
+            try:
+                self._execute_sql(cursor, "SELECT receiver_city FROM orders LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 orders 表添加 receiver_city 列...")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN receiver_city TEXT DEFAULT ''")
+                logger.info("orders 表 receiver_city 列添加完成")
 
             # 检查并添加 version 列（用于乐观锁）
             try:
@@ -310,6 +332,7 @@ class DBManager:
                 item_description TEXT,
                 item_category TEXT,
                 item_price TEXT,
+                item_image TEXT,
                 item_detail TEXT,
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -327,6 +350,13 @@ class DBManager:
                 logger.info("正在为 item_info 表添加 multi_quantity_delivery 列...")
                 self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
+
+            try:
+                self._execute_sql(cursor, "SELECT item_image FROM item_info LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 item_info 表添加 item_image 列...")
+                self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN item_image TEXT")
+                logger.info("item_info 表 item_image 列添加完成")
 
             # 创建自动发货规则表
             cursor.execute('''
@@ -531,6 +561,23 @@ class DBManager:
                 logger.info("添加cookies表的pause_duration列...")
                 cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 10")
                 logger.info("数据库迁移完成：添加pause_duration列")
+
+            profile_columns = {
+                'nickname': "TEXT DEFAULT ''",
+                'avatar_url': "TEXT DEFAULT ''",
+                'location': "TEXT DEFAULT ''",
+                'bio': "TEXT DEFAULT ''",
+                'followers': "INTEGER",
+                'following': "INTEGER",
+                'profile_updated_at': "TIMESTAMP",
+            }
+            for column_name, column_type in profile_columns.items():
+                if column_name not in cookie_columns:
+                    logger.info(f"添加cookies表的{column_name}列...")
+                    cursor.execute(
+                        f"ALTER TABLE cookies ADD COLUMN {column_name} {column_type}"
+                    )
+                    logger.info(f"数据库迁移完成：添加{column_name}列")
 
             # 确保商品同步配置存在
             cursor.execute("SELECT key FROM system_settings WHERE key IN ('item_sync_enabled', 'item_sync_interval', 'item_sync_max_pages')")
@@ -1216,25 +1263,40 @@ class DBManager:
         if not self.sql_log_enabled:
             return
 
+        # 格式化SQL（移除多余空白）
+        formatted_sql = ' '.join(sql.split())
+
+        def format_param(param):
+            if isinstance(param, str):
+                lowered = param.lower()
+                looks_like_cookie = (
+                    '=' in param
+                    and (
+                        ';' in param
+                        or any(key in lowered for key in (
+                            'cookie2=', 'unb=', 'sgcookie=', '_m_h5_tk=',
+                            'xsrf-token=', '_tb_token_='
+                        ))
+                    )
+                )
+                if looks_like_cookie:
+                    field_count = sum(1 for part in param.split(';') if '=' in part)
+                    return f"<COOKIE_REDACTED length={len(param)} fields={field_count}>"
+                if len(param) > 100:
+                    return repr(f"{param[:100]}...")
+            return repr(param)
+
         # 格式化参数
         params_str = ""
         if params:
             if isinstance(params, (list, tuple)):
                 if len(params) > 0:
                     # 限制参数长度，避免日志过长
-                    formatted_params = []
-                    for param in params:
-                        if isinstance(param, str) and len(param) > 100:
-                            formatted_params.append(f"{param[:100]}...")
-                        else:
-                            formatted_params.append(repr(param))
+                    formatted_params = [format_param(param) for param in params]
                     params_str = f" | 参数: [{', '.join(formatted_params)}]"
 
-        # 格式化SQL（移除多余空白）
-        formatted_sql = ' '.join(sql.split())
-
         # 根据配置的日志级别输出
-        log_message = f"🗄️ SQL {operation}: {formatted_sql}{params_str}"
+        log_message = f"SQL {operation}: {formatted_sql}{params_str}"
 
         if self.sql_log_level == 'DEBUG':
             logger.debug(log_message)
@@ -1371,11 +1433,22 @@ class DBManager:
                 return None
 
     def get_cookie_details(self, cookie_id: str) -> Optional[Dict[str, any]]:
-        """获取Cookie的详细信息，包括user_id、auto_confirm、remark、pause_duration、username、password和show_browser"""
+        """获取Cookie的账号设置和公开资料。"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, "SELECT id, value, user_id, auto_confirm, remark, pause_duration, username, password, show_browser, created_at FROM cookies WHERE id = ?", (cookie_id,))
+                self._execute_sql(
+                    cursor,
+                    """
+                    SELECT id, value, user_id, auto_confirm, remark, pause_duration,
+                           username, password, show_browser, nickname, avatar_url,
+                           location, bio, followers, following, profile_updated_at,
+                           created_at
+                    FROM cookies
+                    WHERE id = ?
+                    """,
+                    (cookie_id,),
+                )
                 result = cursor.fetchone()
                 if result:
                     return {
@@ -1388,12 +1461,66 @@ class DBManager:
                         'username': result[6] or '',
                         'password': result[7] or '',
                         'show_browser': bool(result[8]) if result[8] is not None else False,
-                        'created_at': result[9]
+                        'nickname': result[9] or '',
+                        'avatar_url': result[10] or '',
+                        'location': result[11] or '',
+                        'bio': result[12] or '',
+                        'followers': result[13],
+                        'following': result[14],
+                        'profile_updated_at': result[15],
+                        'created_at': result[16],
                     }
                 return None
             except Exception as e:
                 logger.error(f"获取Cookie详细信息失败: {e}")
                 return None
+
+    def update_cookie_profile(self, cookie_id: str, profile: Dict[str, Any]) -> bool:
+        """保存从闲鱼公开个人页抓取的账号资料。"""
+        allowed_fields = (
+            'nickname',
+            'avatar_url',
+            'location',
+            'bio',
+            'followers',
+            'following',
+        )
+        update_fields = []
+        params = []
+        for field in allowed_fields:
+            if field in profile and profile[field] is not None:
+                update_fields.append(f"{field} = ?")
+                params.append(profile[field])
+
+        if not update_fields:
+            logger.warning(f"账号 {cookie_id} 的资料刷新未返回可保存字段")
+            return False
+
+        update_fields.append("profile_updated_at = CURRENT_TIMESTAMP")
+        params.append(cookie_id)
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    f"UPDATE cookies SET {', '.join(update_fields)} WHERE id = ?",
+                    tuple(params),
+                )
+                if cursor.rowcount == 0:
+                    logger.warning(f"账号 {cookie_id} 不存在，无法保存公开资料")
+                    return False
+                self.conn.commit()
+                logger.info(
+                    f"账号 {cookie_id} 公开资料已更新，字段={sorted(profile.keys())}"
+                )
+                return True
+            except Exception as e:
+                logger.error(
+                    f"保存账号 {cookie_id} 公开资料失败，异常类型={type(e).__name__}"
+                )
+                self.conn.rollback()
+                return False
 
     def update_auto_confirm(self, cookie_id: str, auto_confirm: bool) -> bool:
         """更新Cookie的自动确认发货设置"""
@@ -2207,15 +2334,21 @@ class DBManager:
                 logger.error(f"获取通知渠道失败: {e}")
                 return []
 
-    def get_notification_channel(self, channel_id: int) -> Optional[Dict[str, any]]:
+    def get_notification_channel(self, channel_id: int, user_id: int = None) -> Optional[Dict[str, any]]:
         """获取指定通知渠道"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
-                SELECT id, name, type, config, enabled, created_at, updated_at
-                FROM notification_channels WHERE id = ?
-                ''', (channel_id,))
+                if user_id is not None:
+                    cursor.execute('''
+                    SELECT id, name, type, config, enabled, created_at, updated_at
+                    FROM notification_channels WHERE id = ? AND user_id = ?
+                    ''', (channel_id, user_id))
+                else:
+                    cursor.execute('''
+                    SELECT id, name, type, config, enabled, created_at, updated_at
+                    FROM notification_channels WHERE id = ?
+                    ''', (channel_id,))
 
                 row = cursor.fetchone()
                 if row:
@@ -2233,16 +2366,24 @@ class DBManager:
                 logger.error(f"获取通知渠道失败: {e}")
                 return None
 
-    def update_notification_channel(self, channel_id: int, name: str, config: str, enabled: bool = True) -> bool:
+    def update_notification_channel(self, channel_id: int, name: str, config: str,
+                                    enabled: bool = True, user_id: int = None) -> bool:
         """更新通知渠道"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
-                UPDATE notification_channels
-                SET name = ?, config = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                ''', (name, config, enabled, channel_id))
+                if user_id is not None:
+                    cursor.execute('''
+                    UPDATE notification_channels
+                    SET name = ?, config = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND user_id = ?
+                    ''', (name, config, enabled, channel_id, user_id))
+                else:
+                    cursor.execute('''
+                    UPDATE notification_channels
+                    SET name = ?, config = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''', (name, config, enabled, channel_id))
                 self.conn.commit()
                 logger.debug(f"更新通知渠道: {channel_id}")
                 return cursor.rowcount > 0
@@ -2251,12 +2392,19 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def delete_notification_channel(self, channel_id: int) -> bool:
+    def delete_notification_channel(self, channel_id: int, user_id: int = None) -> bool:
         """删除通知渠道"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, "DELETE FROM notification_channels WHERE id = ?", (channel_id,))
+                if user_id is not None:
+                    self._execute_sql(
+                        cursor,
+                        "DELETE FROM notification_channels WHERE id = ? AND user_id = ?",
+                        (channel_id, user_id)
+                    )
+                else:
+                    self._execute_sql(cursor, "DELETE FROM notification_channels WHERE id = ?", (channel_id,))
                 self.conn.commit()
                 logger.debug(f"删除通知渠道: {channel_id}")
                 return cursor.rowcount > 0
@@ -2283,18 +2431,26 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def get_account_notifications(self, cookie_id: str) -> List[Dict[str, any]]:
+    def get_account_notifications(self, cookie_id: str, user_id: int = None) -> List[Dict[str, any]]:
         """获取账号的通知配置"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
+                sql = '''
                 SELECT mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
+                JOIN cookies c ON mn.cookie_id = c.id
                 WHERE mn.cookie_id = ? AND nc.enabled = 1
+                '''
+                params = [cookie_id]
+                if user_id is not None:
+                    sql += ' AND c.user_id = ? AND nc.user_id = ?'
+                    params.extend([user_id, user_id])
+                sql += '''
                 ORDER BY mn.id
-                ''', (cookie_id,))
+                '''
+                cursor.execute(sql, params)
 
                 notifications = []
                 for row in cursor.fetchall():
@@ -2312,18 +2468,26 @@ class DBManager:
                 logger.error(f"获取账号通知配置失败: {e}")
                 return []
 
-    def get_all_message_notifications(self) -> Dict[str, List[Dict[str, any]]]:
+    def get_all_message_notifications(self, user_id: int = None) -> Dict[str, List[Dict[str, any]]]:
         """获取所有账号的通知配置"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
+                sql = '''
                 SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
+                JOIN cookies c ON mn.cookie_id = c.id
                 WHERE nc.enabled = 1
+                '''
+                params = []
+                if user_id is not None:
+                    sql += ' AND c.user_id = ? AND nc.user_id = ?'
+                    params.extend([user_id, user_id])
+                sql += '''
                 ORDER BY mn.cookie_id, mn.id
-                ''')
+                '''
+                cursor.execute(sql, params)
 
                 result = {}
                 for row in cursor.fetchall():
@@ -2345,12 +2509,20 @@ class DBManager:
                 logger.error(f"获取所有消息通知配置失败: {e}")
                 return {}
 
-    def delete_message_notification(self, notification_id: int) -> bool:
+    def delete_message_notification(self, notification_id: int, user_id: int = None) -> bool:
         """删除消息通知配置"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, "DELETE FROM message_notifications WHERE id = ?", (notification_id,))
+                if user_id is not None:
+                    self._execute_sql(cursor, '''
+                    DELETE FROM message_notifications
+                    WHERE id = ?
+                      AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                      AND channel_id IN (SELECT id FROM notification_channels WHERE user_id = ?)
+                    ''', (notification_id, user_id, user_id))
+                else:
+                    self._execute_sql(cursor, "DELETE FROM message_notifications WHERE id = ?", (notification_id,))
                 self.conn.commit()
                 logger.debug(f"删除消息通知配置: {notification_id}")
                 return cursor.rowcount > 0
@@ -2359,12 +2531,19 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def delete_account_notifications(self, cookie_id: str) -> bool:
+    def delete_account_notifications(self, cookie_id: str, user_id: int = None) -> bool:
         """删除账号的所有消息通知配置"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, "DELETE FROM message_notifications WHERE cookie_id = ?", (cookie_id,))
+                if user_id is not None:
+                    self._execute_sql(cursor, '''
+                    DELETE FROM message_notifications
+                    WHERE cookie_id = ?
+                      AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                    ''', (cookie_id, user_id))
+                else:
+                    self._execute_sql(cursor, "DELETE FROM message_notifications WHERE cookie_id = ?", (cookie_id,))
                 self.conn.commit()
                 logger.debug(f"删除账号通知配置: {cookie_id}")
                 return cursor.rowcount > 0
@@ -3178,8 +3357,8 @@ class DBManager:
                    api_config=None, text_content: str = None, data_content: str = None,
                    image_url: str = None, description: str = None, enabled: bool = None,
                    delay_seconds: int = None, is_multi_spec: bool = None, spec_name: str = None,
-                   spec_value: str = None):
-        """更新卡券"""
+                   spec_value: str = None, user_id: int = None):
+        """更新卡券（支持用户隔离）"""
         with self.lock:
             try:
                 # 处理api_config参数
@@ -3241,6 +3420,9 @@ class DBManager:
                 params.append(card_id)
 
                 sql = f"UPDATE cards SET {', '.join(update_fields)} WHERE id = ?"
+                if user_id is not None:
+                    sql += " AND user_id = ?"
+                    params.append(user_id)
                 self._execute_sql(cursor, sql, params)
 
                 if cursor.rowcount > 0:
@@ -3659,12 +3841,15 @@ class DBManager:
                 logger.error(f"获取发货规则失败: {e}")
                 return []
 
-    def delete_card(self, card_id: int):
-        """删除卡券"""
+    def delete_card(self, card_id: int, user_id: int = None):
+        """删除卡券（支持用户隔离）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                self._execute_sql(cursor, "DELETE FROM cards WHERE id = ?", (card_id,))
+                if user_id is not None:
+                    self._execute_sql(cursor, "DELETE FROM cards WHERE id = ? AND user_id = ?", (card_id, user_id))
+                else:
+                    self._execute_sql(cursor, "DELETE FROM cards WHERE id = ?", (card_id,))
 
                 if cursor.rowcount > 0:
                     self.conn.commit()
@@ -3748,7 +3933,8 @@ class DBManager:
 
     def save_item_basic_info(self, cookie_id: str, item_id: str, item_title: str = None,
                             item_description: str = None, item_category: str = None,
-                            item_price: str = None, item_detail: str = None) -> bool:
+                            item_price: str = None, item_image: str = None,
+                            item_detail: str = None) -> bool:
         """保存或更新商品基本信息，使用原子操作避免并发问题
 
         Args:
@@ -3758,6 +3944,7 @@ class DBManager:
             item_description: 商品描述
             item_category: 商品分类
             item_price: 商品价格
+            item_image: 商品主图
             item_detail: 商品详情JSON
 
         Returns:
@@ -3771,10 +3958,11 @@ class DBManager:
                 # 首先尝试插入，如果已存在则忽略
                 cursor.execute('''
                 INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                               item_category, item_price, item_detail, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                               item_category, item_price, item_image, item_detail,
+                                               created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ''', (cookie_id, item_id, item_title or '', item_description or '',
-                      item_category or '', item_price or '', item_detail or ''))
+                      item_category or '', item_price or '', item_image or '', item_detail or ''))
 
                 # 如果是新插入的记录，直接返回成功
                 if cursor.rowcount > 0:
@@ -3802,6 +3990,10 @@ class DBManager:
                 if item_price:
                     update_parts.append("item_price = CASE WHEN (item_price IS NULL OR item_price = '') THEN ? ELSE item_price END")
                     params.append(item_price)
+
+                if item_image:
+                    update_parts.append("item_image = ?")
+                    params.append(item_image)
 
                 # 对于item_detail，只有在现有值为空时才更新
                 if item_detail:
@@ -3883,13 +4075,15 @@ class DBManager:
                             cursor.execute('''
                             UPDATE item_info SET
                                 item_title = ?, item_description = ?, item_category = ?,
-                                item_price = ?, item_detail = ?, updated_at = CURRENT_TIMESTAMP
+                                item_price = ?, item_image = ?, item_detail = ?,
+                                updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
                             ''', (
                                 item_data.get('title', ''),
                                 item_data.get('description', ''),
                                 item_data.get('category', ''),
                                 item_data.get('price', ''),
+                                item_data.get('item_image', ''),
                                 json.dumps(item_data, ensure_ascii=False),
                                 cookie_id, item_id
                             ))
@@ -3910,14 +4104,15 @@ class DBManager:
                         # 处理字典类型的详情数据（向后兼容）
                         cursor.execute('''
                         INSERT INTO item_info (cookie_id, item_id, item_title, item_description,
-                                             item_category, item_price, item_detail)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                             item_category, item_price, item_image, item_detail)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             cookie_id, item_id,
                             item_data.get('title', '') if item_data else '',
                             item_data.get('description', '') if item_data else '',
                             item_data.get('category', '') if item_data else '',
                             item_data.get('price', '') if item_data else '',
+                            item_data.get('item_image', '') if item_data else '',
                             json.dumps(item_data, ensure_ascii=False) if item_data else ''
                         ))
                     logger.info(f"新增商品信息: {item_id}")
@@ -4178,11 +4373,13 @@ class DBManager:
                 # 使用 INSERT OR REPLACE 确保记录存在，但只更新标题字段
                 cursor.execute('''
                 INSERT INTO item_info (cookie_id, item_id, item_title, item_description,
-                                     item_category, item_price, item_detail, created_at, updated_at)
+                                     item_category, item_price, item_image, item_detail,
+                                     created_at, updated_at)
                 VALUES (?, ?, ?,
                        COALESCE((SELECT item_description FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_category FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_price FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
+                       COALESCE((SELECT item_image FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_detail FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT created_at FROM item_info WHERE cookie_id = ? AND item_id = ?), CURRENT_TIMESTAMP),
                        CURRENT_TIMESTAMP)
@@ -4191,6 +4388,7 @@ class DBManager:
                     updated_at = CURRENT_TIMESTAMP
                 ''', (cookie_id, item_id, item_title,
                       cookie_id, item_id, cookie_id, item_id, cookie_id, item_id,
+                      cookie_id, item_id,
                       cookie_id, item_id, cookie_id, item_id))
 
                 self.conn.commit()
@@ -4230,6 +4428,7 @@ class DBManager:
                         item_description = item_data.get('item_description', '')
                         item_category = item_data.get('item_category', '')
                         item_price = item_data.get('item_price', '')
+                        item_image = item_data.get('item_image', '')
                         item_detail = item_data.get('item_detail', '')
 
                         if not cookie_id or not item_id:
@@ -4243,10 +4442,11 @@ class DBManager:
                         # 使用 INSERT OR IGNORE + UPDATE 模式
                         cursor.execute('''
                         INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                                       item_category, item_price, item_detail, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                                       item_category, item_price, item_image, item_detail,
+                                                       created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         ''', (cookie_id, item_id, item_title, item_description,
-                              item_category, item_price, item_detail))
+                              item_category, item_price, item_image, item_detail))
 
                         if cursor.rowcount == 0:
                             # 记录已存在，进行条件更新
@@ -4255,7 +4455,8 @@ class DBManager:
                                 item_title = CASE WHEN (item_title IS NULL OR item_title = '') AND ? != '' THEN ? ELSE item_title END,
                                 item_description = CASE WHEN (item_description IS NULL OR item_description = '') AND ? != '' THEN ? ELSE item_description END,
                                 item_category = CASE WHEN (item_category IS NULL OR item_category = '') AND ? != '' THEN ? ELSE item_category END,
-                                item_price = CASE WHEN (item_price IS NULL OR item_price = '') AND ? != '' THEN ? ELSE item_price END,
+                                item_price = CASE WHEN ? != '' THEN ? ELSE item_price END,
+                                item_image = CASE WHEN ? != '' THEN ? ELSE item_image END,
                                 item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') AND ? != '' THEN ? ELSE item_detail END,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
@@ -4265,6 +4466,7 @@ class DBManager:
                                 item_description, item_description,
                                 item_category, item_category,
                                 item_price, item_price,
+                                item_image, item_image,
                                 item_detail, item_detail,
                                 cookie_id, item_id
                             ))
@@ -4571,10 +4773,11 @@ class DBManager:
     def insert_or_update_order(self, order_id: str, item_id: str = None, buyer_id: str = None,
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
                               amount: str = None, order_status: str = None, cookie_id: str = None,
-                              is_bargain: bool = None, created_at: str = None, receiver_name: str = None,
-                              receiver_phone: str = None, receiver_address: str = None,
-                              system_shipped: bool = None, expected_version: int = None,
-                              chat_id: str = None):
+                               is_bargain: bool = None, created_at: str = None, receiver_name: str = None,
+                               receiver_phone: str = None, receiver_address: str = None,
+                               receiver_city: str = None,
+                               system_shipped: bool = None, expected_version: int = None,
+                               chat_id: str = None):
         """插入或更新订单信息"""
         with self.lock:
             try:
@@ -4637,6 +4840,9 @@ class DBManager:
                     if receiver_address is not None:
                         update_fields.append("receiver_address = ?")
                         update_values.append(receiver_address)
+                    if receiver_city is not None:
+                        update_fields.append("receiver_city = ?")
+                        update_values.append(receiver_city)
                     if system_shipped is not None:
                         update_fields.append("system_shipped = ?")
                         update_values.append(1 if system_shipped else 0)
@@ -4675,24 +4881,26 @@ class DBManager:
                         cursor.execute('''
                         INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
                                           quantity, amount, order_status, cookie_id, is_bargain, created_at,
-                                          receiver_name, receiver_phone, receiver_address, system_shipped, chat_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          receiver_name, receiver_phone, receiver_address, receiver_city,
+                                          system_shipped, chat_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (order_id, item_id, buyer_id, spec_name, spec_value,
                               quantity, amount, order_status or 'unknown', cookie_id,
                               1 if is_bargain else 0, created_at,
-                              receiver_name, receiver_phone, receiver_address,
+                              receiver_name, receiver_phone, receiver_address, receiver_city,
                               1 if system_shipped else 0, chat_id or ''))
                     else:
                         # 使用默认的创建时间（CURRENT_TIMESTAMP，UTC时间）
                         cursor.execute('''
                         INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
                                           quantity, amount, order_status, cookie_id, is_bargain,
-                                          receiver_name, receiver_phone, receiver_address, system_shipped, chat_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          receiver_name, receiver_phone, receiver_address, receiver_city,
+                                          system_shipped, chat_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (order_id, item_id, buyer_id, spec_name, spec_value,
                               quantity, amount, order_status or 'unknown', cookie_id,
                               1 if is_bargain else 0,
-                              receiver_name, receiver_phone, receiver_address,
+                              receiver_name, receiver_phone, receiver_address, receiver_city,
                               1 if system_shipped else 0, chat_id or ''))
                     logger.info(f"插入新订单: {order_id}")
 
@@ -4827,6 +5035,7 @@ class DBManager:
                         'spec_value': row[4],
                         'quantity': row[5],
                         'amount': row[6],
+                        'order_status': row[7],
                         'status': row[7],
                         'is_bargain': bool(row[8]) if row[8] is not None else False,
                         'created_at': row[9],
@@ -4865,6 +5074,7 @@ class DBManager:
                         'spec_value': row[4],
                         'quantity': row[5],
                         'amount': row[6],
+                        'order_status': row[7],
                         'status': row[7],
                         'cookie_id': row[8],
                         'is_bargain': bool(row[9]) if row[9] is not None else False,
@@ -5476,7 +5686,7 @@ class DBManager:
                     where_conditions.append(f"order_status IN ({placeholders})")
                     params.extend(include_statuses)
 
-                where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+                where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else "WHERE 1=1"
 
                 # 1. 总收益统计（估值，实际会扣税等）
                 cursor.execute(f"""
@@ -5688,7 +5898,7 @@ class DBManager:
                     where_conditions.append(f"order_status IN ({placeholders})")
                     params.extend(include_statuses)
 
-                where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+                where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else "WHERE 1=1"
 
                 cursor.execute(f"""
                     SELECT
