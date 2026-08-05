@@ -11,6 +11,7 @@ import {
   updateDeliveryBlockRule,
   updatePersonalBlacklist,
 } from '../services/api';
+import { confirmAction, notify } from '../services/feedback';
 
 const DeliveryProtection: React.FC = () => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
@@ -45,7 +46,7 @@ const DeliveryProtection: React.FC = () => {
       setRules(ruleData);
       setBlacklist(blacklistData);
     } catch (error) {
-      alert(`加载发货保护配置失败：${(error as Error).message}`);
+      notify(`加载发货保护配置失败：${(error as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -69,7 +70,7 @@ const DeliveryProtection: React.FC = () => {
       });
       patchRule(rule.rule_code, saved);
     } catch (error) {
-      alert(`保存失败：${(error as Error).message}`);
+      notify(`保存失败：${(error as Error).message}`);
     } finally {
       setSavingRule('');
     }
@@ -77,7 +78,7 @@ const DeliveryProtection: React.FC = () => {
 
   const addBlacklist = async () => {
     if (!form.buyer_id.trim()) {
-      alert('请输入买家 ID');
+      notify('请输入买家 ID');
       return;
     }
     try {
@@ -92,7 +93,7 @@ const DeliveryProtection: React.FC = () => {
       setForm({ buyer_id: '', buyer_nick: '', item_id: '', reason: '' });
       setBlacklist(await getPersonalBlacklist(selectedAccount));
     } catch (error) {
-      alert(`添加失败：${(error as Error).message}`);
+      notify(`添加失败：${(error as Error).message}`);
     }
   };
 
@@ -101,17 +102,17 @@ const DeliveryProtection: React.FC = () => {
       const saved = await updatePersonalBlacklist(entry.id, { is_enabled: !entry.is_enabled });
       setBlacklist((current) => current.map((item) => item.id === entry.id ? saved : item));
     } catch (error) {
-      alert(`更新失败：${(error as Error).message}`);
+      notify(`更新失败：${(error as Error).message}`);
     }
   };
 
   const removeBlacklist = async (entry: PersonalBlacklistEntry) => {
-    if (!confirm(`确认移除买家 ${entry.buyer_nick || entry.buyer_id}？`)) return;
+    if (!await confirmAction(`确认移除买家 ${entry.buyer_nick || entry.buyer_id}？`)) return;
     try {
       await deletePersonalBlacklist(entry.id);
       setBlacklist((current) => current.filter((item) => item.id !== entry.id));
     } catch (error) {
-      alert(`删除失败：${(error as Error).message}`);
+      notify(`删除失败：${(error as Error).message}`);
     }
   };
 

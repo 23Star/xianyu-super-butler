@@ -593,13 +593,19 @@ def _start_api_server():
     port = int(os.getenv('API_PORT', '8080'))  # 默认端口8080
 
     # 如果配置文件中有特定配置，则使用配置文件
-    if 'host' in api_conf:
+    if 'host' in api_conf and 'API_HOST' not in os.environ:
         host = api_conf['host']
-    if 'port' in api_conf:
+    if 'port' in api_conf and 'API_PORT' not in os.environ:
         port = api_conf['port']
 
     # 兼容旧的URL配置方式
-    if 'url' in api_conf and 'host' not in api_conf and 'port' not in api_conf:
+    if (
+        'url' in api_conf
+        and 'host' not in api_conf
+        and 'port' not in api_conf
+        and 'API_HOST' not in os.environ
+        and 'API_PORT' not in os.environ
+    ):
         url = api_conf.get('url', 'http://0.0.0.0:8080/xianyu/reply')
         parsed = urlparse(url)
         if parsed.hostname and parsed.hostname != 'localhost':
@@ -675,18 +681,7 @@ async def main():
             continue
 
         try:
-            # 直接启动任务，不重新保存到数据库
-            from app.db_manager import db_manager
-            logger.info(f"正在获取Cookie详细信息: {cid}")
-            cookie_info = db_manager.get_cookie_details(cid)
-            user_id = cookie_info.get('user_id') if cookie_info else None
-            logger.info(f"Cookie详细信息获取成功: {cid}, user_id: {user_id}")
-
-            logger.info(f"正在创建异步任务: {cid}")
-            task = loop.create_task(manager._run_xianyu(cid, val, user_id))
-            manager.tasks[cid] = task
-            logger.info(f"启动数据库中的 Cookie 任务: {cid} (用户ID: {user_id})")
-            logger.info(f"任务已添加到管理器，当前任务数: {len(manager.tasks)}")
+            await manager._ensure_cookie_task_async(cid, val)
         except Exception as e:
             logger.error(f"启动 Cookie 任务失败: {cid}, {e}")
             import traceback

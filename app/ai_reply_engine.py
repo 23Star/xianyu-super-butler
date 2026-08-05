@@ -15,6 +15,7 @@ import time
 import sqlite3
 import requests  # 确保已导入
 import threading
+import re
 from typing import List, Dict, Optional
 from loguru import logger
 from openai import OpenAI
@@ -72,7 +73,8 @@ class AIReplyEngine:
             logger.info(f"创建新的OpenAI客户端实例 {cookie_id}: base_url={settings['base_url']}, api_key={'***' + settings['api_key'][-4:] if settings['api_key'] else 'None'}")
             client = OpenAI(
                 api_key=settings['api_key'],
-                base_url=settings['base_url']
+                base_url=settings['base_url'],
+                timeout=30.0,
             )
             logger.info(f"为账号 {cookie_id} 创建OpenAI客户端成功，实际base_url: {client.base_url}")
             return client
@@ -107,20 +109,12 @@ class AIReplyEngine:
 
         url = f"https://dashscope.aliyuncs.com/api/v1/apps/{app_id}/completion"
 
-        system_content = ""
-        user_content = ""
-        for msg in messages:
-            if msg['role'] == 'system':
-                system_content = msg['content']
-            elif msg['role'] == 'user':
-                user_content = msg['content'] # 假设 user prompt 已在 generate_reply 中构建好
-
-        if system_content and user_content:
-            prompt = f"{system_content}\n\n用户问题：{user_content}\n\n请直接回答用户的问题："
-        elif user_content:
-            prompt = user_content
-        else:
-            prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
+        role_labels = {'system': '系统规则', 'user': '买家', 'assistant': '卖家'}
+        prompt = "\n".join(
+            f"{role_labels.get(msg['role'], msg['role'])}：{msg['content']}"
+            for msg in messages
+        )
+        prompt += "\n卖家："
 
         data = {
             "input": {"prompt": prompt},
@@ -133,22 +127,19 @@ class AIReplyEngine:
         }
 
         logger.info(f"DashScope API请求: {url}")
-        logger.info(f"发送的prompt: {prompt[:100]}...") # 避免 prompt 过长
-        logger.debug(f"请求数据: {json.dumps(data, ensure_ascii=False)}")
+        logger.debug("DashScope 请求已构建，prompt 内容不写入日志")
 
         response = requests.post(url, headers=headers, json=data, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"DashScope API请求失败: {response.status_code} - {response.text}")
-            raise Exception(f"DashScope API请求失败: {response.status_code} - {response.text}")
+            logger.error(f"DashScope API请求失败: HTTP {response.status_code}")
+            raise RuntimeError(f"DashScope API请求失败: HTTP {response.status_code}")
 
         result = response.json()
-        logger.debug(f"DashScope API响应: {json.dumps(result, ensure_ascii=False)}")
-
         if 'output' in result and 'text' in result['output']:
             return result['output']['text'].strip()
         else:
-            raise Exception(f"DashScope API响应格式错误: {result}")
+            raise RuntimeError("DashScope API响应格式错误")
 
     def _call_gemini_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
         """
@@ -161,34 +152,23 @@ class AIReplyEngine:
 
         headers = {"Content-Type": "application/json"}
 
-        # --- 转换消息格式 (修复 P1-3: 增强健壮性) ---
         system_instruction = ""
-        user_content_parts = []
-
-        # 遍历消息，找到 system 和所有的 user parts
+        contents = []
         for msg in messages:
             if msg['role'] == 'system':
                 system_instruction = msg['content']
-            elif msg['role'] == 'user':
-                # 我们只关心 user content
-                user_content_parts.append(msg['content'])
-        
-        # 将所有 user parts 合并为最后的 user_content
-        # 在我们的使用场景中 (generate_reply)，只会有一个 user part，但这样更安全
-        user_content = "\n".join(user_content_parts)
+            elif msg['role'] in {'user', 'assistant'}:
+                contents.append({
+                    "role": "user" if msg['role'] == 'user' else "model",
+                    "parts": [{"text": msg['content']}],
+                })
 
-        if not user_content:
-            logger.warning(f"Gemini API 调用: 未在消息中找到 'user' 角色内容。Messages: {messages}")
+        if not contents or contents[-1]["role"] != "user":
+            logger.warning("Gemini API 调用未找到 user 角色内容")
             raise ValueError("未在消息中找到用户内容 (user content)")
-        # --- 消息格式转换结束 ---
 
         payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": user_content}]
-                }
-            ],
+            "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens
@@ -201,23 +181,19 @@ class AIReplyEngine:
             }
 
         logger.info(f"Calling Gemini REST API: {url.split('?')[0]}")
-        logger.debug(f"Gemini Payload: {json.dumps(payload, ensure_ascii=False)}")
-        
         response = requests.post(url, headers=headers, json=payload, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"Gemini API 请求失败: {response.status_code} - {response.text}")
-            raise Exception(f"Gemini API 请求失败: {response.status_code} - {response.text}")
+            logger.error(f"Gemini API 请求失败: HTTP {response.status_code}")
+            raise RuntimeError(f"Gemini API 请求失败: HTTP {response.status_code}")
             
         result = response.json()
-        logger.debug(f"Gemini API 响应: {json.dumps(result, ensure_ascii=False)}")
-
         try:
             reply_text = result['candidates'][0]['content']['parts'][0]['text']
             return reply_text.strip()
         except (KeyError, IndexError, TypeError) as e:
-            logger.error(f"Gemini API 响应格式错误: {result} - {e}")
-            raise Exception(f"Gemini API 响应格式错误: {result}")
+            logger.error(f"Gemini API 响应格式错误: {type(e).__name__}")
+            raise RuntimeError("Gemini API 响应格式错误")
 
     def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
@@ -231,12 +207,67 @@ class AIReplyEngine:
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
-            logger.error(f"OpenAI API调用失败: {e}")
-            # 如果有详细的错误信息，打印出来
-            if hasattr(e, 'response'):
-                logger.error(f"响应状态码: {getattr(e.response, 'status_code', 'unknown')}")
-                logger.error(f"响应内容: {getattr(e.response, 'text', 'unknown')}")
+            status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+            logger.error(
+                f"OpenAI API调用失败: {type(e).__name__}"
+                + (f", HTTP {status_code}" if status_code else "")
+            )
             raise
+
+    def _resolve_system_prompt(self, raw_prompts: str, intent: str) -> str:
+        """兼容旧版 JSON 提示词和新版纯文本风格说明。"""
+        base_prompt = self.default_prompts.get(intent, self.default_prompts['default'])
+        if not raw_prompts or not raw_prompts.strip():
+            return base_prompt
+
+        try:
+            parsed = json.loads(raw_prompts)
+        except (TypeError, json.JSONDecodeError):
+            return f"{base_prompt}\n\n卖家补充规则：\n{raw_prompts.strip()}"
+
+        if isinstance(parsed, dict):
+            selected = parsed.get(intent) or parsed.get('default')
+            if isinstance(selected, str) and selected.strip():
+                return selected.strip()
+        return base_prompt
+
+    def _normalize_reply(self, reply: object) -> Optional[str]:
+        """清理模型输出，拒绝空内容并限制自动发送长度。"""
+        if not isinstance(reply, str):
+            return None
+        normalized = re.sub(r'\s+', ' ', reply).strip()
+        normalized = normalized.strip('"\'`')
+        if not normalized:
+            return None
+        return normalized[:300]
+
+    @staticmethod
+    def is_system_or_order_event(message: object) -> bool:
+        """识别不应进入关键词、AI或默认回复链路的闲鱼系统事件。"""
+        if not isinstance(message, str):
+            return False
+        text = message.strip()
+        exact_messages = {
+            '[我已拍下，待付款]',
+            '[你关闭了订单，钱款已原路退返]',
+            '[买家确认收货，交易成功]',
+            '[你已确认收货，交易成功]',
+            '[你已发货]',
+            '已发货',
+            '快给ta一个评价吧~',
+            '快给ta一个评价吧～',
+            '卖家人不错？送Ta闲鱼小红花',
+            'AI正在帮你回复消息，不错过每笔订单',
+            '发来一条消息',
+            '发来一条新消息',
+            '[不想宝贝被砍价?设置不砍价回复  ]',
+        }
+        if text in exact_messages:
+            return True
+        if text.startswith('[') and text.endswith(']'):
+            event_words = ('付款', '发货', '收货', '退款', '交易成功', '订单关闭', '待评价')
+            return any(word in text for word in event_words)
+        return False
 
     def is_ai_enabled(self, cookie_id: str) -> bool:
         """检查指定账号是否启用AI回复"""
@@ -266,16 +297,16 @@ class AIReplyEngine:
             # 同样，你也可以通过正则表达式来匹配纯数字，比如 "100" "80"
             # 但那可能有点复杂，先加关键词是最小改动
             if any(kw in msg_lower for kw in price_keywords):
-                logger.debug(f"本地意图检测: price ({message})")
+                logger.debug("本地意图检测: price")
                 return 'price'
 
             # 技术相关关键词
             tech_keywords = ['怎么用', '参数', '坏了', '故障', '设置', '说明书', '功能', '用法', '教程', '驱动']
             if any(kw in msg_lower for kw in tech_keywords):
-                logger.debug(f"本地意图检测: tech ({message})")
+                logger.debug("本地意图检测: tech")
                 return 'tech'
             
-            logger.debug(f"本地意图检测: default ({message})")
+            logger.debug("本地意图检测: default")
             return 'default'
         
         except Exception as e:
@@ -295,6 +326,9 @@ class AIReplyEngine:
         """生成AI回复"""
         if not self.is_ai_enabled(cookie_id):
             return None
+        if self.is_system_or_order_event(message):
+            logger.info(f"系统/订单事件绕过AI回复: 账号={cookie_id}, chat_id={chat_id}")
+            return None
         
         try:
             # 先检测意图（用于后续保存）
@@ -306,11 +340,11 @@ class AIReplyEngine:
             
             # 如果调用方已经实现了去抖（debounce），可以通过 skip_wait=True 跳过内部等待
             if not skip_wait:
-                logger.info(f"【{cookie_id}】消息已保存，等待10秒收集后续消息: {message[:20]}... (时间:{message_created_at})")
+                logger.info(f"【{cookie_id}】消息已保存，等待10秒收集后续消息 (时间:{message_created_at})")
                 # 固定等待10秒，等待可能的后续消息（在锁外延迟，避免阻塞其他消息保存）
                 time.sleep(10)
             else:
-                logger.info(f"【{cookie_id}】消息已保存（外部防抖已启用，跳过内部等待）: {message[:20]}... (时间:{message_created_at})")
+                logger.info(f"【{cookie_id}】消息已保存（外部防抖已启用，跳过内部等待） (时间:{message_created_at})")
             
             # 获取该chat_id的锁，确保同一对话的消息串行处理
             chat_lock = self._get_chat_lock(chat_id)
@@ -322,25 +356,38 @@ class AIReplyEngine:
                 # 如果 skip_wait=False（内部等待），查询窗口为25秒（10秒等待 + 10秒消息间隔 + 5秒缓冲）
                 query_seconds = 6 if skip_wait else 25
                 recent_messages = self._get_recent_user_messages(chat_id, cookie_id, seconds=query_seconds)
-                logger.info(f"【{cookie_id}】最近{query_seconds}秒内的消息: {[msg['content'][:20] for msg in recent_messages]}")
+                logger.info(f"【{cookie_id}】最近{query_seconds}秒内用户消息数={len(recent_messages)}")
                 
                 if recent_messages and len(recent_messages) > 0:
                     # 只处理最后一条消息（时间戳最新的）
                     latest_message = recent_messages[-1]
                     if message_created_at != latest_message['created_at']:
-                        logger.info(f"【{cookie_id}】检测到有更新的消息，跳过当前消息: {message[:20]}... (时间:{message_created_at})，最新消息: {latest_message['content'][:20]}... (时间:{latest_message['created_at']})")
+                        logger.info(f"【{cookie_id}】检测到更新消息，跳过较早消息 (时间:{message_created_at})")
                         return None
                     else:
-                        logger.info(f"【{cookie_id}】当前消息是最新消息，开始处理: {message[:20]}... (时间:{message_created_at})")
+                        logger.info(f"【{cookie_id}】当前消息是最新消息，开始处理 (时间:{message_created_at})")
                 
                 # 1. 获取AI回复设置
                 settings = db_manager.get_ai_reply_settings(cookie_id)
 
                 # 3. 获取对话历史
-                context = self.get_conversation_context(chat_id, cookie_id)
+                context = []
+                if settings.get('context_enabled', True):
+                    context = self.get_conversation_context(
+                        chat_id,
+                        cookie_id,
+                        item_id=item_id,
+                        limit=max(2, min(30, int(settings.get('context_message_limit', 12)))),
+                        max_age_minutes=max(5, min(1440, int(settings.get('context_expire_minutes', 120)))),
+                        exclude_current={
+                            'role': 'user',
+                            'content': message,
+                            'created_at': message_created_at,
+                        },
+                    )
 
                 # 4. 获取议价次数
-                bargain_count = self.get_bargain_count(chat_id, cookie_id)
+                bargain_count = max(0, self.get_bargain_count(chat_id, cookie_id) - (1 if intent == "price" else 0))
 
                 # 5. 检查议价轮数限制 (P0-1 竞争条件风险点 - 遵照指示未修改)
                 if intent == "price":
@@ -352,27 +399,25 @@ class AIReplyEngine:
                         return refuse_reply
 
                 # 6. 构建提示词
-                custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
-                system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
+                system_prompt = self._resolve_system_prompt(
+                    settings.get('custom_prompts', ''),
+                    intent,
+                )
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"
                 item_desc += f"商品价格: {item_info.get('price', '未知')}元\n"
                 item_desc += f"商品描述: {item_info.get('desc', '无')}"
 
-                # 8. 构建对话历史
-                context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
-
-                # 9. 构建用户消息
+                # 8. 构建角色化对话消息
                 max_bargain_rounds = settings.get('max_bargain_rounds', 3)
                 max_discount_percent = settings.get('max_discount_percent', 10)
                 max_discount_amount = settings.get('max_discount_amount', 100)
 
-                user_prompt = f"""商品信息：
-{item_desc}
+                safety_prompt = f"""
 
-对话历史：
-{context_str}
+商品与业务事实：
+{item_desc}
 
 议价设置：
 - 当前议价次数：{bargain_count}
@@ -380,14 +425,21 @@ class AIReplyEngine:
 - 最大优惠百分比：{max_discount_percent}%
 - 最大优惠金额：{max_discount_amount}元
 
-用户消息：{message}
+安全边界：
+- 只能依据上述商品事实回答，不得编造库存、规格、物流或售后承诺。
+- 付款、发货、退款、收货和订单完成由系统订单状态与自动发货规则处理。
+- 未经系统确认，不得声称上述操作已成功，也不得要求买家重复付款。
+- 直接输出适合发送给买家的简短回复，不要解释规则。"""
 
-请根据以上信息生成回复："""
-
-                # 10. 调用AI生成回复
                 messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": system_prompt + safety_prompt},
+                    *[
+                        {"role": msg["role"], "content": msg["content"]}
+                        for msg in context
+                        if msg.get("role") in {"user", "assistant"}
+                        and not self.is_system_or_order_event(msg.get("content"))
+                    ],
+                    {"role": "user", "content": message},
                 ]
 
                 reply = None # 初始化 reply 变量
@@ -406,8 +458,12 @@ class AIReplyEngine:
                     client = self._create_openai_client(cookie_id)
                     if not client:
                         return None
-                    logger.info(f"messages:{messages}")
                     reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+
+                reply = self._normalize_reply(reply)
+                if not reply:
+                    logger.warning(f"AI服务返回空回复，账号={cookie_id}, intent={intent}")
+                    return None
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
@@ -417,15 +473,13 @@ class AIReplyEngine:
                     # self.increment_bargain_count(chat_id, cookie_id) # 此行原先就没有，保持不变
                     pass
                 
-                logger.info(f"AI回复生成成功 (账号: {cookie_id}): {reply}")
+                logger.info(
+                    f"AI回复生成成功: 账号={cookie_id}, intent={intent}, 字符数={len(reply)}"
+                )
                 return reply
                 
         except Exception as e:
-            logger.error(f"AI回复生成失败 {cookie_id}: {e}")
-            if hasattr(e, 'response') and hasattr(e.response, 'url'):
-                logger.error(f"请求URL: {e.response.url}")
-            if hasattr(e, 'request') and hasattr(e.request, 'url'):
-                logger.error(f"请求URL: {e.request.url}")
+            logger.error(f"AI回复生成失败: 账号={cookie_id}, 错误={type(e).__name__}: {e}")
             return None
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
@@ -442,19 +496,39 @@ class AIReplyEngine:
             logger.error(f"异步生成回复失败: {e}")
             return None
     
-    def get_conversation_context(self, chat_id: str, cookie_id: str, limit: int = 20) -> List[Dict]:
+    def get_conversation_context(self, chat_id: str, cookie_id: str, item_id: Optional[str] = None,
+                                 limit: int = 20, max_age_minutes: int = 120,
+                                 exclude_current: Optional[Dict] = None) -> List[Dict]:
         """获取对话上下文"""
         try:
             with db_manager.lock:
                 cursor = db_manager.conn.cursor()
                 cursor.execute('''
-                SELECT role, content FROM ai_conversations 
-                WHERE chat_id = ? AND cookie_id = ? 
+                SELECT id, role, content, created_at FROM ai_conversations
+                WHERE chat_id = ? AND cookie_id = ?
+                  AND (? IS NULL OR item_id = ?)
+                  AND created_at >= datetime('now', '-' || ? || ' minutes')
                 ORDER BY created_at DESC LIMIT ?
-                ''', (chat_id, cookie_id, limit))
+                ''', (chat_id, cookie_id, item_id, item_id, max_age_minutes, limit + 1))
                 
                 results = cursor.fetchall()
-                context = [{"role": row[0], "content": row[1]} for row in reversed(results)]
+                skipped_current = False
+                context = []
+                for row in results:
+                    candidate = {
+                        "id": row[0], "role": row[1], "content": row[2], "created_at": row[3]
+                    }
+                    if (
+                        exclude_current and not skipped_current
+                        and candidate["role"] == exclude_current.get("role")
+                        and candidate["content"] == exclude_current.get("content")
+                        and candidate["created_at"] == exclude_current.get("created_at")
+                    ):
+                        skipped_current = True
+                        continue
+                    if not self.is_system_or_order_event(candidate["content"]):
+                        context.append({"role": candidate["role"], "content": candidate["content"]})
+                context = list(reversed(context[:limit]))
                 return context
         except Exception as e:
             logger.error(f"获取对话上下文失败: {e}")
@@ -504,20 +578,6 @@ class AIReplyEngine:
         try:
             with db_manager.lock:
                 cursor = db_manager.conn.cursor()
-                # 先查询所有该chat的user消息，用于调试
-                cursor.execute('''
-                SELECT content, created_at, 
-                       julianday('now') - julianday(created_at) as time_diff_days,
-                       (julianday('now') - julianday(created_at)) * 86400.0 as time_diff_seconds
-                FROM ai_conversations 
-                WHERE chat_id = ? AND cookie_id = ? AND role = 'user' 
-                ORDER BY created_at DESC LIMIT 10
-                ''', (chat_id, cookie_id))
-                
-                all_messages = cursor.fetchall()
-                logger.info(f"【调试】chat_id={chat_id} 最近10条user消息: {[(msg[0][:10], msg[1], f'{msg[3]:.2f}秒前') for msg in all_messages]}")
-                
-                # 正式查询
                 cursor.execute('''
                 SELECT content, created_at FROM ai_conversations 
                 WHERE chat_id = ? AND cookie_id = ? AND role = 'user' 

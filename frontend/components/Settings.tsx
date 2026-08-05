@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { getSystemSettings, updateSystemSettings } from '../services/api';
 import { SystemSettings } from '../types';
+import { notify } from '../services/feedback';
 import {
   Save, Sparkles, Mail, Settings as SettingsIcon,
   Eye, EyeOff, RefreshCw, Database
@@ -29,9 +30,9 @@ const Settings: React.FC = () => {
       setSaving(true);
       try {
         await updateSystemSettings(settings);
-        alert('系统配置已保存');
+        notify('系统配置已保存');
       } catch (e) {
-        alert('保存失败：' + (e as Error).message);
+        notify('保存失败：' + (e as Error).message);
       } finally {
         setSaving(false);
       }

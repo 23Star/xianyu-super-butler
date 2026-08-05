@@ -37,22 +37,16 @@ COPY --from=frontend-builder /frontend/dist ./static
 FROM base AS runtime
 
 LABEL maintainer="23Star" \
-      version="2.2.0" \
+      version="2.5.0" \
       description="Xianyu account, item, order, reply, and delivery management" \
       repository="https://github.com/23Star/xianyu-super-butler" \
       author="23Star"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        nodejs \
-        npm \
         tzdata \
         curl \
         ca-certificates \
-        chromium \
-        xvfb \
-        x11vnc \
-        fluxbox \
         fonts-dejavu-core \
         fonts-liberation \
         libgl1 \
@@ -73,7 +67,7 @@ RUN playwright install-deps chromium && \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["/app/entrypoint.sh"]

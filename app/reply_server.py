@@ -23,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from app import cookie_manager
 from app.db_manager import db_manager
+from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
 from app.routers.delivery_block import create_delivery_block_router
@@ -36,6 +37,8 @@ from utils.order_status_rules import (
 )
 
 from loguru import logger
+
+product_automation = ProductAutomationService(db_manager)
 
 # 刮刮乐远程控制路由
 try:
@@ -320,7 +323,7 @@ class ResponseModel(BaseModel):
 
 app = FastAPI(
     title="Xianyu Auto Reply API",
-    version="1.0.0",
+    version="2.5.0",
     description="闲鱼自动回复系统API",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -1118,6 +1121,12 @@ class SendMessageResponse(BaseModel):
     message: str
 
 
+class ChatSendMessageRequest(BaseModel):
+    cid: str = Field(..., min_length=1, max_length=200)
+    to_user_id: str = Field(..., min_length=1, max_length=100)
+    text: str = Field(..., min_length=1, max_length=2000)
+
+
 def verify_api_key(api_key: str) -> bool:
     """验证API秘钥"""
     try:
@@ -1134,6 +1143,162 @@ def verify_api_key(api_key: str) -> bool:
         logger.error(f"验证API秘钥时发生异常: {e}")
         # 异常情况下使用默认秘钥验证
         return api_key == API_SECRET_KEY
+
+
+def _get_owned_chat_account(cookie_id: str, current_user: Dict[str, Any]) -> str:
+    owned_cookies = db_manager.get_all_cookies(current_user["user_id"])
+    if cookie_id not in owned_cookies:
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    return cookie_id
+
+
+async def _run_on_account_loop(cookie_id: str, operation):
+    manager = cookie_manager.manager
+    if manager is None or not manager.loop.is_running():
+        raise HTTPException(status_code=503, detail="闲鱼账号服务尚未启动")
+
+    instance = manager.instances.get(cookie_id)
+    if instance is None:
+        raise HTTPException(status_code=409, detail="账号未在线，请先启用账号并等待连接成功")
+
+    try:
+        current_loop = asyncio.get_running_loop()
+        if current_loop is manager.loop:
+            return await operation(instance)
+        future = asyncio.run_coroutine_threadsafe(operation(instance), manager.loop)
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=25)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="闲鱼消息服务响应超时") from exc
+    except HTTPException:
+        raise
+    except (ConnectionError, TimeoutError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning(f"【{cookie_id}】闲鱼消息请求失败: {exc}")
+        raise HTTPException(status_code=502, detail=f"闲鱼消息服务请求失败: {exc}") from exc
+
+
+@app.get("/chat/accounts")
+async def get_chat_accounts(current_user: Dict[str, Any] = Depends(get_current_user)):
+    owned_cookies = db_manager.get_all_cookies(current_user["user_id"])
+    manager = cookie_manager.manager
+    instances = manager.instances if manager else {}
+    result = []
+    for cookie_id in owned_cookies:
+        details = db_manager.get_cookie_details(cookie_id) or {}
+        instance = instances.get(cookie_id)
+        websocket = getattr(instance, "ws", None) if instance else None
+        result.append({
+            "accountId": cookie_id,
+            "displayName": details.get("nickname") or details.get("remark") or cookie_id,
+            "avatarUrl": details.get("avatar_url") or "",
+            "connected": websocket is not None and not bool(getattr(websocket, "closed", False)),
+            "xianyuUserId": str(getattr(instance, "myid", "") or ""),
+        })
+    return {"success": True, "data": result}
+
+
+@app.get("/chat/conversations/{cookie_id}")
+async def get_chat_conversations(
+    cookie_id: str,
+    cursor: Optional[int] = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    body = await _run_on_account_loop(
+        cookie_id,
+        lambda instance: instance.get_im_conversations(cursor, limit),
+    )
+    if isinstance(body, dict) and (body.get("reason") or body.get("code") == "400600001"):
+        reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+        raise HTTPException(status_code=429, detail=f"闲鱼会话请求受限: {reason}")
+
+    from app.xianyu_im import parse_conversation
+
+    manager = cookie_manager.manager
+    instance = manager.instances.get(cookie_id) if manager else None
+    my_id = str(getattr(instance, "myid", "") or "")
+    conversations = []
+    for item in body.get("userConvs", []) if isinstance(body, dict) else []:
+        raw = item.get("singleChatUserConversation", item) if isinstance(item, dict) else {}
+        parsed = parse_conversation(raw, my_id)
+        if parsed:
+            conversations.append(parsed)
+    return {
+        "success": True,
+        "data": {
+            "conversations": conversations,
+            "hasMore": bool(body.get("hasMore", False)) if isinstance(body, dict) else False,
+            "nextCursor": body.get("nextCursor") if isinstance(body, dict) else None,
+        },
+    }
+
+
+@app.get("/chat/messages/{cookie_id}/{cid}")
+async def get_chat_messages(
+    cookie_id: str,
+    cid: str,
+    cursor: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    body = await _run_on_account_loop(
+        cookie_id,
+        lambda instance: instance.get_im_messages(cid, cursor, limit),
+    )
+    if isinstance(body, dict) and body.get("reason"):
+        reason = body.get("developerMessage") or body.get("reason")
+        raise HTTPException(status_code=502, detail=f"闲鱼消息记录获取失败: {reason}")
+
+    from app.xianyu_im import parse_message
+
+    manager = cookie_manager.manager
+    instance = manager.instances.get(cookie_id) if manager else None
+    my_id = str(getattr(instance, "myid", "") or "")
+    messages = []
+    for model in body.get("userMessageModels", []) if isinstance(body, dict) else []:
+        parsed = parse_message(model, my_id)
+        if parsed:
+            messages.append(parsed)
+    messages.reverse()
+    return {
+        "success": True,
+        "data": {
+            "messages": messages,
+            "hasMore": bool(body.get("hasMore", False)) if isinstance(body, dict) else False,
+            "nextCursor": body.get("nextCursor") if isinstance(body, dict) else None,
+        },
+    }
+
+
+@app.post("/chat/send/{cookie_id}")
+async def send_chat_message(
+    cookie_id: str,
+    request: ChatSendMessageRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    response = await _run_on_account_loop(
+        cookie_id,
+        lambda instance: instance.send_im_text(
+            request.cid.strip(),
+            request.to_user_id.strip(),
+            request.text,
+        ),
+    )
+    body = response.get("body", {}) if isinstance(response, dict) else {}
+    message_id = ""
+    if isinstance(body, dict):
+        message_id = str(body.get("messageId") or body.get("msgId") or "")
+    logger.info(
+        f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼消息，"
+        f"会话={request.cid}, 对方={request.to_user_id}, 长度={len(request.text)}"
+    )
+    return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
 
 
 @app.post('/send-message', response_model=SendMessageResponse)
@@ -1492,6 +1657,7 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'followers': cookie_details.get('followers') if cookie_details else None,
             'following': cookie_details.get('following') if cookie_details else None,
             'profile_updated_at': cookie_details.get('profile_updated_at') if cookie_details else None,
+            'runtime_state': cookie_manager.manager.get_task_state(cookie_id),
         })
     return result
 
@@ -1973,42 +2139,29 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                 else:
                     log_with_user('error', f"保存账号信息失败: {account_id}", current_user)
                 
-                # 添加到或更新cookie_manager（注意：不要在这里调用add_cookie或update_cookie，因为它们会覆盖账号密码）
-                # 账号密码已经在上面通过update_cookie_account_info保存了
-                # 这里只需要更新内存中的cookie值，不保存到数据库（避免覆盖账号密码）
+                # 账号信息已写入数据库；统一重启监听任务，确保自动回复和订单监听立即生效。
                 if cookie_manager.manager:
-                    # 更新内存中的cookie值
-                    cookie_manager.manager.cookies[account_id] = cookies_str
-                    log_with_user('info', f"已更新cookie_manager中的Cookie（内存）: {account_id}", current_user)
-                    
-                    # 如果是新账号，需要启动任务
-                    if is_new_account:
-                        # 使用异步方式启动任务，但不保存到数据库（避免覆盖账号密码）
-                        try:
-                            import asyncio
-                            loop = cookie_manager.manager.loop
-                            if loop:
-                                # 确保关键词列表存在
-                                if account_id not in cookie_manager.manager.keywords:
-                                    cookie_manager.manager.keywords[account_id] = []
-                                
-                                # 在后台启动任务（使用线程安全的方式，因为run_login是在后台线程中运行的）
-                                try:
-                                    # 尝试使用run_coroutine_threadsafe，这是线程安全的方式
-                                    fut = asyncio.run_coroutine_threadsafe(
-                                        cookie_manager.manager._run_xianyu(account_id, cookies_str, user_id),
-                                        loop
-                                    )
-                                    # 不等待结果，让它在后台运行
-                                    log_with_user('info', f"已启动新账号任务: {account_id}", current_user)
-                                except RuntimeError as e:
-                                    # 如果事件循环未运行，记录警告但不影响登录成功
-                                    log_with_user('warning', f"事件循环未运行，无法启动新账号任务: {account_id}, 错误: {str(e)}", current_user)
-                                    log_with_user('info', f"账号已保存，将在系统重启后自动启动任务: {account_id}", current_user)
-                        except Exception as task_err:
-                            log_with_user('warning', f"启动新账号任务失败: {account_id}, 错误: {str(task_err)}", current_user)
-                            import traceback
-                            logger.error(traceback.format_exc())
+                    try:
+                        cookie_manager.manager.ensure_cookie_task(
+                            account_id,
+                            cookies_str,
+                            user_id=user_id,
+                            restart=True,
+                            save_to_db=False,
+                        )
+                        runtime_state = cookie_manager.manager.get_task_state(account_id)
+                        log_with_user(
+                            'info',
+                            f"账号登录后监听任务状态: {account_id} -> {runtime_state}",
+                            current_user,
+                        )
+                    except Exception as task_err:
+                        log_with_user(
+                            'error',
+                            f"账号登录成功但监听任务启动失败: {account_id}, 错误: {str(task_err)}",
+                            current_user,
+                        )
+                        raise RuntimeError("登录凭证已保存，但自动回复和订单监听启动失败") from task_err
                 
                 # 登录成功后，调用_refresh_cookies_via_browser刷新Cookie
                 try:
@@ -4616,6 +4769,28 @@ async def update_card_with_image(
 
 
 # 自动发货规则API
+def _validate_delivery_rule_scope(rule_data: dict, user_id: int):
+    keyword = str(rule_data.get("keyword") or "").strip()
+    cookie_id = str(rule_data.get("cookie_id") or "").strip() or None
+    item_id = str(rule_data.get("item_id") or "").strip() or None
+    card_id = rule_data.get("card_id")
+
+    if not card_id or not db_manager.get_card_by_id(int(card_id), user_id):
+        raise HTTPException(status_code=400, detail="请选择当前用户可用的卡券")
+    if item_id and not cookie_id:
+        raise HTTPException(status_code=400, detail="指定商品时必须同时选择账号")
+    if cookie_id:
+        owned_cookies = db_manager.get_all_cookies(user_id)
+        if cookie_id not in owned_cookies:
+            raise HTTPException(status_code=403, detail="无权使用该闲鱼账号")
+    if item_id and not db_manager.get_item_info(cookie_id, item_id):
+        raise HTTPException(status_code=400, detail="所选商品不存在，请先同步商品")
+    if not item_id and not keyword:
+        raise HTTPException(status_code=400, detail="通用规则必须填写触发关键词")
+
+    return keyword, int(card_id), cookie_id, item_id
+
+
 @app.get("/delivery-rules")
 def get_delivery_rules(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取发货规则列表"""
@@ -4634,13 +4809,18 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
     try:
         from app.db_manager import db_manager
         user_id = current_user['user_id']
+        keyword, card_id, cookie_id, item_id = _validate_delivery_rule_scope(
+            rule_data, user_id
+        )
         rule_id = db_manager.create_delivery_rule(
-            keyword=rule_data.get('keyword'),
-            card_id=rule_data.get('card_id'),
+            keyword=keyword,
+            card_id=card_id,
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
-            user_id=user_id
+            user_id=user_id,
+            cookie_id=cookie_id,
+            item_id=item_id,
         )
         return {"id": rule_id, "message": "发货规则创建成功"}
     except Exception as e:
@@ -4670,14 +4850,20 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
     try:
         from app.db_manager import db_manager
         user_id = current_user['user_id']
+        keyword, card_id, cookie_id, item_id = _validate_delivery_rule_scope(
+            rule_data, user_id
+        )
         success = db_manager.update_delivery_rule(
             rule_id=rule_id,
-            keyword=rule_data.get('keyword'),
-            card_id=rule_data.get('card_id'),
+            keyword=keyword,
+            card_id=card_id,
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
-            user_id=user_id
+            user_id=user_id,
+            cookie_id=cookie_id,
+            item_id=item_id,
+            scope_updated=True,
         )
         if success:
             return {"message": "发货规则更新成功"}
@@ -4720,6 +4906,248 @@ def delete_delivery_rule(rule_id: int, current_user: Dict[str, Any] = Depends(ge
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== 商品自动化 API ====================
+
+def _raise_product_automation_error(error: Exception):
+    if isinstance(error, PermissionError):
+        raise HTTPException(status_code=403, detail=str(error))
+    if isinstance(error, LookupError):
+        raise HTTPException(status_code=404, detail=str(error))
+    if isinstance(error, ValueError):
+        raise HTTPException(status_code=400, detail=str(error))
+    logger.exception("商品自动化操作失败")
+    raise HTTPException(status_code=500, detail="商品自动化操作失败")
+
+
+@app.get("/product-automation/materials")
+def get_product_materials(
+    cookie_id: Optional[str] = Query(default=None),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.list_materials(current_user["user_id"], cookie_id),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.put("/product-automation/materials/{material_id}")
+def update_product_material(
+    material_id: int,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.update_material(
+                current_user["user_id"], material_id, payload
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.delete("/product-automation/materials/{material_id}")
+def delete_product_material(
+    material_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        if not product_automation.delete_material(current_user["user_id"], material_id):
+            raise LookupError("素材不存在")
+        return {"success": True, "message": "素材已删除"}
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.get("/product-automation/filter-rules")
+def get_product_filter_rules(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.list_filter_rules(current_user["user_id"]),
+    }
+
+
+@app.post("/product-automation/filter-rules")
+def create_product_filter_rule(
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.save_filter_rule(
+                current_user["user_id"], payload
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.put("/product-automation/filter-rules/{rule_id}")
+def update_product_filter_rule(
+    rule_id: int,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.save_filter_rule(
+                current_user["user_id"], payload, rule_id
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.delete("/product-automation/filter-rules/{rule_id}")
+def delete_product_filter_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        if not product_automation.delete_filter_rule(current_user["user_id"], rule_id):
+            raise LookupError("筛选规则不存在")
+        return {"success": True, "message": "筛选规则已删除"}
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.post("/product-automation/filter-rules/{rule_id}/run")
+def run_product_filter_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.run_filter_rule(
+                current_user["user_id"], rule_id
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.get("/product-automation/delete-rules")
+def get_product_delete_rules(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.list_delete_rules(current_user["user_id"]),
+    }
+
+
+@app.post("/product-automation/delete-rules")
+def create_product_delete_rule(
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.save_delete_rule(
+                current_user["user_id"], payload
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.put("/product-automation/delete-rules/{rule_id}")
+def update_product_delete_rule(
+    rule_id: int,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.save_delete_rule(
+                current_user["user_id"], payload, rule_id
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.delete("/product-automation/delete-rules/{rule_id}")
+def delete_product_delete_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        if not product_automation.delete_delete_rule(current_user["user_id"], rule_id):
+            raise LookupError("删除计划不存在")
+        return {"success": True, "message": "删除计划已删除"}
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.post("/product-automation/delete-rules/{rule_id}/preview")
+def preview_product_delete_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    try:
+        return {
+            "success": True,
+            "data": product_automation.preview_delete_rule(
+                current_user["user_id"], rule_id
+            ),
+        }
+    except Exception as error:
+        _raise_product_automation_error(error)
+
+
+@app.get("/product-automation/runs")
+def get_product_automation_runs(
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.list_runs(current_user["user_id"], limit),
+    }
+
+
+@app.post("/product-automation/repairs/published-ids")
+def repair_product_published_ids(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.repair_published_ids(current_user["user_id"]),
+    }
+
+
+@app.post("/product-automation/repairs/short-links")
+def repair_product_short_links(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.repair_short_links(current_user["user_id"]),
+    }
+
+
+@app.post("/product-automation/repairs/cards")
+def compensate_product_cards(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "success": True,
+        "data": product_automation.compensate_cards(current_user["user_id"]),
+    }
 
 
 # ==================== 备份和恢复 API ====================
@@ -5102,7 +5530,18 @@ class AIReplySettings(BaseModel):
     max_discount_percent: int = 10
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
+    context_enabled: bool = True
+    context_message_limit: int = 12
+    context_expire_minutes: int = 120
     custom_prompts: str = ""
+
+
+def _public_ai_reply_settings(settings: dict) -> dict:
+    """返回前端可展示的AI配置，不暴露密钥。"""
+    public_settings = dict(settings)
+    public_settings['api_key_configured'] = bool(public_settings.get('api_key'))
+    public_settings['api_key'] = ''
+    return public_settings
 
 
 @app.delete("/items/batch")
@@ -5151,7 +5590,7 @@ def get_ai_reply_settings(cookie_id: str, current_user: Dict[str, Any] = Depends
             raise HTTPException(status_code=403, detail="无权限访问该Cookie")
 
         settings = db_manager.get_ai_reply_settings(cookie_id)
-        return settings
+        return _public_ai_reply_settings(settings)
     except HTTPException:
         raise
     except Exception as e:
@@ -5177,6 +5616,14 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
 
         # 保存设置
         settings_dict = settings.dict()
+        settings_dict['context_message_limit'] = max(
+            2, min(30, settings.context_message_limit)
+        )
+        settings_dict['context_expire_minutes'] = max(
+            5, min(1440, settings.context_expire_minutes)
+        )
+        if not settings_dict.get('api_key'):
+            settings_dict['api_key'] = db_manager.get_account_ai_api_key(cookie_id)
         success = db_manager.save_ai_reply_settings(cookie_id, settings_dict)
 
         if success:
@@ -5206,9 +5653,10 @@ def get_all_ai_reply_settings(current_user: Dict[str, Any] = Depends(get_current
         from app.db_manager import db_manager
         user_cookies = db_manager.get_all_cookies(user_id)
 
-        all_settings = db_manager.get_all_ai_reply_settings()
-        # 过滤只属于当前用户的设置
-        user_settings = {cid: settings for cid, settings in all_settings.items() if cid in user_cookies}
+        user_settings = {
+            cid: _public_ai_reply_settings(db_manager.get_ai_reply_settings(cid))
+            for cid in user_cookies
+        }
         return user_settings
     except Exception as e:
         logger.error(f"获取所有AI回复设置异常: {e}")
@@ -5216,8 +5664,8 @@ def get_all_ai_reply_settings(current_user: Dict[str, Any] = Depends(get_current
 
 
 @app.post("/ai-reply-test/{cookie_id}")
-def test_ai_reply(cookie_id: str, test_data: dict,
-                  current_user: Dict[str, Any] = Depends(get_current_user)):
+async def test_ai_reply(cookie_id: str, test_data: dict,
+                        current_user: Dict[str, Any] = Depends(get_current_user)):
     """测试AI回复功能"""
     try:
         # 检查账号是否存在
@@ -5251,7 +5699,7 @@ def test_ai_reply(cookie_id: str, test_data: dict,
         }
 
         # 生成测试回复（跳过等待时间）
-        reply = ai_reply_engine.generate_reply(
+        reply = await ai_reply_engine.generate_reply_async(
             message=test_message,
             item_info=test_item_info,
             chat_id=f"test_{int(time.time())}",

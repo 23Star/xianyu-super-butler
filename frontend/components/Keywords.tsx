@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AccountDetail, ShippingRule, ReplyRule, DefaultReply } from '../types';
-import { getAccountDetails, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
+import { AccountDetail, Item, ShippingRule, ReplyRule, DefaultReply } from '../types';
+import { getAccountDetails, getItems, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
 import { Plus, Trash2, MessageSquare, X, Save, Loader2, Key, Truck, Power, PowerOff, Edit2, RefreshCw, Sparkles, Bot } from 'lucide-react';
 import DeliveryProtection from './DeliveryProtection';
+import { confirmAction, notify } from '../services/feedback';
 
 type ReplyTabType = 'reply' | 'default';
 type KeywordsMode = 'reply' | 'delivery';
@@ -23,6 +24,8 @@ interface Keyword {
 
 interface DeliveryRuleForm {
   keyword: string;
+  cookie_id: string;
+  item_id: string;
   card_id: string;
   description: string;
   enabled: boolean;
@@ -54,10 +57,13 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   // 关键词发货相关状态
   const [shippingRules, setShippingRules] = useState<ShippingRule[]>([]);
   const [cards, setCards] = useState<any[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [editingDeliveryRule, setEditingDeliveryRule] = useState<ShippingRule | null>(null);
   const [deliveryForm, setDeliveryForm] = useState<DeliveryRuleForm>({
     keyword: '',
+    cookie_id: '',
+    item_id: '',
     card_id: '',
     description: '',
     enabled: true
@@ -81,6 +87,10 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
     if (mode === 'delivery') {
       loadShippingRules();
       loadCards();
+      Promise.all([getAccountDetails(), getItems()]).then(([accountData, itemData]) => {
+        setAccounts(accountData);
+        setItems(itemData);
+      });
       return;
     }
 
@@ -143,7 +153,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   const handleAdd = () => {
     if (mode === 'delivery') {
       setEditingDeliveryRule(null);
-      setDeliveryForm({ keyword: '', card_id: '', description: '', enabled: true });
+      setDeliveryForm({ keyword: '', cookie_id: '', item_id: '', card_id: '', description: '', enabled: true });
       setShowDeliveryModal(true);
     } else if (activeTab === 'reply') {
       setEditingKeyword(null);
@@ -198,6 +208,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
     setEditingDeliveryRule(rule);
     setDeliveryForm({
       keyword: rule.item_keyword,
+      cookie_id: rule.cookie_id || '',
+      item_id: rule.item_id || '',
       card_id: String(rule.card_group_id),
       description: rule.name,
       enabled: rule.enabled
@@ -207,11 +219,11 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
 
   const handleSave = async () => {
     if (!selectedAccount) {
-      alert('请先选择账号');
+      notify('请先选择账号');
       return;
     }
     if (!replyForm.keyword.trim() || !replyForm.reply_content.trim()) {
-      alert('请填写关键词和回复内容');
+      notify('请填写关键词和回复内容');
       return;
     }
 
@@ -228,19 +240,19 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       );
       setShowReplyModal(false);
       loadKeywords();
-      alert('保存成功！');
+      notify('保存成功！');
     } catch (e) {
-      alert('保存失败：' + (e as Error).message);
+      notify('保存失败：' + (e as Error).message);
     }
   };
 
   const handleSaveDelivery = async () => {
-    if (!deliveryForm.keyword.trim()) {
-      alert('请填写触发关键词');
+    if (!deliveryForm.item_id && !deliveryForm.keyword.trim()) {
+      notify('通用规则需要填写触发关键词');
       return;
     }
     if (!deliveryForm.card_id) {
-      alert('请选择卡券');
+      notify('请选择卡券');
       return;
     }
 
@@ -248,6 +260,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       await updateShippingRule({
         id: editingDeliveryRule?.id,
         item_keyword: deliveryForm.keyword,
+        cookie_id: deliveryForm.cookie_id || undefined,
+        item_id: deliveryForm.item_id || undefined,
         card_group_id: parseInt(deliveryForm.card_id),
         name: deliveryForm.description,
         priority: 1,
@@ -255,31 +269,31 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       });
       setShowDeliveryModal(false);
       loadShippingRules();
-      alert('保存成功！');
+      notify('保存成功！');
     } catch (e) {
-      alert('保存失败：' + (e as Error).message);
+      notify('保存失败：' + (e as Error).message);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!selectedAccount || !confirm('确认删除该关键词吗？')) return;
+    if (!selectedAccount || !await confirmAction('确认删除该关键词吗？')) return;
     try {
       await deleteReplyRule(id, selectedAccount);
       loadKeywords();
-      alert('删除成功！');
+      notify('删除成功！');
     } catch (e) {
-      alert('删除失败：' + (e as Error).message);
+      notify('删除失败：' + (e as Error).message);
     }
   };
 
   const handleDeleteDelivery = async (id: string) => {
-    if (!confirm('确认删除该发货规则吗？')) return;
+    if (!await confirmAction('确认删除该发货规则吗？')) return;
     try {
       await deleteShippingRule(id);
       loadShippingRules();
-      alert('删除成功！');
+      notify('删除成功！');
     } catch (e) {
-      alert('删除失败：' + (e as Error).message);
+      notify('删除失败：' + (e as Error).message);
     }
   };
 
@@ -288,6 +302,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       await updateShippingRule({
         id: rule.id,
         item_keyword: rule.item_keyword,
+        cookie_id: rule.cookie_id,
+        item_id: rule.item_id,
         card_group_id: rule.card_group_id,
         name: rule.name,
         priority: rule.priority,
@@ -295,13 +311,13 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       });
       loadShippingRules();
     } catch (e) {
-      alert('操作失败：' + (e as Error).message);
+      notify('操作失败：' + (e as Error).message);
     }
   };
 
   const handleSaveDefault = async () => {
     if (!defaultForm.cookie_id) {
-      alert('请先选择账号');
+      notify('请先选择账号');
       return;
     }
 
@@ -314,30 +330,30 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
       });
       setShowDefaultModal(false);
       loadDefaultReplies();
-      alert('保存成功！');
+      notify('保存成功！');
     } catch (e) {
-      alert('保存失败：' + (e as Error).message);
+      notify('保存失败：' + (e as Error).message);
     }
   };
 
   const handleDeleteDefault = async (cookieId: string) => {
-    if (!confirm('确认删除该默认回复吗？')) return;
+    if (!await confirmAction('确认删除该默认回复吗？')) return;
     try {
       await deleteDefaultReply(cookieId);
       loadDefaultReplies();
-      alert('删除成功！');
+      notify('删除成功！');
     } catch (e) {
-      alert('删除失败：' + (e as Error).message);
+      notify('删除失败：' + (e as Error).message);
     }
   };
 
   const handleClearRecords = async (cookieId: string) => {
-    if (!confirm('确认清空该账号的回复记录吗？清空后可以重新对所有对话使用默认回复。')) return;
+    if (!await confirmAction('确认清空该账号的回复记录吗？清空后可以重新对所有对话使用默认回复。')) return;
     try {
       await clearDefaultReplyRecords(cookieId);
-      alert('清空成功！');
+      notify('清空成功！');
     } catch (e) {
-      alert('清空失败：' + (e as Error).message);
+      notify('清空失败：' + (e as Error).message);
     }
   };
 
@@ -572,7 +588,9 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                 {/* 内容 */}
                 <div className="flex-1 min-w-0">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <h3 className="font-bold text-gray-900">{rule.item_keyword}</h3>
+                    <h3 className="font-bold text-gray-900">
+                      {rule.item_title || rule.item_keyword || `商品 ${rule.item_id}`}
+                    </h3>
                     <span className={`rounded px-2 py-1 text-xs font-bold ${
                       rule.enabled
                         ? 'bg-green-50 text-green-700'
@@ -580,9 +598,18 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                     }`}>
                       {rule.enabled ? '已启用' : '已禁用'}
                     </span>
+                    <span className="rounded bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">
+                      {rule.item_id ? '指定商品' : rule.cookie_id ? '指定账号' : '全部账号'}
+                    </span>
                   </div>
                   <p className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">
                     卡券：{rule.card_group_name || `ID: ${rule.card_group_id}`}
+                    {rule.cookie_id && (
+                      <>
+                        <span className="mx-2 text-gray-300">|</span>
+                        账号：{accounts.find(account => account.id === rule.cookie_id)?.nickname || rule.cookie_id}
+                      </>
+                    )}
                     {rule.name && (
                       <>
                         <span className="mx-2 text-gray-300">|</span>
@@ -835,9 +862,50 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
             {/* Body */}
             <div className="p-8 space-y-6 overflow-y-auto max-h-[60vh]">
               <div>
+                <label className="mb-3 block text-sm font-black text-gray-900">适用账号（可选）</label>
+                <select
+                  value={deliveryForm.cookie_id}
+                  onChange={(e) => setDeliveryForm({
+                    ...deliveryForm,
+                    cookie_id: e.target.value,
+                    item_id: ''
+                  })}
+                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 font-medium focus:border-blue-400"
+                >
+                  <option value="">全部账号</option>
+                  {accounts.map(account => (
+                    <option key={account.id} value={account.id}>
+                      {account.nickname || account.remark || account.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-3 block text-sm font-black text-gray-900">指定商品（可选）</label>
+                <select
+                  value={deliveryForm.item_id}
+                  disabled={!deliveryForm.cookie_id}
+                  onChange={(e) => setDeliveryForm({ ...deliveryForm, item_id: e.target.value })}
+                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 font-medium focus:border-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="">
+                    {deliveryForm.cookie_id ? '按关键词匹配该账号商品' : '请先选择账号'}
+                  </option>
+                  {items
+                    .filter(item => item.cookie_id === deliveryForm.cookie_id)
+                    .map(item => (
+                      <option key={`${item.cookie_id}-${item.item_id}`} value={item.item_id}>
+                        {item.item_title || item.item_id}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
                 <label className="flex items-center gap-2 text-sm font-black text-gray-900 mb-3">
                   <Key className="w-5 h-5 text-blue-500" />
-                  触发关键词
+                  触发关键词{deliveryForm.item_id ? '（可选）' : ''}
                 </label>
                 <input
                   type="text"
@@ -846,7 +914,9 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                   placeholder="例如：发货卡密、自动发货"
                   className="w-full px-6 py-4 rounded-2xl font-medium border-2 border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/20 transition-all bg-gray-50"
                 />
-                <p className="text-sm text-gray-500 mt-2 ml-1">💡 买家消息中包含此关键词时自动发货</p>
+                <p className="mt-2 ml-1 text-sm text-gray-500">
+                  指定商品后优先按商品 ID 发货；未指定商品时按标题和详情关键词匹配
+                </p>
               </div>
 
               <div>

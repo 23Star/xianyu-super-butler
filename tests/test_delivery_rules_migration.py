@@ -77,7 +77,18 @@ class DeliveryRulesMigrationTests(unittest.TestCase):
             finally:
                 manager.close()
 
-            self.assertIn("user_id", columns)
+            for column_name in (
+                "user_id",
+                "cookie_id",
+                "item_id",
+                "delivery_count",
+                "enabled",
+                "description",
+                "delivery_times",
+                "created_at",
+                "updated_at",
+            ):
+                self.assertIn(column_name, columns)
             self.assertEqual(migrated_user_id, 1)
 
 

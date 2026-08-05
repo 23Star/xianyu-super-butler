@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item } from '../types';
 import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems } from '../services/api';
+import { confirmAction, notify } from '../services/feedback';
 import { Search, MoreHorizontal, Truck, RefreshCw, Copy, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, User as UserIcon, Phone, MapPin, Upload, ExternalLink, Trash2 } from 'lucide-react';
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
@@ -255,7 +256,7 @@ const OrderList: React.FC = () => {
       loadOrders();
     } catch (error) {
       console.error('更新订单失败:', error);
-      alert('更新失败，请重试');
+      notify('更新失败，请重试');
     }
   };
 
@@ -266,9 +267,9 @@ const OrderList: React.FC = () => {
       setShowImportModal(false);
       setImportText('');
       loadOrders();
-      alert('订单导入成功');
+      notify('订单导入成功');
     } catch (error) {
-      alert('导入失败，请检查JSON格式');
+      notify('导入失败，请检查JSON格式');
     }
   };
 
@@ -279,25 +280,25 @@ const OrderList: React.FC = () => {
       if (result.success) {
         await loadOrders();
       } else {
-        alert(result.message || '同步失败');
+        notify(result.message || '同步失败');
       }
     } catch (error: any) {
       console.error('同步订单失败:', error);
-      alert(error?.message || '同步失败，请重试');
+      notify(error?.message || '同步失败，请重试');
     } finally {
       setSyncingOrderId(null);
     }
   };
 
   const handleDelete = async (orderId: string) => {
-    if (!confirm('确认删除该订单吗？删除后无法恢复。')) return;
+    if (!await confirmAction('确认删除该订单吗？删除后无法恢复。')) return;
     setDeletingOrderId(orderId);
     try {
       await deleteOrder(orderId);
       setAllOrders(prev => prev.filter(o => o.order_id !== orderId));
     } catch (error: any) {
       console.error('删除订单失败:', error);
-      alert(error?.message || '删除失败，请重试');
+      notify(error?.message || '删除失败，请重试');
       await loadOrders();
     } finally {
       setDeletingOrderId(null);

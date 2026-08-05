@@ -6,6 +6,9 @@ import {
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
   MessageFilter, MessageFilterType, AutoReplyLog
+  , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
+  ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
+  ProductAutomationResult, ProductDeletePreview
 } from '../types';
 
 // Auth
@@ -281,6 +284,115 @@ export const updateItemMultiQuantity = async (cookieId: string, itemId: string, 
     return put(`/items/${cookieId}/${itemId}/multi-quantity-delivery`, { multi_quantity_delivery: enabled });
 }
 
+// Product Automation
+export const getProductMaterials = async (cookieId?: string): Promise<ProductMaterial[]> => {
+  const response = await get<{ success: boolean; data: ProductMaterial[] }>(
+    '/product-automation/materials',
+    cookieId ? { cookie_id: cookieId } : undefined,
+  );
+  return response.data || [];
+};
+
+export const updateProductMaterial = async (
+  materialId: number,
+  changes: Partial<ProductMaterial>,
+): Promise<ProductMaterial> => {
+  const response = await put<{ success: boolean; data: ProductMaterial }>(
+    `/product-automation/materials/${materialId}`,
+    changes,
+  );
+  return response.data;
+};
+
+export const deleteProductMaterial = async (materialId: number): Promise<void> => {
+  await del(`/product-automation/materials/${materialId}`);
+};
+
+export const getProductFilterRules = async (): Promise<ProductFilterRule[]> => {
+  const response = await get<{ success: boolean; data: ProductFilterRule[] }>(
+    '/product-automation/filter-rules',
+  );
+  return response.data || [];
+};
+
+export const saveProductFilterRule = async (
+  data: Partial<ProductFilterRule> & { cookie_id: string; name: string },
+): Promise<ProductFilterRule> => {
+  const response = data.id
+    ? await put<{ success: boolean; data: ProductFilterRule }>(
+        `/product-automation/filter-rules/${data.id}`,
+        data,
+      )
+    : await post<{ success: boolean; data: ProductFilterRule }>(
+        '/product-automation/filter-rules',
+        data,
+      );
+  return response.data;
+};
+
+export const deleteProductFilterRule = async (ruleId: number): Promise<void> => {
+  await del(`/product-automation/filter-rules/${ruleId}`);
+};
+
+export const runProductFilterRule = async (ruleId: number): Promise<ProductAutomationResult> => {
+  const response = await post<{ success: boolean; data: ProductAutomationResult }>(
+    `/product-automation/filter-rules/${ruleId}/run`,
+    {},
+  );
+  return response.data;
+};
+
+export const getProductDeleteRules = async (): Promise<ProductDeleteRule[]> => {
+  const response = await get<{ success: boolean; data: ProductDeleteRule[] }>(
+    '/product-automation/delete-rules',
+  );
+  return response.data || [];
+};
+
+export const saveProductDeleteRule = async (
+  data: Partial<ProductDeleteRule> & { cookie_id: string; name: string },
+): Promise<ProductDeleteRule> => {
+  const response = data.id
+    ? await put<{ success: boolean; data: ProductDeleteRule }>(
+        `/product-automation/delete-rules/${data.id}`,
+        data,
+      )
+    : await post<{ success: boolean; data: ProductDeleteRule }>(
+        '/product-automation/delete-rules',
+        data,
+      );
+  return response.data;
+};
+
+export const deleteProductDeleteRule = async (ruleId: number): Promise<void> => {
+  await del(`/product-automation/delete-rules/${ruleId}`);
+};
+
+export const previewProductDeleteRule = async (ruleId: number): Promise<ProductDeletePreview> => {
+  const response = await post<{ success: boolean; data: ProductDeletePreview }>(
+    `/product-automation/delete-rules/${ruleId}/preview`,
+    {},
+  );
+  return response.data;
+};
+
+export const getProductAutomationRuns = async (limit: number = 50): Promise<AutomationTaskRun[]> => {
+  const response = await get<{ success: boolean; data: AutomationTaskRun[] }>(
+    '/product-automation/runs',
+    { limit },
+  );
+  return response.data || [];
+};
+
+const runProductRepair = async (path: string): Promise<ProductAutomationResult> => {
+  const response = await post<{ success: boolean; data: ProductAutomationResult }>(path, {});
+  return response.data;
+};
+
+export const repairPublishedProductIds = () => runProductRepair('/product-automation/repairs/published-ids');
+export const repairProductShortLinks = () => runProductRepair('/product-automation/repairs/short-links');
+export const compensateProductCards = () => runProductRepair('/product-automation/repairs/cards');
+
 // Rules - 发货规则 (使用正确的后端API)
 export const getShippingRules = async (): Promise<ShippingRule[]> => {
     const res = await get<any>('/delivery-rules');
@@ -290,6 +402,9 @@ export const getShippingRules = async (): Promise<ShippingRule[]> => {
         id: String(item.id),
         name: item.description || item.keyword || '',
         item_keyword: item.keyword || '',
+        cookie_id: item.cookie_id || undefined,
+        item_id: item.item_id || undefined,
+        item_title: item.item_title || undefined,
         card_group_id: item.card_id || 0,
         card_group_name: item.card_name || '',
         priority: item.delivery_count || 1,
@@ -303,7 +418,9 @@ export const updateShippingRule = async (rule: Partial<ShippingRule>): Promise<a
         card_id: rule.card_group_id,
         delivery_count: rule.priority,
         enabled: rule.enabled ?? true,
-        description: rule.name
+        description: rule.name,
+        cookie_id: rule.cookie_id || null,
+        item_id: rule.item_id || null
     };
     return rule.id ? put(`/delivery-rules/${rule.id}`, payload) : post('/delivery-rules', payload);
 }
@@ -441,19 +558,32 @@ export const updateAccountAISettings = async (cookieId: string, settings: Partia
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,
+    context_enabled: settings.context_enabled ?? true,
+    context_message_limit: settings.context_message_limit ?? 12,
+    context_expire_minutes: settings.context_expire_minutes ?? 120,
     custom_prompts: settings.custom_prompts ?? ''
   };
   return put(`/ai-reply-settings/${cookieId}`, payload);
 }
 
-export const testAIConnection = async (cookieId: string): Promise<ApiResponse> => {
-  const result = await post<{ success?: boolean; message?: string; reply?: string }>(`/ai-reply-test/${cookieId}`, {
-    message: '你好，这是一条测试消息',
-  });
-  if (result.reply) {
-    return { success: true, message: `AI 回复: ${result.reply}` };
-  }
-  return { success: result.success ?? true, message: result.message || 'AI 连接测试成功' };
+export const testAIConnection = async (
+  cookieId: string,
+  payload: {
+    message?: string;
+    item_title?: string;
+    item_price?: number;
+    item_desc?: string;
+  } = {},
+): Promise<ApiResponse & { reply?: string }> => {
+  const result = await post<{ success?: boolean; message?: string; reply?: string }>(
+    `/ai-reply-test/${cookieId}`,
+    { message: '你好，这是一条测试消息', ...payload },
+  );
+  return {
+    success: result.success ?? true,
+    message: result.message || 'AI 连接测试成功',
+    reply: result.reply,
+  };
 }
 
 // Notification Channels
@@ -622,6 +752,47 @@ export const getAutoReplyLogs = async (params: {
   page_size?: number;
 } = {}): Promise<PaginatedResponse<AutoReplyLog>> => {
   return get('/auto-reply-logs', params);
+};
+
+// Xianyu IM
+export const getChatAccounts = async (): Promise<ChatAccount[]> => {
+  const response = await get<{ success: boolean; data: ChatAccount[] }>('/chat/accounts');
+  return response.data || [];
+};
+
+export const getChatConversations = async (
+  cookieId: string,
+  cursor?: number,
+  limit: number = 30
+): Promise<{ conversations: ChatConversation[]; hasMore: boolean; nextCursor?: number }> => {
+  const response = await get<{
+    success: boolean;
+    data: { conversations: ChatConversation[]; hasMore: boolean; nextCursor?: number };
+  }>(`/chat/conversations/${encodeURIComponent(cookieId)}`, { cursor, limit });
+  return response.data;
+};
+
+export const getChatMessages = async (
+  cookieId: string,
+  cid: string,
+  cursor?: number,
+  limit: number = 50
+): Promise<{ messages: ChatMessage[]; hasMore: boolean; nextCursor?: number }> => {
+  const response = await get<{
+    success: boolean;
+    data: { messages: ChatMessage[]; hasMore: boolean; nextCursor?: number };
+  }>(
+    `/chat/messages/${encodeURIComponent(cookieId)}/${encodeURIComponent(cid)}`,
+    { cursor, limit }
+  );
+  return response.data;
+};
+
+export const sendChatMessage = async (
+  cookieId: string,
+  data: { cid: string; to_user_id: string; text: string }
+): Promise<{ success: boolean; message: string; data?: { messageId?: string } }> => {
+  return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);
 };
 
 // Default Reply

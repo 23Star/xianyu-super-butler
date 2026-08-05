@@ -1,364 +1,51 @@
-# Git相关
-.git
-.gitignore
-.gitattributes
-
-# Python相关
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# 虚拟环境
+.git/
+.github/
+.zcf/
+.venv/
 venv/
 env/
-ENV/
-env.bak/
-venv.bak/
 
-# IDE相关
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# 操作系统相关
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
 
-# 日志文件
-logs/*.log
+data/
+logs/
+backups/
+*.db
+*.db-*
+*.sqlite*
 *.log
 
-# 数据库文件（构建时不包含，运行时挂载）
-*.db
-*.sqlite
-*.sqlite3
-
-# 临时文件
-*.tmp
-*.temp
-temp/
-tmp/
-
-# 测试文件
-test_*.py
-*_test.py
-tests/
-
-# 文档
-*.md
-docs/
-
-# Docker相关（保留必要的构建文件）
-.dockerignore.bak
-docker-compose.override.yml
-
-# 配置文件（运行时挂载）
-# global_config.yml
-
-# 环境变量文件
 .env
 .env.*
 !.env.example
-*.local.yml
-*.dev.yml
-*.test.yml
-config.*.yml
-!global_config.yml
 
-# 前端相关（保留源码用于构建，排除依赖和构建产物）
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/coverage/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
-# 数据目录（运行时挂载）
-data/
-backups/
-logs/
-realtime.log
+tests/
+docs/
+*.zip
+*.tar.gz
+*.rar
+*.7z
 
-# 上传文件
+playwright-report/
+test-results/
+.playwright/
+
 static/uploads/*
 !static/uploads/.gitkeep
 !static/uploads/images/
 static/uploads/images/*
 !static/uploads/images/.gitkeep
-
-# Excel和数据文件
-*.xlsx
-*.xls
-*.csv
-keywords_*.xlsx
-export_*.csv
-export_*.json
-export_*.xlsx
-
-# 压缩文件
-*.zip
-*.tar.gz
-*.rar
-*.7z
-
-# 备份文件
-*.bak
-*.backup
-*.old
-
-# 密钥和证书
-*.key
-*.pem
-*.crt
-*.cert
-*.p12
-*.pfx
-ssl/
-secrets/
-credentials/
-
-# 运行时文件
-*.pid
-*.sock
-*.lock
-*.port
-
-# 性能分析文件
-*.prof
-*.profile
-*.pstats
-
-# 缓存文件
-.cache/
-cache/
-*.cache
-
-# 浏览器相关
-.playwright/
-playwright-report/
-test-results/
-
-# 示例和演示文件
-example_*.py
-*_example.py
-demo_*.py
-*_demo.py
-
-# AI模型文件
-*.model
-*.weights
-*.h5
-*.pb
-
-# 大文件
-*.iso
-*.dmg
-*.img
-
-# 监控和审计
-monitoring/
-*.access.log
-*.error.log
-*.audit.log
-
-# 本地开发文件
-local/
-.local/
-debug.log
-*.debug
-
-# ==================== 2025年新增规则 ====================
-
-# Nuitka编译临时文件
-nuitka-crash-report*.xml
-nuitka-onefile-warning.txt
-utils/*.build/
-utils/*.dist/
-*.build/
-*.dist/
-*.onefile-build/
-
-# 浏览器数据和缓存
-DrissionPage/
-.drission/
-selenium/
-webdriver/
-.playwright/.browsers/
-playwright-state/
-
-# 统计和监控数据
-user_stats.txt
-user_stats.db
-stats.log
-stats_*.log
-metrics/
-analytics/
-
-# 运行时生成的数据（这些在容器运行时挂载）
-xianyu_data.db
-xianyu_data.db.*
-xianyu_data_backup_*.db
-*.db-journal
-*.db-wal
-*.db-shm
-realtime.log
-
-# 用户上传的文件（运行时挂载）
-static/uploads/*
-!static/uploads/.gitkeep
-
-# 轨迹历史数据
-trajectory_history/*.json
-trajectory_history/*.trajectory
-
-# Python编译缓存（补充）
-__pycache__/
-*.pyc
-*.pyo
-*$py.class
-
-# 临时脚本和测试文件
-temp_*.py
-tmp_*.py
-quick_*.py
-fix_*.py
-test_*.py
-check_*.py
-debug_*.py
-*_test.py
-*_demo.py
-*_example.py
-
-# 数据导出文件
-export_*.xlsx
-export_*.csv
-export_*.json
-dump_*.sql
-backup_*.db
-
-# 开发环境文件
-.env
-.env.*
-.env.local
-.env.*.local
-*.local.yml
-*.dev.yml
-*.test.yml
-config.local.*
-
-# Git相关（补充）
-.git/
-.github/
-.gitignore
-.gitattributes
-.git-credentials
-
-# 编辑器和IDE配置
-.vscode/
-.idea/
-*.sublime-*
-*.code-workspace
-
-# 文档和说明（Dockerfile中不需要）
-*.md
-!README.md
-docs/
-documentation/
-
-# 压缩包和大文件
-*.zip
-*.tar.gz
-*.rar
-*.7z
-*.iso
-*.dmg
-
-# 媒体文件
-*.mp4
-*.avi
-*.mov
-*.mp3
-*.wav
-
-# AI模型文件
-*.model
-*.weights
-*.h5
-*.pb
-*.onnx
-
-# 性能分析和调试
-*.perf
-*.trace
-*.profile
-*.prof
-memory_*.dump
-cpu_*.profile
-
-# 容器相关
-docker-compose.override.yml
-.docker/
-docker-data/
-container_logs/
-
-# 密钥和证书（安全相关）
-*.key
-*.pem
-*.crt
-*.cert
-*.p12
-*.pfx
-secrets/
-credentials/
-keys/
-ssl/*.key
-ssl/*.pem
-
-# 备份文件
-*.bak
-*.backup
-*.old
-*~
-
-# 操作系统特定文件
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Python虚拟环境
-venv/
-env/
-ENV/
-.venv/
-
-# 项目特定排除文件（已清理的测试文件和调试工具）
-# check_silent_mode.py - 已删除
-# order_status_handler.py - 保留，是核心订单处理模块
-php/
-# simple_stats_server.py - 保留，是可选的统计服务器

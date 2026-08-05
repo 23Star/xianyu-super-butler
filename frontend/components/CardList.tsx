@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Card } from '../types';
 import { getCards, createCard, updateCard, deleteCard } from '../services/api';
+import { confirmAction, notify } from '../services/feedback';
 import { Plus, CreditCard, Clock, FileText, Image as ImageIcon, Code, Edit, Trash2, Save, X, Eye, EyeOff, Package } from 'lucide-react';
 
 const CardList: React.FC = () => {
@@ -67,11 +68,11 @@ const CardList: React.FC = () => {
 
     // 验证必填字段
     if (!editForm.name?.trim()) {
-      alert('请输入卡密名称');
+      notify('请输入卡密名称');
       return;
     }
     if (!editForm.type) {
-      alert('请选择卡密类型');
+      notify('请选择卡密类型');
       return;
     }
 
@@ -109,18 +110,18 @@ const CardList: React.FC = () => {
       getCards().then(setCards);
     } catch (error) {
       console.error('更新卡密失败:', error);
-      alert('更新失败，请重试');
+      notify('更新失败，请重试');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('确认删除该卡密吗？')) {
+    if (await confirmAction('确认删除该卡密吗？')) {
       try {
         await deleteCard(id);
         getCards().then(setCards);
       } catch (error) {
         console.error('删除卡密失败:', error);
-        alert('删除失败，请重试');
+        notify('删除失败，请重试');
       }
     }
   };
@@ -129,11 +130,11 @@ const CardList: React.FC = () => {
     const name = addForm.name.trim();
     const content = addForm.content.trim();
     if (!name) {
-      alert('请输入卡密名称');
+      notify('请输入卡密名称');
       return;
     }
     if (!content) {
-      alert(addForm.type === 'api' ? '请输入 API 地址' : '请输入卡密内容');
+      notify(addForm.type === 'api' ? '请输入 API 地址' : '请输入卡密内容');
       return;
     }
 
@@ -173,7 +174,7 @@ const CardList: React.FC = () => {
       getCards().then(setCards);
     } catch (error) {
       console.error('添加卡密失败:', error);
-      alert('添加失败，请重试');
+      notify('添加失败，请重试');
     }
   };
 

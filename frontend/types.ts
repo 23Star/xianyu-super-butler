@@ -47,6 +47,7 @@ export interface AccountDetail {
   followers?: number;
   following?: number;
   profile_updated_at?: string;
+  runtime_state?: 'running' | 'stopped' | 'cancelled' | 'failed';
   // AI设置
   ai_enabled?: boolean;
   max_discount_percent?: number;
@@ -132,11 +133,117 @@ export interface Item {
   updated_at?: string;
 }
 
+export type ProductPublishStatus = 'draft' | 'published' | 'failed' | string;
+
+export interface ProductMaterial {
+  id: number;
+  user_id: number;
+  cookie_id: string;
+  rule_id?: number;
+  source_item_id: string;
+  title: string;
+  description: string;
+  category: string;
+  price?: number;
+  images: string[];
+  source_url: string;
+  short_url: string;
+  delivery_content: string;
+  publish_status: ProductPublishStatus;
+  published_item_id: string;
+  publish_trace_code: string;
+  auto_card_id?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProductFilterRule {
+  id: number;
+  user_id: number;
+  cookie_id: string;
+  name: string;
+  include_keywords: string[];
+  exclude_keywords: string[];
+  min_price?: number;
+  max_price?: number;
+  category: string;
+  daily_limit: number;
+  enabled: boolean;
+  today_count: number;
+  total_count: number;
+  counter_date?: string;
+  last_run_at?: string;
+  last_run_status?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ProductDeleteRule {
+  id: number;
+  user_id: number;
+  cookie_id: string;
+  name: string;
+  min_publish_days: number;
+  daily_limit: number;
+  skip_reply_activity: boolean;
+  skip_order_activity: boolean;
+  enabled: boolean;
+  execution_mode: 'dry_run';
+  last_run_at?: string;
+  last_run_status?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AutomationTaskRun {
+  id: number;
+  user_id: number;
+  cookie_id?: string;
+  task_type: string;
+  rule_id?: number;
+  execution_mode: string;
+  checked_count: number;
+  matched_count: number;
+  changed_count: number;
+  failed_count: number;
+  summary: string;
+  details: Array<Record<string, unknown>>;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface ProductAutomationResult {
+  run_id: number;
+  summary: string;
+  details?: Array<Record<string, unknown>>;
+}
+
+export interface ProductDeletePreview extends ProductAutomationResult {
+  mode: 'dry_run';
+  candidates: Array<{
+    item_id: string;
+    item_title?: string;
+    created_at?: string;
+    age_days?: number;
+    reason: string;
+  }>;
+  skipped: Array<{
+    item_id: string;
+    item_title?: string;
+    created_at?: string;
+    age_days?: number;
+    reason: string;
+  }>;
+}
+
 // Rules
 export interface ShippingRule {
   id: string;
   name: string;
   item_keyword: string; // Matches item title
+  cookie_id?: string;
+  item_id?: string;
+  item_title?: string;
   card_group_id: number; // ID from Card list
   card_group_name?: string; // UI helper
   priority: number;
@@ -251,6 +358,39 @@ export interface AutoReplyLog {
   updated_at?: string;
 }
 
+export interface ChatAccount {
+  accountId: string;
+  displayName: string;
+  avatarUrl?: string;
+  connected: boolean;
+  xianyuUserId?: string;
+}
+
+export interface ChatConversation {
+  cid: string;
+  rawCid: string;
+  otherUserId: string;
+  otherUserName: string;
+  otherUserAvatar?: string;
+  itemId?: string;
+  itemTitle?: string;
+  itemImage?: string;
+  lastMessageSummary: string;
+  lastMessageTime: number;
+  unreadCount: number;
+}
+
+export interface ChatMessage {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  isSelf: boolean;
+  type: 'text' | 'image' | 'system' | 'card';
+  text: string;
+  images: string[];
+  time: number;
+}
+
 export interface ReplyRule {
   id: string;
   keyword: string;
@@ -298,10 +438,14 @@ export interface AIReplySettings {
   ai_enabled: boolean;
   model_name: string;
   api_key: string;
+  api_key_configured?: boolean;
   base_url: string;
   max_discount_percent: number;
   max_discount_amount?: number;
   max_bargain_rounds: number;
+  context_enabled: boolean;
+  context_message_limit: number;
+  context_expire_minutes: number;
   custom_prompts: string;
 }
 

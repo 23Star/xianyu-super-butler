@@ -17,6 +17,7 @@ import {
   getAccountAISettings,
   refreshAccountProfile
 } from '../services/api';
+import { confirmAction, notify } from '../services/feedback';
 import {
   Power, Edit2, Trash2, QrCode, X, Check, Loader2,
   MessageSquare, RefreshCw, Save, User, Clock, MessageCircle,
@@ -120,14 +121,14 @@ const AccountList: React.FC = () => {
       await loadAccounts();
     } catch (error) {
       console.error('Failed to refresh account profile:', error);
-      alert(error instanceof Error ? error.message : '账号资料刷新失败');
+      notify(error instanceof Error ? error.message : '账号资料刷新失败');
     } finally {
       setRefreshingProfileId(null);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('确认删除该账号吗？')) {
+    if (await confirmAction('确认删除该账号吗？')) {
       await deleteAccount(id);
       loadAccounts();
     }
@@ -216,7 +217,7 @@ const AccountList: React.FC = () => {
       loadAccounts();
     } catch (error) {
       console.error('更新账号失败:', error);
-      alert('更新失败，请重试');
+      notify('更新失败，请重试');
     } finally {
       setSaving(false);
     }
@@ -232,7 +233,7 @@ const AccountList: React.FC = () => {
       loadAccounts();
     } catch (error) {
       console.error('更新AI设置失败:', error);
-      alert('更新失败，请重试');
+      notify('更新失败，请重试');
     } finally {
       setSaving(false);
     }
@@ -323,6 +324,19 @@ const AccountList: React.FC = () => {
     setShowQRModal(false);
   };
 
+  const getRuntimeBadge = (account: AccountDetail) => {
+    if (!account.enabled) {
+      return { label: '已暂停', className: 'bg-gray-100 text-gray-500' };
+    }
+    if (account.runtime_state === 'running') {
+      return { label: '监听中', className: 'bg-green-100 text-green-700' };
+    }
+    if (account.runtime_state === 'failed') {
+      return { label: '监听异常', className: 'bg-red-100 text-red-700' };
+    }
+    return { label: '已启用 / 未运行', className: 'bg-amber-100 text-amber-800' };
+  };
+
   if (loading) return <div className="p-20 flex justify-center"><Loader2 className="w-8 h-8 text-[#FFE815] animate-spin"/></div>;
 
   return (
@@ -343,7 +357,10 @@ const AccountList: React.FC = () => {
 
       {/* Account Grid */}
       <div className="grid grid-cols-1 gap-4">
-        {accounts.map((account) => (
+        {accounts.map((account) => {
+          const runtimeBadge = getRuntimeBadge(account);
+          const isListening = account.enabled && account.runtime_state === 'running';
+          return (
           <div key={account.id} className="ios-card flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-start gap-4 sm:items-center">
               <div className="relative">
@@ -360,18 +377,16 @@ const AccountList: React.FC = () => {
                     {account.nickname?.trim().charAt(0) || account.remark?.trim().charAt(0) || '闲'}
                   </div>
                 )}
-                <div className={`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-4 border-white flex items-center justify-center ${account.enabled ? 'bg-green-500' : 'bg-gray-300'}`}>
-                    {account.enabled && <Check className="w-3 h-3 text-white" />}
+                <div className={`absolute -bottom-1 -right-1 w-6 h-6 rounded-full border-4 border-white flex items-center justify-center ${isListening ? 'bg-green-500' : account.runtime_state === 'failed' ? 'bg-red-500' : 'bg-gray-300'}`}>
+                    {isListening && <Check className="w-3 h-3 text-white" />}
                 </div>
               </div>
               <div className="min-w-0">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                     <h3 className="break-words text-lg font-bold text-gray-900">{account.nickname || account.remark || '未命名账号'}</h3>
-                    {account.enabled ? (
-                        <span className="px-2.5 py-0.5 rounded-lg bg-green-100 text-green-700 text-xs font-bold">在线</span>
-                    ) : (
-                        <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 text-gray-500 text-xs font-bold">暂停</span>
-                    )}
+                    <span className={`px-2.5 py-0.5 rounded-lg text-xs font-bold ${runtimeBadge.className}`}>
+                      {runtimeBadge.label}
+                    </span>
                     {account.ai_enabled && (
                         <span className="px-2.5 py-0.5 rounded-lg bg-purple-100 text-purple-700 text-xs font-bold flex items-center gap-1">
                           <Bot className="w-3 h-3" /> AI
@@ -449,7 +464,8 @@ const AccountList: React.FC = () => {
                 </button>
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {accounts.length === 0 && (
             <div className="ios-card p-12 text-center">

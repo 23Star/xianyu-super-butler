@@ -36,6 +36,7 @@ import {
   setMessageNotification,
   updateNotificationChannel,
 } from '../services/api';
+import { confirmAction, notify } from '../services/feedback';
 
 type PageTab = 'channels' | 'bindings' | 'risk' | 'system';
 
@@ -168,7 +169,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       setBindings(bindingData.data);
       if (!bindingAccount && accountData.length > 0) setBindingAccount(accountData[0].id);
     } catch (error) {
-      alert(`加载通知配置失败：${(error as Error).message}`);
+      notify(`加载通知配置失败：${(error as Error).message}`);
     } finally {
       setLoadingBase(false);
     }
@@ -219,7 +220,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       setEditorOpen(false);
       await loadBaseData();
     } catch (error) {
-      alert(`保存通知渠道失败：${(error as Error).message}`);
+      notify(`保存通知渠道失败：${(error as Error).message}`);
     } finally {
       setSavingChannel(false);
     }
@@ -237,23 +238,23 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
         await loadBaseData();
       }
     } catch (error) {
-      alert(`更新渠道状态失败：${(error as Error).message}`);
+      notify(`更新渠道状态失败：${(error as Error).message}`);
     }
   };
 
   const removeChannel = async (channel: NotificationChannel) => {
-    if (!confirm(`确认删除通知渠道“${channel.name}”？相关账号绑定也会被删除。`)) return;
+    if (!await confirmAction(`确认删除通知渠道“${channel.name}”？相关账号绑定也会被删除。`)) return;
     try {
       await deleteNotificationChannel(channel.id);
       await loadBaseData();
     } catch (error) {
-      alert(`删除通知渠道失败：${(error as Error).message}`);
+      notify(`删除通知渠道失败：${(error as Error).message}`);
     }
   };
 
   const addBinding = async () => {
     if (!bindingAccount || !bindingChannel) {
-      alert('请选择账号和通知渠道');
+      notify('请选择账号和通知渠道');
       return;
     }
     setSavingBinding(true);
@@ -262,7 +263,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       setBindingChannel('');
       await loadBaseData();
     } catch (error) {
-      alert(`绑定失败：${(error as Error).message}`);
+      notify(`绑定失败：${(error as Error).message}`);
     } finally {
       setSavingBinding(false);
     }
@@ -273,17 +274,17 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       await setMessageNotification(binding.cookie_id, binding.channel_id, !binding.enabled);
       await loadBaseData();
     } catch (error) {
-      alert(`更新绑定失败：${(error as Error).message}`);
+      notify(`更新绑定失败：${(error as Error).message}`);
     }
   };
 
   const removeBinding = async (binding: MessageNotification) => {
-    if (!confirm(`确认解除账号与“${binding.channel_name}”的通知绑定？`)) return;
+    if (!await confirmAction(`确认解除账号与“${binding.channel_name}”的通知绑定？`)) return;
     try {
       await deleteMessageNotification(binding.id);
       setBindings((current) => current.filter((item) => item.id !== binding.id));
     } catch (error) {
-      alert(`解除绑定失败：${(error as Error).message}`);
+      notify(`解除绑定失败：${(error as Error).message}`);
     }
   };
 
@@ -299,7 +300,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       setRiskLogs(result.data || []);
       setRiskTotal(result.total || 0);
     } catch (error) {
-      alert(`加载风控日志失败：${(error as Error).message}`);
+      notify(`加载风控日志失败：${(error as Error).message}`);
     } finally {
       setRiskLoading(false);
     }
@@ -310,13 +311,13 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   }, [activeTab, riskAccount, riskStatus, riskPage]);
 
   const removeRiskLog = async (log: RiskControlLog) => {
-    if (!confirm('确认删除这条风控日志？')) return;
+    if (!await confirmAction('确认删除这条风控日志？')) return;
     try {
       const result = await deleteRiskControlLog(log.id);
       if (result.success === false) throw new Error(result.message || '删除失败');
       await loadRiskLogs();
     } catch (error) {
-      alert(`删除风控日志失败：${(error as Error).message}`);
+      notify(`删除风控日志失败：${(error as Error).message}`);
     }
   };
 
@@ -332,7 +333,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       if (!result.success) throw new Error(result.message || '加载失败');
       setSystemLogs(result.logs || []);
     } catch (error) {
-      alert(`加载系统日志失败：${(error as Error).message}`);
+      notify(`加载系统日志失败：${(error as Error).message}`);
     } finally {
       setSystemLoading(false);
     }

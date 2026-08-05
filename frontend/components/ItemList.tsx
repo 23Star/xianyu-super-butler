@@ -10,6 +10,7 @@ import {
   updateItemMultiQuantity,
   updateItemMultiSpec,
 } from '../services/api';
+import { confirmAction } from '../services/feedback';
 import { Box, RefreshCw, ShoppingBag, Edit, Trash2, Save, X, Loader2 } from 'lucide-react';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
@@ -128,7 +129,7 @@ const ItemList: React.FC = () => {
   };
 
   const handleDelete = async (item: Item) => {
-    if (!window.confirm(`确认删除商品“${item.item_title || item.item_id}”的本地记录吗？`)) return;
+    if (!await confirmAction(`确认删除商品“${item.item_title || item.item_id}”的本地记录吗？`)) return;
     const key = `${item.cookie_id}-${item.item_id}`;
     setSavingKey(key);
     try {

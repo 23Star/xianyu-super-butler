@@ -165,6 +165,9 @@ class DBManager:
                 max_discount_percent INTEGER DEFAULT 10,
                 max_discount_amount INTEGER DEFAULT 100,
                 max_bargain_rounds INTEGER DEFAULT 3,
+                context_enabled BOOLEAN DEFAULT TRUE,
+                context_message_limit INTEGER DEFAULT 12,
+                context_expire_minutes INTEGER DEFAULT 120,
                 custom_prompts TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -409,6 +412,8 @@ class DBManager:
                 keyword TEXT NOT NULL,
                 card_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL DEFAULT 1,
+                cookie_id TEXT,
+                item_id TEXT,
                 delivery_count INTEGER DEFAULT 1,
                 enabled BOOLEAN DEFAULT TRUE,
                 description TEXT,
@@ -416,7 +421,8 @@ class DBManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
             )
             ''')
 
@@ -678,6 +684,20 @@ class DBManager:
                     )
                     logger.info(f"数据库迁移完成：添加{column_name}列")
 
+            cursor.execute("PRAGMA table_info(ai_reply_settings)")
+            ai_setting_columns = [column[1] for column in cursor.fetchall()]
+            ai_context_columns = {
+                'context_enabled': "BOOLEAN DEFAULT TRUE",
+                'context_message_limit': "INTEGER DEFAULT 12",
+                'context_expire_minutes': "INTEGER DEFAULT 120",
+            }
+            for column_name, column_type in ai_context_columns.items():
+                if column_name not in ai_setting_columns:
+                    cursor.execute(
+                        f"ALTER TABLE ai_reply_settings ADD COLUMN {column_name} {column_type}"
+                    )
+                    logger.info(f"数据库迁移完成：添加AI设置列 {column_name}")
+
             # 确保商品同步配置存在
             cursor.execute("SELECT key FROM system_settings WHERE key IN ('item_sync_enabled', 'item_sync_interval', 'item_sync_max_pages')")
             existing_keys = [row[0] for row in cursor.fetchall()]
@@ -880,6 +900,48 @@ class DBManager:
                 else:
                     # user_id列存在，更新NULL值
                     self._execute_sql(cursor, "UPDATE delivery_rules SET user_id = ? WHERE user_id IS NULL", (admin_user_id,))
+
+                delivery_rule_columns = {
+                    "cookie_id": "TEXT",
+                    "item_id": "TEXT",
+                    "delivery_count": "INTEGER DEFAULT 1",
+                    "enabled": "BOOLEAN DEFAULT TRUE",
+                    "description": "TEXT",
+                    "delivery_times": "INTEGER DEFAULT 0",
+                    "created_at": "TIMESTAMP",
+                    "updated_at": "TIMESTAMP",
+                }
+                for column_name, column_definition in delivery_rule_columns.items():
+                    try:
+                        self._execute_sql(
+                            cursor,
+                            f"SELECT {column_name} FROM delivery_rules LIMIT 1",
+                        )
+                    except sqlite3.OperationalError:
+                        logger.info(f"正在为 delivery_rules 表添加 {column_name} 列...")
+                        self._execute_sql(
+                            cursor,
+                            f"ALTER TABLE delivery_rules ADD COLUMN {column_name} {column_definition}",
+                        )
+
+                self._execute_sql(
+                    cursor,
+                    """
+                    UPDATE delivery_rules
+                    SET delivery_count = COALESCE(delivery_count, 1),
+                        enabled = COALESCE(enabled, 1),
+                        delivery_times = COALESCE(delivery_times, 0),
+                        created_at = COALESCE(created_at, CURRENT_TIMESTAMP),
+                        updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)
+                    """,
+                )
+                self._execute_sql(
+                    cursor,
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_delivery_rules_scope
+                    ON delivery_rules(user_id, cookie_id, item_id, enabled)
+                    """,
+                )
 
                 # 为notification_channels表添加user_id字段（如果不存在）
                 try:
@@ -2108,8 +2170,9 @@ class DBManager:
                 INSERT OR REPLACE INTO ai_reply_settings
                 (cookie_id, ai_enabled, model_name, api_key, base_url,
                  max_discount_percent, max_discount_amount, max_bargain_rounds,
+                 context_enabled, context_message_limit, context_expire_minutes,
                  custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
                     settings.get('ai_enabled', False),
@@ -2119,6 +2182,9 @@ class DBManager:
                     settings.get('max_discount_percent', 10),
                     settings.get('max_discount_amount', 100),
                     settings.get('max_bargain_rounds', 3),
+                    settings.get('context_enabled', True),
+                    max(2, min(30, int(settings.get('context_message_limit', 12)))),
+                    max(5, min(1440, int(settings.get('context_expire_minutes', 120)))),
                     settings.get('custom_prompts', '')
                 ))
                 self.conn.commit()
@@ -2145,6 +2211,7 @@ class DBManager:
                 cursor.execute('''
                 SELECT ai_enabled, model_name, api_key, base_url,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
+                       context_enabled, context_message_limit, context_expire_minutes,
                        custom_prompts
                 FROM ai_reply_settings WHERE cookie_id = ?
                 ''', (cookie_id,))
@@ -2175,7 +2242,10 @@ class DBManager:
                         'max_discount_percent': result[4],
                         'max_discount_amount': result[5],
                         'max_bargain_rounds': result[6],
-                        'custom_prompts': result[7]
+                        'context_enabled': bool(result[7]),
+                        'context_message_limit': result[8] or 12,
+                        'context_expire_minutes': result[9] or 120,
+                        'custom_prompts': result[10]
                     }
                 else:
                     # 账号没有设置，使用系统设置作为默认值
@@ -2187,6 +2257,9 @@ class DBManager:
                         'max_discount_percent': 10,
                         'max_discount_amount': 100,
                         'max_bargain_rounds': 3,
+                        'context_enabled': True,
+                        'context_message_limit': 12,
+                        'context_expire_minutes': 120,
                         'custom_prompts': ''
                     }
             except Exception as e:
@@ -2199,8 +2272,26 @@ class DBManager:
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,
+                    'context_enabled': True,
+                    'context_message_limit': 12,
+                    'context_expire_minutes': 120,
                     'custom_prompts': ''
                 }
+
+    def get_account_ai_api_key(self, cookie_id: str) -> str:
+        """只读取账号级 API Key，不混入系统级回退配置。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    'SELECT api_key FROM ai_reply_settings WHERE cookie_id = ?',
+                    (cookie_id,),
+                )
+                row = cursor.fetchone()
+                return (row[0] or '') if row else ''
+            except Exception as e:
+                logger.error(f"获取账号AI API Key失败: {e}")
+                return ''
 
     def get_all_ai_reply_settings(self) -> Dict[str, dict]:
         """获取所有账号的AI回复设置"""
@@ -2210,6 +2301,7 @@ class DBManager:
                 cursor.execute('''
                 SELECT cookie_id, ai_enabled, model_name, api_key, base_url,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
+                       context_enabled, context_message_limit, context_expire_minutes,
                        custom_prompts
                 FROM ai_reply_settings
                 ''')
@@ -2225,7 +2317,10 @@ class DBManager:
                         'max_discount_percent': row[5],
                         'max_discount_amount': row[6],
                         'max_bargain_rounds': row[7],
-                        'custom_prompts': row[8]
+                        'context_enabled': bool(row[8]),
+                        'context_message_limit': row[9] or 12,
+                        'context_expire_minutes': row[10] or 120,
+                        'custom_prompts': row[11]
                     }
 
                 return result
@@ -3811,15 +3906,22 @@ class DBManager:
     # ==================== 自动发货规则方法 ====================
 
     def create_delivery_rule(self, keyword: str, card_id: int, delivery_count: int = 1,
-                           enabled: bool = True, description: str = None, user_id: int = None):
+                           enabled: bool = True, description: str = None, user_id: int = None,
+                           cookie_id: str = None, item_id: str = None):
         """创建发货规则"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT INTO delivery_rules (keyword, card_id, delivery_count, enabled, description, user_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (keyword, card_id, delivery_count, enabled, description, user_id))
+                INSERT INTO delivery_rules (
+                    keyword, card_id, delivery_count, enabled, description,
+                    user_id, cookie_id, item_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    keyword, card_id, delivery_count, enabled, description,
+                    user_id, cookie_id, item_id,
+                ))
                 self.conn.commit()
                 rule_id = cursor.lastrowid
                 logger.info(f"创建发货规则成功: {keyword} -> 卡券ID {card_id} (规则ID: {rule_id})")
@@ -3838,9 +3940,12 @@ class DBManager:
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.cookie_id, dr.item_id, ii.item_title
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
+                    LEFT JOIN item_info ii
+                      ON ii.cookie_id = dr.cookie_id AND ii.item_id = dr.item_id
                     WHERE dr.user_id = ?
                     ORDER BY dr.created_at DESC
                     ''', (user_id,))
@@ -3849,9 +3954,12 @@ class DBManager:
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.cookie_id, dr.item_id, ii.item_title
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
+                    LEFT JOIN item_info ii
+                      ON ii.cookie_id = dr.cookie_id AND ii.item_id = dr.item_id
                     ORDER BY dr.created_at DESC
                     ''')
 
@@ -3871,7 +3979,10 @@ class DBManager:
                         'card_type': row[10],
                         'is_multi_spec': bool(row[11]) if row[11] is not None else False,
                         'spec_name': row[12],
-                        'spec_value': row[13]
+                        'spec_value': row[13],
+                        'cookie_id': row[14],
+                        'item_id': row[15],
+                        'item_title': row[16]
                     })
 
                 return rules
@@ -3943,6 +4054,105 @@ class DBManager:
                 logger.error(f"根据关键字获取发货规则失败: {e}")
                 return []
 
+    def get_delivery_rules_for_item(
+        self,
+        search_text: str,
+        cookie_id: str,
+        item_id: str,
+        spec_name: str = None,
+        spec_value: str = None,
+    ):
+        """按商品作用域优先级匹配发货规则。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
+                           dr.description, dr.delivery_times,
+                           c.name, c.type, c.api_config, c.text_content, c.data_content,
+                           c.image_url, c.enabled, c.description, c.delay_seconds,
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           dr.cookie_id, dr.item_id,
+                           CASE
+                               WHEN dr.cookie_id = ? AND dr.item_id = ? THEN 0
+                               WHEN dr.cookie_id = ? AND dr.item_id IS NULL THEN 1
+                               ELSE 2
+                           END AS scope_rank
+                    FROM delivery_rules dr
+                    LEFT JOIN cards c ON dr.card_id = c.id
+                    WHERE dr.enabled = 1 AND c.enabled = 1
+                      AND (
+                        (dr.cookie_id = ? AND dr.item_id = ?)
+                        OR (
+                            dr.cookie_id = ? AND dr.item_id IS NULL
+                            AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
+                        )
+                        OR (
+                            dr.cookie_id IS NULL AND dr.item_id IS NULL
+                            AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
+                        )
+                      )
+                    ORDER BY scope_rank ASC, LENGTH(dr.keyword) DESC, dr.id ASC
+                    ''',
+                    (
+                        cookie_id, item_id, cookie_id,
+                        cookie_id, item_id,
+                        cookie_id, search_text, search_text,
+                        search_text, search_text,
+                    ),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+
+                best_scope = rows[0][21]
+                rows = [row for row in rows if row[21] == best_scope]
+                if spec_name and spec_value:
+                    rows = [
+                        row for row in rows
+                        if bool(row[16]) and row[17] == spec_name and row[18] == spec_value
+                    ]
+                else:
+                    rows = [row for row in rows if not bool(row[16])]
+
+                rules = []
+                for row in rows:
+                    api_config = row[9]
+                    if api_config:
+                        try:
+                            api_config = json.loads(api_config)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    rules.append({
+                        'id': row[0],
+                        'keyword': row[1],
+                        'card_id': row[2],
+                        'delivery_count': row[3],
+                        'enabled': bool(row[4]),
+                        'description': row[5],
+                        'delivery_times': row[6] or 0,
+                        'card_name': row[7],
+                        'card_type': row[8],
+                        'api_config': api_config,
+                        'text_content': row[10],
+                        'data_content': row[11],
+                        'image_url': row[12],
+                        'card_enabled': bool(row[13]),
+                        'card_description': row[14],
+                        'card_delay_seconds': row[15] or 0,
+                        'is_multi_spec': bool(row[16]),
+                        'spec_name': row[17],
+                        'spec_value': row[18],
+                        'cookie_id': row[19],
+                        'item_id': row[20],
+                        'scope_rank': row[21],
+                    })
+                return rules
+            except Exception as e:
+                logger.error(f"按商品作用域匹配发货规则失败: {e}")
+                return []
+
     def get_delivery_rule_by_id(self, rule_id: int, user_id: int = None):
         """根据ID获取发货规则（支持用户隔离）"""
         with self.lock:
@@ -3952,7 +4162,8 @@ class DBManager:
                     self._execute_sql(cursor, '''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
-                           c.name as card_name, c.type as card_type
+                           c.name as card_name, c.type as card_type,
+                           dr.cookie_id, dr.item_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ? AND dr.user_id = ?
@@ -3961,7 +4172,8 @@ class DBManager:
                     self._execute_sql(cursor, '''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
-                           c.name as card_name, c.type as card_type
+                           c.name as card_name, c.type as card_type,
+                           dr.cookie_id, dr.item_id
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.id = ?
@@ -3980,7 +4192,9 @@ class DBManager:
                         'created_at': row[7],
                         'updated_at': row[8],
                         'card_name': row[9],
-                        'card_type': row[10]
+                        'card_type': row[10],
+                        'cookie_id': row[11],
+                        'item_id': row[12]
                     }
                 return None
             except Exception as e:
@@ -3989,7 +4203,9 @@ class DBManager:
 
     def update_delivery_rule(self, rule_id: int, keyword: str = None, card_id: int = None,
                            delivery_count: int = None, enabled: bool = None,
-                           description: str = None, user_id: int = None):
+                           description: str = None, user_id: int = None,
+                           cookie_id: str = None, item_id: str = None,
+                           scope_updated: bool = False):
         """更新发货规则（支持用户隔离）"""
         with self.lock:
             try:
@@ -4014,6 +4230,9 @@ class DBManager:
                 if description is not None:
                     update_fields.append("description = ?")
                     params.append(description)
+                if scope_updated:
+                    update_fields.extend(["cookie_id = ?", "item_id = ?"])
+                    params.extend([cookie_id, item_id])
 
                 if not update_fields:
                     return True  # 没有需要更新的字段

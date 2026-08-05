@@ -671,6 +671,8 @@ class XianyuLive:
         self.last_heartbeat_response = 0
         self.heartbeat_task = None
         self.ws = None
+        self._im_pending = {}
+        self._im_request_lock = asyncio.Lock()
 
         # Token刷新相关配置
         self.token_refresh_interval = TOKEN_REFRESH_INTERVAL
@@ -995,6 +997,15 @@ class XianyuLive:
             '[记得及时发货]',
         }
         return isinstance(message, str) and message.strip() in auto_delivery_messages
+
+    def _is_system_or_order_event(self, message: str) -> bool:
+        """统一识别需要绕过普通自动回复链路的系统和订单事件。"""
+        try:
+            from app.ai_reply_engine import AIReplyEngine
+            return AIReplyEngine.is_system_or_order_event(message)
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】系统事件识别失败: {self._safe_str(e)}")
+            return False
 
     def _extract_order_id(self, message: dict) -> str:
         """从消息中提取订单ID"""
@@ -2511,7 +2522,7 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】准备重启实例...")
 
             # 导入CookieManager
-            from cookie_manager import manager as cookie_manager
+            from app.cookie_manager import manager as cookie_manager
 
             if cookie_manager:
                 # 通过CookieManager重启实例
@@ -3841,7 +3852,7 @@ class XianyuLive:
 
             # 生成AI回复
             # 由于外部已实现防抖机制，跳过内部等待（skip_wait=True）
-            reply = ai_reply_engine.generate_reply(
+            reply = await ai_reply_engine.generate_reply_async(
                 message=send_message,
                 item_info=item_info,
                 chat_id=chat_id,
@@ -3852,10 +3863,10 @@ class XianyuLive:
             )
 
             if reply:
-                logger.info(f"【{self.cookie_id}】AI回复生成成功: {reply}")
+                logger.info(f"【{self.cookie_id}】AI回复生成成功，字符数={len(reply)}")
                 return reply
             else:
-                logger.warning(f"AI回复生成失败")
+                logger.warning(f"【{self.cookie_id}】AI回复未生成，将继续尝试默认回复")
                 return None
 
         except Exception as e:
@@ -4949,10 +4960,12 @@ class XianyuLive:
                             search_parts.append(item_title_db.strip())
                         if item_detail_db.strip():
                             search_parts.append(item_detail_db.strip())
+                        if item_id and item_id != "未知商品":
+                            search_parts.append(str(item_id).strip())
 
                         if search_parts:
                             search_text = ' '.join(search_parts)
-                            logger.info(f"使用数据库商品标题+详情作为搜索文本: 标题='{item_title_db}', 详情长度={len(item_detail_db)}")
+                            logger.info(f"使用数据库商品标题+详情+商品ID作为搜索文本: 标题='{item_title_db}', 详情长度={len(item_detail_db)}")
                             logger.warning(f"完整搜索文本: {search_text[:200]}...")
                         else:
                             logger.warning(f"数据库中商品标题和详情都为空: {item_id}")
@@ -4996,37 +5009,25 @@ class XianyuLive:
                     logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
                     return None
 
-            # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
-            delivery_rules = []
+            if is_multi_spec and not (spec_name and spec_value):
+                logger.warning("❌ 多规格商品但无规格信息，跳过自动发货")
+                return None
 
-            if is_multi_spec:
-                # 多规格商品：只匹配多规格发货规则
-                if spec_name and spec_value:
-                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
-                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
-                    # 过滤只保留多规格卡券
-                    delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
-                    
-                    if delivery_rules:
-                        logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
-                    else:
-                        logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
-                        return None
-                else:
-                    logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
-                    return None
+            delivery_rules = db_manager.get_delivery_rules_for_item(
+                search_text,
+                self.cookie_id,
+                item_id,
+                spec_name=spec_name if is_multi_spec else None,
+                spec_value=spec_value if is_multi_spec else None,
+            )
+            if delivery_rules:
+                scope_names = {0: "指定商品", 1: "账号关键词", 2: "全局关键词"}
+                logger.info(
+                    f"✅ 找到 {len(delivery_rules)} 个{scope_names.get(delivery_rules[0].get('scope_rank'), '有效')}发货规则"
+                )
             else:
-                # 非多规格商品：只匹配非多规格发货规则
-                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
-                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
-                # 过滤只保留非多规格卡券
-                delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
-                
-                if delivery_rules:
-                    logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
-                else:
-                    logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
-                    return None
+                logger.warning(f"❌ 商品未找到匹配的发货规则，跳过自动发货: {item_id}")
+                return None
 
             # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
             if len(delivery_rules) > 1:
@@ -5423,7 +5424,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止Token刷新循环")
                         break
@@ -5556,6 +5557,126 @@ class XianyuLive:
         }
         await ws.send(json.dumps(msg))
 
+    def _resolve_im_response(self, message_data):
+        """Resolve a pending IM request when the server echoes its mid."""
+        if not isinstance(message_data, dict):
+            return False
+        headers = message_data.get("headers")
+        if not isinstance(headers, dict):
+            return False
+        mid = str(headers.get("mid") or "")
+        if not mid:
+            return False
+        future = self._im_pending.pop(mid, None)
+        if future is None or future.done():
+            return False
+        future.set_result(message_data)
+        return True
+
+    def _fail_pending_im_requests(self, reason):
+        pending = list(self._im_pending.values())
+        self._im_pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_exception(ConnectionError(reason))
+
+    async def _send_im_request(self, lwp, body, timeout=15):
+        websocket = self.ws
+        if websocket is None:
+            raise ConnectionError("账号尚未连接闲鱼消息服务")
+
+        closed = getattr(websocket, "closed", False)
+        if closed:
+            raise ConnectionError("账号闲鱼消息连接已断开")
+
+        mid = generate_mid()
+        future = asyncio.get_running_loop().create_future()
+        async with self._im_request_lock:
+            self._im_pending[mid] = future
+            try:
+                await websocket.send(json.dumps({
+                    "lwp": lwp,
+                    "headers": {"mid": mid},
+                    "body": body,
+                }))
+            except Exception:
+                self._im_pending.pop(mid, None)
+                raise
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            self._im_pending.pop(mid, None)
+            raise TimeoutError(f"闲鱼消息服务响应超时: {lwp}") from exc
+        finally:
+            self._im_pending.pop(mid, None)
+
+    async def get_im_conversations(self, start_timestamp=None, limit=20):
+        if start_timestamp is None:
+            start_timestamp = 9007199254740991
+        response = await self._send_im_request(
+            "/r/Conversation/listNewestPagination",
+            [int(start_timestamp), max(1, min(int(limit), 100))],
+        )
+        return response.get("body", {}) if isinstance(response, dict) else {}
+
+    async def get_im_messages(self, cid, start_timestamp=None, limit=20):
+        if start_timestamp is None:
+            start_timestamp = 9007199254740991
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        response = await self._send_im_request(
+            "/r/MessageManager/listUserMessages",
+            [full_cid, False, int(start_timestamp), max(1, min(int(limit), 100)), False],
+        )
+        return response.get("body", {}) if isinstance(response, dict) else {}
+
+    async def send_im_text(self, cid, toid, text):
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("消息内容不能为空")
+        if len(text) > 2000:
+            raise ValueError("消息内容不能超过 2000 个字符")
+
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        full_toid = toid if "@goofish" in toid else f"{toid}@goofish"
+        payload = {
+            "contentType": 1,
+            "text": {"text": text},
+        }
+        text_base64 = base64.b64encode(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8")
+        response = await self._send_im_request(
+            "/r/MessageSend/sendByReceiverScope",
+            [
+                {
+                    "uuid": generate_uuid(),
+                    "cid": full_cid,
+                    "conversationType": 1,
+                    "content": {
+                        "contentType": 101,
+                        "custom": {"type": 1, "data": text_base64},
+                    },
+                    "redPointPolicy": 0,
+                    "extension": {"extJson": "{}"},
+                    "ctx": {"appVersion": "1.0", "platform": "web"},
+                    "mtags": {},
+                    "msgReadStatusSetting": 1,
+                },
+                {
+                    "actualReceivers": [
+                        full_toid,
+                        f"{self.myid}@goofish",
+                    ],
+                },
+            ],
+        )
+        body = response.get("body", {}) if isinstance(response, dict) else {}
+        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
+            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+            raise RuntimeError(str(reason))
+        return response
+
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
         token_refresh_attempted = False
@@ -5642,7 +5763,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止心跳循环")
                         break
@@ -5701,7 +5822,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止清理循环")
                         break
@@ -5817,7 +5938,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止商品同步循环")
                         break
@@ -5914,7 +6035,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止Cookie刷新循环")
                         break
@@ -7960,7 +8081,7 @@ class XianyuLive:
         """处理所有类型的消息"""
         try:
             # 检查账号是否启用
-            from cookie_manager import manager as cookie_manager
+            from app.cookie_manager import manager as cookie_manager
             if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                 logger.warning(f"【{self.cookie_id}】账号已禁用，跳过消息处理")
                 return
@@ -8295,6 +8416,16 @@ class XianyuLive:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
+            if self._is_auto_delivery_trigger(send_message):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
+                await self._handle_auto_delivery(
+                    websocket, message, send_user_name, send_user_id,
+                    item_id, chat_id, msg_time
+                )
+                return
+            if self._is_system_or_order_event(send_message):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】系统或订单事件绕过普通自动回复')
+                return
             if send_message == '[我已拍下，待付款]':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】系统消息不处理')
                 return
@@ -8447,7 +8578,7 @@ class XianyuLive:
             while True:
                 try:
                     # 检查账号是否启用
-                    from cookie_manager import manager as cookie_manager
+                    from app.cookie_manager import manager as cookie_manager
                     if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止主循环")
                         break
@@ -8536,6 +8667,11 @@ class XianyuLive:
                                 try:
                                     message_data = json.loads(message)
 
+                                    # API requests and push messages share this WebSocket.
+                                    # Route request responses by mid before heartbeat/push handling.
+                                    if self._resolve_im_response(message_data):
+                                        continue
+
                                     # 处理心跳响应
                                     if await self.handle_heartbeat_response(message_data):
                                         continue
@@ -8553,6 +8689,7 @@ class XianyuLive:
                             # 注意：async with 会自动关闭 WebSocket，但我们需要清理引用
                             if self.ws == websocket:
                                 self.ws = None
+                                self._fail_pending_im_requests("闲鱼消息连接已断开")
                                 logger.info(f"【{self.cookie_id}】WebSocket连接已退出，引用已清理")
 
                 except Exception as e:

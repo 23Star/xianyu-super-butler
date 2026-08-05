@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
+import GlobalFeedback from './components/GlobalFeedback';
 import { login, verifyToken } from './services/api';
 import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu } from 'lucide-react';
 
@@ -8,6 +9,8 @@ const AccountList = lazy(() => import('./components/AccountList'));
 const OrderList = lazy(() => import('./components/OrderList'));
 const CardList = lazy(() => import('./components/CardList'));
 const ItemList = lazy(() => import('./components/ItemList'));
+const ProductAutomation = lazy(() => import('./components/ProductAutomation'));
+const AIReply = lazy(() => import('./components/AIReply'));
 const Settings = lazy(() => import('./components/Settings'));
 const Keywords = lazy(() => import('./components/Keywords'));
 const MessageManagement = lazy(() => import('./components/MessageManagement'));
@@ -155,6 +158,7 @@ const App: React.FC = () => {
 
   return (
     <div className="flex min-h-screen bg-[#F4F5F7] text-[#111]">
+      <GlobalFeedback />
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={(tab) => {
@@ -183,7 +187,11 @@ const App: React.FC = () => {
           </button>
           <span className="font-bold">闲鱼智控</span>
         </header>
-        <div className="max-w-[1400px] mx-auto p-4 sm:p-6 lg:p-8 pb-10">
+        <div className={
+          activeTab === 'messages'
+            ? 'h-[calc(100vh-3.5rem)] lg:h-screen overflow-hidden'
+            : 'max-w-[1400px] mx-auto p-4 sm:p-6 lg:p-8 pb-10'
+        }>
           <section hidden={activeTab !== 'dashboard'}>
             <Suspense fallback={activeTab === 'dashboard' ? <PageLoader /> : null}><Dashboard /></Suspense>
           </section>
@@ -192,6 +200,9 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'items'}>
             <Suspense fallback={activeTab === 'items' ? <PageLoader /> : null}><ItemList /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'product-automation'}>
+            <Suspense fallback={activeTab === 'product-automation' ? <PageLoader /> : null}><ProductAutomation /></Suspense>
           </section>
           <section hidden={activeTab !== 'orders'}>
             <Suspense fallback={activeTab === 'orders' ? <PageLoader /> : null}><OrderList /></Suspense>
@@ -202,11 +213,16 @@ const App: React.FC = () => {
           <section hidden={activeTab !== 'auto-reply'}>
             <Suspense fallback={activeTab === 'auto-reply' ? <PageLoader /> : null}><Keywords mode="reply" /></Suspense>
           </section>
+          <section hidden={activeTab !== 'ai-reply'}>
+            <Suspense fallback={activeTab === 'ai-reply' ? <PageLoader /> : null}><AIReply /></Suspense>
+          </section>
           <section hidden={activeTab !== 'auto-delivery'}>
             <Suspense fallback={activeTab === 'auto-delivery' ? <PageLoader /> : null}><Keywords mode="delivery" /></Suspense>
           </section>
           <section hidden={activeTab !== 'messages'}>
-            <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}><MessageManagement /></Suspense>
+            <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}>
+              <MessageManagement isActive={activeTab === 'messages'} />
+            </Suspense>
           </section>
           <section hidden={activeTab !== 'notifications'}>
             <Suspense fallback={activeTab === 'notifications' ? <PageLoader /> : null}>
