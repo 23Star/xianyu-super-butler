@@ -829,6 +829,264 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】获取自动确认发货设置失败: {self._safe_str(e)}")
             return True  # 出错时默认启用
 
+    async def _merge_mtop_response_cookies(self, response, source: str) -> None:
+        """合并 mtop 响应中的 Cookie，并同步到当前会话和数据库。"""
+        if 'set-cookie' not in response.headers:
+            return
+
+        new_cookies = {}
+        for cookie in response.headers.getall('set-cookie', []):
+            if '=' not in cookie:
+                continue
+            name, value = cookie.split(';', 1)[0].split('=', 1)
+            new_cookies[name.strip()] = value.strip()
+
+        if not new_cookies:
+            return
+
+        self.cookies.update(new_cookies)
+        self.cookies_str = '; '.join(f"{key}={value}" for key, value in self.cookies.items())
+        if self.session and not self.session.closed:
+            self.session.headers['cookie'] = self.cookies_str
+        await self.update_config_cookies()
+        logger.info(f"【{self.cookie_id}】{source}响应更新了 {len(new_cookies)} 个 Cookie 字段")
+
+    async def fetch_buyer_rating_count(self, buyer_id: str, retry_count: int = 0) -> int:
+        """获取买家被评价总数；失败返回 -1，由规则引擎按放行处理。"""
+        max_retry = 3
+        if not buyer_id or not self.cookies_str:
+            logger.warning(f"【{self.cookie_id}】买家信用查询缺少 buyer_id 或 Cookie，跳过")
+            return -1
+
+        data_payload = {
+            "rateType": 0,
+            "ratedUid": str(buyer_id),
+            "raterType": 0,
+            "rowsPerPage": 20,
+            "pageNumber": 1,
+            "foldFlag": 0,
+            "fishAdCode": "330110",
+            "extraTag": "",
+        }
+        data_val = json.dumps(data_payload, separators=(',', ':'), ensure_ascii=False)
+        timestamp = str(int(time.time() * 1000))
+        cookies = trans_cookies(self.cookies_str)
+        token_value = cookies.get('_m_h5_tk', '')
+        token = token_value.split('_')[0] if token_value else ''
+        params = {
+            'jsv': '2.7.2',
+            'appKey': '34839810',
+            't': timestamp,
+            'sign': generate_sign(timestamp, token, data_val),
+            'v': '1.0',
+            'type': 'originaljson',
+            'accountSite': 'xianyu',
+            'dataType': 'json',
+            'timeout': '20000',
+            'api': 'mtop.idle.web.trade.rate.list',
+            'sessionOption': 'AutoLoginOnly',
+            'spm_cnt': 'a21ybx.personal.0.0',
+        }
+        headers = {
+            'accept': 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://www.goofish.com',
+            'referer': 'https://www.goofish.com/',
+            'user-agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
+            ),
+            'cookie': self.cookies_str.replace('\n', '').replace('\r', ''),
+        }
+
+        try:
+            async with self.session.post(
+                'https://h5api.m.goofish.com/h5/mtop.idle.web.trade.rate.list/1.0/',
+                params=params,
+                data={'data': data_val},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                result = await response.json()
+                await self._merge_mtop_response_cookies(response, "买家信用查询")
+
+            ret_list = result.get('ret', []) if isinstance(result, dict) else []
+            if any('SUCCESS' in value for value in ret_list):
+                total_count = (result.get('data') or {}).get('totalCount')
+                try:
+                    count = int(total_count)
+                    logger.info(
+                        f"【{self.cookie_id}】买家信用查询成功: buyer_id={buyer_id}, total_count={count}"
+                    )
+                    return count
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"【{self.cookie_id}】买家信用查询缺少有效 totalCount: buyer_id={buyer_id}"
+                    )
+            else:
+                logger.warning(
+                    f"【{self.cookie_id}】买家信用查询失败: buyer_id={buyer_id}, ret={ret_list}"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】买家信用查询异常（第 {retry_count + 1} 次）: "
+                f"{self._safe_str(exc)}"
+            )
+
+        if retry_count < max_retry - 1:
+            await asyncio.sleep(0.5)
+            return await self.fetch_buyer_rating_count(buyer_id, retry_count + 1)
+        return -1
+
+    async def close_order_by_seller(self, order_id: str, retry_count: int = 0) -> bool:
+        """命中发货保护后，由卖家主动关闭闲鱼订单。"""
+        max_retry = 3
+        if not order_id or not self.cookies_str:
+            logger.warning(f"【{self.cookie_id}】关闭订单缺少 order_id 或 Cookie，跳过")
+            return False
+
+        data_payload = {
+            "tid": str(order_id),
+            "bizOrderId": str(order_id),
+            "closeReason": "其他原因",
+        }
+        data_val = json.dumps(data_payload, separators=(',', ':'), ensure_ascii=False)
+        timestamp = str(int(time.time() * 1000))
+        cookies = trans_cookies(self.cookies_str)
+        token_value = cookies.get('_m_h5_tk', '')
+        token = token_value.split('_')[0] if token_value else ''
+        params = {
+            'jsv': '2.7.2',
+            'appKey': '34839810',
+            't': timestamp,
+            'sign': generate_sign(timestamp, token, data_val),
+            'v': '2.0',
+            'type': 'originaljson',
+            'accountSite': 'xianyu',
+            'dataType': 'json',
+            'timeout': '20000',
+            'api': 'mtop.taobao.idle.trade.merchant.close.by.seller',
+            'sessionOption': 'AutoLoginOnly',
+            'spm_cnt': 'a21107h.44911108.0.0',
+        }
+        headers = {
+            'accept': 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://seller.goofish.com',
+            'referer': 'https://seller.goofish.com/',
+            'user-agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
+            ),
+            'cookie': self.cookies_str.replace('\n', '').replace('\r', ''),
+        }
+
+        try:
+            async with self.session.post(
+                'https://h5api.m.goofish.com/h5/mtop.taobao.idle.trade.merchant.close.by.seller/2.0/',
+                params=params,
+                data={'data': data_val},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as response:
+                result = await response.json()
+                await self._merge_mtop_response_cookies(response, "关闭订单")
+
+            ret_list = result.get('ret', []) if isinstance(result, dict) else []
+            if any('SUCCESS' in value for value in ret_list):
+                logger.warning(f"【{self.cookie_id}】订单 {order_id} 已由卖家主动关闭")
+                return True
+            logger.warning(
+                f"【{self.cookie_id}】关闭订单失败（第 {retry_count + 1} 次）: "
+                f"order_id={order_id}, ret={ret_list}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】关闭订单异常（第 {retry_count + 1} 次）: "
+                f"order_id={order_id}, error={self._safe_str(exc)}"
+            )
+
+        if retry_count < max_retry - 1:
+            await asyncio.sleep(0.5)
+            return await self.close_order_by_seller(order_id, retry_count + 1)
+        return False
+
+    async def apply_delivery_block_rules(
+        self,
+        order_id: str,
+        buyer_id: str,
+        item_id: str = None,
+        chat_id: str = '',
+        websocket=None,
+        owner_id: int = None,
+        service=None,
+    ) -> dict:
+        """执行全部发货保护，并返回 allow、block 或 card_only。"""
+        from app.services.delivery_block_rules import (
+            DeliveryBlockRuleService,
+            resolve_delivery_action,
+        )
+
+        rule_service = service or DeliveryBlockRuleService(db_manager)
+        buyer_rating_count = None
+        try:
+            credit_rule = next(
+                (
+                    rule for rule in rule_service.list_rules(self.cookie_id)
+                    if rule['rule_code'] == 'buyer_credit_zero'
+                ),
+                None,
+            )
+            if (
+                credit_rule
+                and credit_rule['enabled']
+                and (not item_id or str(item_id) not in set(credit_rule['excluded_item_ids']))
+            ):
+                buyer_rating_count = await self.fetch_buyer_rating_count(buyer_id)
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】准备买家信用规则失败，按接口异常放行该规则: "
+                f"{self._safe_str(exc)}"
+            )
+
+        result = rule_service.evaluate(
+            account_id=self.cookie_id,
+            order_id=order_id,
+            buyer_id=buyer_id,
+            item_id=item_id,
+            owner_id=owner_id,
+            buyer_rating_count=buyer_rating_count,
+        )
+        if not result['hit']:
+            return {**result, 'action': 'allow', 'order_closed': False}
+
+        block_message = result.get('block_reason') or ''
+        active_websocket = websocket or self.ws
+        if block_message and chat_id and active_websocket:
+            try:
+                await self.send_msg(active_websocket, chat_id, buyer_id, block_message)
+            except Exception as exc:
+                logger.error(
+                    f"【{self.cookie_id}】订单 {order_id} 已拦截，但发送买家提示失败: "
+                    f"{self._safe_str(exc)}"
+                )
+
+        order_closed = False
+        if result.get('auto_close_order'):
+            order_closed = await self.close_order_by_seller(order_id)
+
+        action = resolve_delivery_action(result, order_closed)
+        if action == 'block':
+            self.delivery_blocked_orders.add(order_id)
+            self.last_delivery_time[order_id] = time.time()
+
+        logger.warning(
+            f"【{self.cookie_id}】订单 {order_id} 命中发货保护: "
+            f"rule={result.get('rule_code')}, action={action}, "
+            f"order_closed={order_closed}, reason={result.get('reason')}"
+        )
+        return {**result, 'action': action, 'order_closed': order_closed}
+
 
 
     def can_auto_delivery(self, order_id: str) -> bool:
@@ -1313,31 +1571,20 @@ class XianyuLive:
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 在获取锁后检查发现仍在冷却期，跳过发货')
                     return
 
-                from app.services.delivery_block_rules import DeliveryBlockRuleService
-
-                block_result = DeliveryBlockRuleService(db_manager).evaluate(
-                    account_id=self.cookie_id,
+                protection_result = await self.apply_delivery_block_rules(
                     order_id=order_id,
                     buyer_id=send_user_id,
                     item_id=item_id,
+                    chat_id=chat_id,
+                    websocket=websocket,
                 )
-                if block_result["hit"]:
-                    self.delivery_blocked_orders.add(order_id)
-                    self.last_delivery_time[order_id] = time.time()
-                    block_message = block_result.get("block_reason") or ""
-                    if block_message:
-                        try:
-                            await self.send_msg(websocket, chat_id, send_user_id, block_message)
-                        except Exception as send_error:
-                            logger.error(
-                                f'[{msg_time}] 【{self.cookie_id}】发送发货拦截提示失败: '
-                                f'{self._safe_str(send_error)}'
-                            )
+                if protection_result["action"] == "block":
                     logger.warning(
                         f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 已停止自动发货: '
-                        f'{block_result["reason"]}'
+                        f'{protection_result["reason"]}'
                     )
                     return
+                card_only_delivery = protection_result["action"] == "card_only"
 
                 # 构造用户URL
                 user_url = f'https://www.goofish.com/personal?userId={send_user_id}'
@@ -1463,7 +1710,7 @@ class XianyuLive:
                         sent_all = sent_count == len(delivery_contents)
 
                         if acquired_all and sent_all:
-                            confirm_required = self.is_auto_confirm_enabled()
+                            confirm_required = self.is_auto_confirm_enabled() and not card_only_delivery
                             platform_confirmed = False
                             confirm_error = None
 
@@ -1490,7 +1737,15 @@ class XianyuLive:
                             except Exception as db_e:
                                 logger.error(f'【{self.cookie_id}】更新订单system_shipped状态失败: {self._safe_str(db_e)}')
 
-                            if confirm_required and not platform_confirmed:
+                            if card_only_delivery:
+                                await self.send_delivery_failure_notification(
+                                    send_user_name,
+                                    send_user_id,
+                                    item_id,
+                                    f"订单命中“{protection_result['rule_name']}”并已关闭，仅发送卡券成功",
+                                    chat_id
+                                )
+                            elif confirm_required and not platform_confirmed:
                                 await self.send_delivery_failure_notification(
                                     send_user_name,
                                     send_user_id,

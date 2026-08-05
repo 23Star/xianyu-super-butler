@@ -1,10 +1,14 @@
 import os
+from pathlib import Path
 import sqlite3
 import tempfile
 import threading
 import unittest
 
-from app.services.delivery_block_rules import DeliveryBlockRuleService
+from app.services.delivery_block_rules import (
+    DeliveryBlockRuleService,
+    resolve_delivery_action,
+)
 
 
 class RuleTestDatabase:
@@ -112,8 +116,20 @@ class DeliveryBlockRuleTests(unittest.TestCase):
 
     def test_rules_are_disabled_by_default(self):
         rules = self.service.list_rules("seller-a")
-        self.assertEqual(len(rules), 4)
+        self.assertEqual(len(rules), 5)
         self.assertTrue(all(not rule["enabled"] for rule in rules))
+
+    def test_only_card_is_disabled_when_auto_close_is_off(self):
+        rule = self.service.update_rule(
+            "seller-a",
+            "personal_blacklist",
+            {
+                "auto_close_order": False,
+                "only_card_after_close": True,
+            },
+        )
+        self.assertFalse(rule["auto_close_order"])
+        self.assertFalse(rule["only_card_after_close"])
 
     def test_blacklist_buyer_id_cannot_be_cleared(self):
         entry = self.service.add_blacklist(
@@ -172,6 +188,101 @@ class DeliveryBlockRuleTests(unittest.TestCase):
         result = self.service.evaluate("seller-a", "current", "buyer-1", "item-1")
         self.assertEqual(result["rule_code"], "buyer_has_order")
 
+    def test_blacklist_supports_product_account_and_global_scopes(self):
+        self.enable_rule("seller-a", "personal_blacklist")
+        self.enable_rule("seller-b", "personal_blacklist")
+        self.service.add_blacklist(
+            self.owner_id,
+            {
+                "account_id": "seller-a",
+                "item_id": "item-1",
+                "buyer_id": "product-buyer",
+            },
+        )
+        self.service.add_blacklist(
+            self.owner_id,
+            {
+                "account_id": "seller-a",
+                "buyer_id": "account-buyer",
+            },
+        )
+        self.service.add_blacklist(
+            self.owner_id,
+            {
+                "buyer_id": "global-buyer",
+            },
+        )
+
+        product_result = self.service.evaluate(
+            "seller-a", "order-1", "product-buyer", "item-1"
+        )
+        self.assertEqual(product_result["extra_data"]["level"], "商品级")
+        self.assertFalse(
+            self.service.evaluate(
+                "seller-a", "order-2", "product-buyer", "item-2"
+            )["hit"]
+        )
+
+        account_result = self.service.evaluate(
+            "seller-a", "order-3", "account-buyer", "item-2"
+        )
+        self.assertEqual(account_result["extra_data"]["level"], "账号级")
+        self.assertFalse(
+            self.service.evaluate(
+                "seller-b", "order-4", "account-buyer", "item-2"
+            )["hit"]
+        )
+
+        global_result = self.service.evaluate(
+            "seller-b", "order-5", "global-buyer", "item-2"
+        )
+        self.assertEqual(global_result["extra_data"]["level"], "用户级")
+
+    def test_buyer_credit_threshold_and_api_failure_fail_open(self):
+        self.enable_rule(
+            "seller-a",
+            "buyer_credit_zero",
+            config={"threshold": 2},
+        )
+
+        self.assertFalse(
+            self.service.evaluate(
+                "seller-a",
+                "current",
+                "buyer-credit",
+                "item-1",
+                buyer_rating_count=None,
+            )["hit"]
+        )
+        self.assertFalse(
+            self.service.evaluate(
+                "seller-a",
+                "current",
+                "buyer-credit",
+                "item-1",
+                buyer_rating_count=-1,
+            )["hit"]
+        )
+
+        blocked = self.service.evaluate(
+            "seller-a",
+            "current",
+            "buyer-credit",
+            "item-1",
+            buyer_rating_count=2,
+        )
+        self.assertEqual(blocked["rule_code"], "buyer_credit_zero")
+        self.assertEqual(blocked["extra_data"]["threshold"], 2)
+
+        allowed = self.service.evaluate(
+            "seller-a",
+            "current",
+            "buyer-credit",
+            "item-1",
+            buyer_rating_count=3,
+        )
+        self.assertFalse(allowed["hit"])
+
     def test_cancelled_order_does_not_trigger_existing_order_rule(self):
         self.add_order("current", "seller-a", "buyer-2")
         self.add_order("cancelled", "seller-a", "buyer-2", status="cancelled")
@@ -198,6 +309,47 @@ class DeliveryBlockRuleTests(unittest.TestCase):
         self.enable_rule("seller-a", "buyer_unconfirmed", config={"min_count": 1})
         result = self.service.evaluate("seller-a", "new", "buyer-4", "item-1")
         self.assertEqual(result["rule_code"], "buyer_unconfirmed")
+
+
+class DeliveryProtectionActionTests(unittest.TestCase):
+    @staticmethod
+    def block_result(**changes):
+        return {
+            "hit": True,
+            "rule_code": "personal_blacklist",
+            "rule_name": "个人黑名单",
+            "reason": "命中黑名单",
+            "block_reason": "该订单暂不发货",
+            "auto_close_order": True,
+            "only_card_after_close": True,
+            "extra_data": {},
+            **changes,
+        }
+
+    def test_close_success_can_continue_with_cards_only(self):
+        self.assertEqual(
+            resolve_delivery_action(self.block_result(), order_closed=True),
+            "card_only",
+        )
+
+    def test_close_failure_blocks_delivery(self):
+        self.assertEqual(
+            resolve_delivery_action(self.block_result(), order_closed=False),
+            "block",
+        )
+
+    def test_automatic_and_manual_delivery_share_the_same_guard(self):
+        root = Path(__file__).resolve().parents[1]
+        automatic_source = (root / "XianyuAutoAsync.py").read_text(encoding="utf-8")
+        manual_source = (root / "app" / "reply_server.py").read_text(encoding="utf-8")
+
+        self.assertIn("await self.apply_delivery_block_rules(", automatic_source)
+        self.assertIn("await self.close_order_by_seller(order_id)", automatic_source)
+        self.assertIn("resolve_delivery_action(result, order_closed)", automatic_source)
+        self.assertIn(
+            "await live_instance.apply_delivery_block_rules(",
+            manual_source,
+        )
 
 
 if __name__ == "__main__":

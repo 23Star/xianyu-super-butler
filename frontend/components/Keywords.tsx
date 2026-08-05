@@ -3,12 +3,10 @@ import { createPortal } from 'react-dom';
 import { AccountDetail, ShippingRule, ReplyRule, DefaultReply } from '../types';
 import { getAccountDetails, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
 import { Plus, Trash2, MessageSquare, X, Save, Loader2, Key, Truck, Power, PowerOff, Edit2, RefreshCw, Sparkles, Bot } from 'lucide-react';
-import DeliveryProtection from './DeliveryProtection';
 import { confirmAction, notify } from '../services/feedback';
 
 type ReplyTabType = 'reply' | 'default';
 type KeywordsMode = 'reply' | 'delivery';
-type DeliveryTabType = 'keywords' | 'protection';
 
 interface KeywordsProps {
   mode: KeywordsMode;
@@ -42,7 +40,6 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<string>('');
   const [activeTab, setActiveTab] = useState<ReplyTabType>('reply');
-  const [deliveryTab, setDeliveryTab] = useState<DeliveryTabType>('keywords');
 
   // 关键词回复相关状态
   const [keywords, setKeywords] = useState<Keyword[]>([]);
@@ -402,33 +399,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
         </div>
       </div>}
 
-      {mode === 'delivery' && (
-        <div className="overflow-x-auto">
-          <div className="inline-flex min-w-max rounded-lg bg-gray-100 p-1">
-            <button
-              type="button"
-              onClick={() => setDeliveryTab('keywords')}
-              className={`rounded-md px-4 py-2 text-sm font-bold ${
-                deliveryTab === 'keywords' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
-              }`}
-            >
-              通用发货规则
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeliveryTab('protection')}
-              className={`rounded-md px-4 py-2 text-sm font-bold ${
-                deliveryTab === 'protection' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
-              }`}
-            >
-              发货保护
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* 操作栏 */}
-      {(mode === 'reply' || deliveryTab === 'keywords') && <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
+      <div className="rounded-lg border border-gray-100 bg-white p-4 shadow-sm">
         <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
           {mode === 'reply' ? <div className="flex items-center gap-4 w-full sm:w-auto">
             <label className="text-sm font-bold text-gray-700 whitespace-nowrap">选择账号</label>
@@ -472,7 +444,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
             </button>
           </div>
         </div>
-      </div>}
+      </div>
 
       {/* 内容区域 */}
       {mode === 'reply' && !selectedAccount ? (
@@ -554,8 +526,6 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
             )}
           </div>
         )
-      ) : mode === 'delivery' && deliveryTab === 'protection' ? (
-        <DeliveryProtection />
       ) : mode === 'delivery' ? (
         // 关键词发货列表
         <div className="space-y-4">

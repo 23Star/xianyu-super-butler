@@ -7914,37 +7914,26 @@ async def manual_ship_orders(
                         failed_count += 1
                         continue
 
-                    from app.services.delivery_block_rules import DeliveryBlockRuleService
-
-                    block_result = DeliveryBlockRuleService(db_manager).evaluate(
-                        account_id=cookie_id,
+                    protection_result = await live_instance.apply_delivery_block_rules(
                         order_id=order_id,
                         buyer_id=buyer_id,
                         item_id=item_id,
+                        chat_id=chat_id,
+                        websocket=live_instance.ws,
                         owner_id=user_id,
                     )
-                    if block_result["hit"]:
-                        live_instance.delivery_blocked_orders.add(order_id)
-                        live_instance.last_delivery_time[order_id] = time.time()
-                        block_message = block_result.get("block_reason") or ""
-                        if block_message:
-                            try:
-                                await live_instance.send_msg(
-                                    live_instance.ws, chat_id, buyer_id, block_message
-                                )
-                            except Exception as send_error:
-                                log_with_user(
-                                    'warning',
-                                    f"订单 {order_id} 已拦截，但提示消息发送失败: {send_error}",
-                                    current_user,
-                                )
+                    if protection_result["action"] == "block":
                         results.append({
                             'order_id': order_id,
                             'success': False,
-                            'message': f'发货已被规则“{block_result["rule_name"]}”拦截：{block_result["reason"]}'
+                            'message': (
+                                f'发货已被规则“{protection_result["rule_name"]}”拦截：'
+                                f'{protection_result["reason"]}'
+                            )
                         })
                         failed_count += 1
                         continue
+                    card_only_delivery = protection_result["action"] == "card_only"
 
                     # 检查多数量发货
                     quantity_to_send = 1
@@ -8017,7 +8006,10 @@ async def manual_ship_orders(
                     sent_all = sent_count == len(delivery_contents)
 
                     if acquired_all and sent_all:
-                        confirm_required = live_instance.is_auto_confirm_enabled()
+                        confirm_required = (
+                            live_instance.is_auto_confirm_enabled()
+                            and not card_only_delivery
+                        )
                         platform_confirmed = False
                         confirm_error = None
 
@@ -8040,6 +8032,18 @@ async def manual_ship_orders(
                         if platform_confirmed:
                             update_values['order_status'] = 'shipped'
                         db_manager.insert_or_update_order(**update_values)
+
+                        if card_only_delivery:
+                            results.append({
+                                'order_id': order_id,
+                                'success': True,
+                                'message': (
+                                    f'订单命中“{protection_result["rule_name"]}”并已关闭，'
+                                    f'仅发送{sent_count}条卡券信息'
+                                )
+                            })
+                            success_count += 1
+                            continue
 
                         if confirm_required and not platform_confirmed:
                             results.append({

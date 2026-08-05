@@ -17,6 +17,13 @@ RULE_METADATA: tuple[dict[str, Any], ...] = (
         "default_priority": 5,
     },
     {
+        "rule_code": "buyer_credit_zero",
+        "rule_name": "买家信用度检查",
+        "rule_description": "检查买家被评价总数，评价数不高于设定阈值时拦截发货",
+        "default_config": {"threshold": 0},
+        "default_priority": 10,
+    },
+    {
         "rule_code": "buyer_has_order",
         "rule_name": "买家已有订单",
         "rule_description": "买家在当前账号存在其他有效订单时拦截发货",
@@ -41,6 +48,19 @@ RULE_METADATA: tuple[dict[str, Any], ...] = (
 
 RULE_METADATA_BY_CODE = {item["rule_code"]: item for item in RULE_METADATA}
 IGNORED_EXISTING_ORDER_STATUSES = ("cancelled", "refunding", "refund_cancelled")
+
+
+def resolve_delivery_action(block_result: dict[str, Any], order_closed: bool = False) -> str:
+    """Convert a rule result and close-order outcome into the delivery action."""
+    if not block_result.get("hit"):
+        return "allow"
+    if (
+        block_result.get("auto_close_order")
+        and order_closed
+        and block_result.get("only_card_after_close")
+    ):
+        return "card_only"
+    return "block"
 
 
 def _decode_json(value: Any, fallback: Any) -> Any:
@@ -78,14 +98,15 @@ class DeliveryBlockRuleService:
         rules = []
         for meta in RULE_METADATA:
             row = stored.get(meta["rule_code"])
+            auto_close_order = bool(row[4]) if row else False
             rules.append(
                 {
                     **meta,
                     "enabled": bool(row[1]) if row else False,
                     "priority": row[2] if row else meta["default_priority"],
                     "block_reason": (row[3] or "") if row else "",
-                    "auto_close_order": bool(row[4]) if row else False,
-                    "only_card_after_close": bool(row[5]) if row else False,
+                    "auto_close_order": auto_close_order,
+                    "only_card_after_close": bool(row[5]) if row and auto_close_order else False,
                     "excluded_item_ids": _decode_json(row[6], []) if row else [],
                     "config": _decode_json(row[7], meta["default_config"].copy()) if row else meta["default_config"].copy(),
                 }
@@ -111,6 +132,8 @@ class DeliveryBlockRuleService:
         config = merged.get("config") or {}
         if not isinstance(config, dict):
             raise ValueError("config 必须是对象")
+        auto_close_order = bool(merged.get("auto_close_order"))
+        only_card_after_close = bool(merged.get("only_card_after_close")) if auto_close_order else False
 
         with self.db.lock:
             self.db.conn.execute(
@@ -137,8 +160,8 @@ class DeliveryBlockRuleService:
                     int(bool(merged.get("enabled"))),
                     int(merged.get("priority", meta["default_priority"])),
                     str(merged.get("block_reason") or "").strip(),
-                    int(bool(merged.get("auto_close_order"))),
-                    int(bool(merged.get("only_card_after_close"))),
+                    int(auto_close_order),
+                    int(only_card_after_close),
                     json.dumps(excluded_item_ids, ensure_ascii=False),
                     json.dumps(config, ensure_ascii=False),
                 ),
@@ -268,6 +291,7 @@ class DeliveryBlockRuleService:
         buyer_id: str,
         item_id: Optional[str] = None,
         owner_id: Optional[int] = None,
+        buyer_rating_count: Optional[int] = None,
     ) -> dict[str, Any]:
         allowed = {
             "hit": False,
@@ -293,7 +317,14 @@ class DeliveryBlockRuleService:
                 if item_id and str(item_id) in set(rule["excluded_item_ids"]):
                     continue
                 result = self._evaluate_rule(
-                    rule["rule_code"], account_id, order_id, buyer_id, item_id, owner_id, rule["config"]
+                    rule["rule_code"],
+                    account_id,
+                    order_id,
+                    buyer_id,
+                    item_id,
+                    owner_id,
+                    rule["config"],
+                    buyer_rating_count,
                 )
                 if result:
                     logger.warning(
@@ -323,9 +354,25 @@ class DeliveryBlockRuleService:
         item_id: Optional[str],
         owner_id: Optional[int],
         config: dict[str, Any],
+        buyer_rating_count: Optional[int],
     ) -> Optional[dict[str, Any]]:
         if rule_code == "personal_blacklist":
             return self._check_blacklist(account_id, buyer_id, item_id, owner_id)
+        if rule_code == "buyer_credit_zero":
+            if buyer_rating_count is None or buyer_rating_count < 0:
+                return None
+            try:
+                threshold = max(0, int(config.get("threshold", 0)))
+            except (TypeError, ValueError):
+                threshold = 0
+            if buyer_rating_count <= threshold:
+                return {
+                    "reason": f"买家评价数为 {buyer_rating_count}（阈值 {threshold}）",
+                    "extra_data": {
+                        "total_count": buyer_rating_count,
+                        "threshold": threshold,
+                    },
+                }
         if rule_code == "buyer_has_order":
             count = self._count_orders(account_id, order_id, buyer_id, item_id, config)
             if count:

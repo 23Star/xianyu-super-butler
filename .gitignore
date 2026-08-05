@@ -800,6 +800,7 @@ frontend/coverage/
 # Local AI assistant and workflow state
 .claude/
 .spec-workflow/
+.zcf/
 
 # Keep repository regression tests tracked
 !tests/

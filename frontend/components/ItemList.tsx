@@ -4,12 +4,14 @@ import {
   Box,
   Edit,
   Loader2,
+  ListChecks,
   PackageCheck,
   Plus,
   RefreshCw,
   Save,
   Settings2,
   ShoppingBag,
+  ShieldAlert,
   Trash2,
   X,
 } from 'lucide-react';
@@ -29,8 +31,11 @@ import {
   updateShippingRule,
 } from '../services/api';
 import { confirmAction } from '../services/feedback';
+import DeliveryProtection from './DeliveryProtection';
+import GeneralDeliveryRules from './GeneralDeliveryRules';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
+type ItemSection = 'products' | 'rules' | 'protection';
 
 interface DeliveryForm {
   cardId: string;
@@ -128,7 +133,8 @@ const ItemList: React.FC = () => {
   const [items, setItems] = useState<Item[]>([]);
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
-  const [productRules, setProductRules] = useState<ShippingRule[]>([]);
+  const [shippingRules, setShippingRules] = useState<ShippingRule[]>([]);
+  const [activeSection, setActiveSection] = useState<ItemSection>('products');
   const [selectedAccount, setSelectedAccount] = useState('');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -157,13 +163,18 @@ const ItemList: React.FC = () => {
 
   const ruleMap = useMemo(() => {
     const map = new Map<string, ShippingRule>();
-    productRules.forEach(rule => {
+    shippingRules.forEach(rule => {
       if (rule.cookie_id && rule.item_id) {
         map.set(`${rule.cookie_id}:${rule.item_id}`, rule);
       }
     });
     return map;
-  }, [productRules]);
+  }, [shippingRules]);
+
+  const genericRules = useMemo(
+    () => shippingRules.filter(rule => !rule.item_id),
+    [shippingRules],
+  );
 
   const loadData = async () => {
     setLoading(true);
@@ -177,7 +188,7 @@ const ItemList: React.FC = () => {
       setAccounts(accountData);
       setItems(itemData);
       setCards(cardData);
-      setProductRules(ruleData.filter(rule => Boolean(rule.item_id)));
+      setShippingRules(ruleData);
       setSelectedAccount(current => current || accountData[0]?.id || '');
     } catch (error) {
       setNotice({
@@ -191,7 +202,7 @@ const ItemList: React.FC = () => {
 
   const reloadRules = async () => {
     const rules = await getShippingRules();
-    setProductRules(rules.filter(rule => Boolean(rule.item_id)));
+    setShippingRules(rules);
   };
 
   useEffect(() => {
@@ -326,7 +337,7 @@ const ItemList: React.FC = () => {
     setSavingKey(key);
     try {
       await updateShippingRule({ ...rule, enabled: !rule.enabled });
-      setProductRules(current => current.map(currentRule =>
+      setShippingRules(current => current.map(currentRule =>
         currentRule.id === rule.id ? { ...currentRule, enabled: !rule.enabled } : currentRule,
       ));
     } catch (error) {
@@ -345,7 +356,7 @@ const ItemList: React.FC = () => {
       if (rule) await deleteShippingRule(rule.id);
       await deleteItem(item.cookie_id, item.item_id);
       setItems(current => current.filter(currentItem => itemKey(currentItem) !== key));
-      setProductRules(current => current.filter(currentRule => currentRule.id !== rule?.id));
+      setShippingRules(current => current.filter(currentRule => currentRule.id !== rule?.id));
       setNotice({ type: 'success', message: '商品及其专属发货配置已删除' });
     } catch (error) {
       setNotice({ type: 'error', message: error instanceof Error ? error.message : '删除失败' });
@@ -387,14 +398,70 @@ const ItemList: React.FC = () => {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
+      <div>
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">商品管理</h2>
+          <h2 className="text-2xl font-bold text-gray-900">商品与发货</h2>
           <p className="mt-1 text-sm text-gray-500">
-            同步或手动添加商品，并为每件商品单独配置自动发货。
+            管理商品、专属与通用发货策略，以及发货前风险拦截。
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
+      </div>
+
+      <div>
+        <div className="grid w-full grid-cols-3 rounded-lg bg-gray-200/70 p-1 sm:inline-flex sm:w-auto">
+          {([
+            { id: 'products', label: '商品与专属发货', icon: ShoppingBag },
+            { id: 'rules', label: '通用发货规则', icon: ListChecks },
+            { id: 'protection', label: '发货保护与黑名单', icon: ShieldAlert },
+          ] as const).map(section => {
+            const Icon = section.icon;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActiveSection(section.id)}
+                className={`relative flex min-h-[68px] min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1.5 py-2 text-center text-xs font-bold leading-4 transition-colors sm:min-h-0 sm:flex-row sm:gap-2 sm:px-4 sm:text-sm ${
+                  activeSection === section.id
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="whitespace-normal sm:whitespace-nowrap">{section.label}</span>
+                {section.id === 'products' && (
+                  <span className="absolute right-1.5 top-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-none sm:static sm:px-2 sm:text-xs sm:leading-normal">
+                    {items.length}
+                  </span>
+                )}
+                {section.id === 'rules' && (
+                  <span className="absolute right-1.5 top-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-none sm:static sm:px-2 sm:text-xs sm:leading-normal">
+                    {genericRules.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {notice && (
+        <div
+          role="status"
+          className={`flex items-center justify-between gap-4 rounded-md border px-4 py-3 text-sm ${
+            notice.type === 'success'
+              ? 'border-green-200 bg-green-50 text-green-800'
+              : 'border-red-200 bg-red-50 text-red-700'
+          }`}
+        >
+          <span>{notice.message}</span>
+          <button type="button" onClick={() => setNotice(null)} aria-label="关闭提示">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      <section hidden={activeSection !== 'products'} className="space-y-5">
+        <div className="flex flex-col justify-end gap-2 sm:flex-row">
           <select
             className="ios-input min-w-56 rounded-md px-3 py-2.5 text-sm"
             value={selectedAccount}
@@ -424,25 +491,8 @@ const ItemList: React.FC = () => {
             {syncing ? '同步中' : '同步商品'}
           </button>
         </div>
-      </div>
 
-      {notice && (
-        <div
-          role="status"
-          className={`flex items-center justify-between gap-4 rounded-md border px-4 py-3 text-sm ${
-            notice.type === 'success'
-              ? 'border-green-200 bg-green-50 text-green-800'
-              : 'border-red-200 bg-red-50 text-red-700'
-          }`}
-        >
-          <span>{notice.message}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label="关闭提示">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map(item => {
           const key = itemKey(item);
           const busy = savingKey === key;
@@ -561,7 +611,28 @@ const ItemList: React.FC = () => {
             <p className="mt-1 text-sm">同步闲鱼商品，或手动添加一件商品。</p>
           </div>
         )}
-      </div>
+        </div>
+      </section>
+
+      <section hidden={activeSection !== 'rules'}>
+        <GeneralDeliveryRules
+          accounts={accounts}
+          cards={cards}
+          rules={genericRules}
+          onReload={reloadRules}
+        />
+      </section>
+
+      <section hidden={activeSection !== 'protection'}>
+        <div className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
+          <DeliveryProtection
+            accounts={accounts}
+            items={items}
+            selectedAccount={selectedAccount}
+            onSelectedAccountChange={setSelectedAccount}
+          />
+        </div>
+      </section>
 
       {deliveryItem && createPortal(
         <div className="modal-overlay">
