@@ -216,9 +216,6 @@ const App: React.FC = () => {
           <section hidden={activeTab !== 'ai-reply'}>
             <Suspense fallback={activeTab === 'ai-reply' ? <PageLoader /> : null}><AIReply /></Suspense>
           </section>
-          <section hidden={activeTab !== 'auto-delivery'}>
-            <Suspense fallback={activeTab === 'auto-delivery' ? <PageLoader /> : null}><Keywords mode="delivery" /></Suspense>
-          </section>
           <section hidden={activeTab !== 'messages'} className="h-full min-h-0">
             <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}>
               <MessageManagement isActive={activeTab === 'messages'} />
