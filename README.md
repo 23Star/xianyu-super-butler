@@ -9,6 +9,29 @@
 
 本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发并持续维护，保留原项目核心能力，同时重构管理端、账号监听、商品同步、订单处理和发货规则。
 
+## 项目效果
+
+![闲鱼超级管家营收总览](docs/screenshots/revenue-overview.png)
+
+## 交流与反馈
+
+<table>
+  <tr>
+    <th align="center">微信群</th>
+    <th align="center">QQ群</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/community/wechat-group.jpg" alt="闲鱼超级管家微信群二维码" width="180"></td>
+    <td align="center"><img src="docs/community/qq-group.jpg" alt="闲鱼超级管家QQ群二维码" width="180"></td>
+  </tr>
+  <tr>
+    <td align="center">二维码失效后会在仓库更新</td>
+    <td align="center">群号：704866149</td>
+  </tr>
+</table>
+
+缺陷和功能建议请提交到 [GitHub Issues](https://github.com/23Star/xianyu-super-butler/issues)。
+
 ## 核心能力
 
 | 模块 | 当前能力 |
@@ -84,25 +107,6 @@
 ### 单商品发货规则
 
 ![单商品发货规则](docs/screenshots/product-delivery-rule.png)
-
-## 交流与反馈
-
-<table>
-  <tr>
-    <th align="center">微信群</th>
-    <th align="center">QQ群</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/community/wechat-group.jpg" alt="闲鱼超级管家微信群二维码" width="215"></td>
-    <td align="center"><img src="docs/community/qq-group.jpg" alt="闲鱼超级管家QQ群二维码" width="215"></td>
-  </tr>
-  <tr>
-    <td align="center">二维码失效后会在仓库更新</td>
-    <td align="center">群号：704866149</td>
-  </tr>
-</table>
-
-缺陷和功能建议请提交到 [GitHub Issues](https://github.com/23Star/xianyu-super-butler/issues)。
 
 ## 本地安装
 
