@@ -219,7 +219,7 @@ const App: React.FC = () => {
           <section hidden={activeTab !== 'auto-delivery'}>
             <Suspense fallback={activeTab === 'auto-delivery' ? <PageLoader /> : null}><Keywords mode="delivery" /></Suspense>
           </section>
-          <section hidden={activeTab !== 'messages'}>
+          <section hidden={activeTab !== 'messages'} className="h-full min-h-0">
             <Suspense fallback={activeTab === 'messages' ? <PageLoader /> : null}>
               <MessageManagement isActive={activeTab === 'messages'} />
             </Suspense>

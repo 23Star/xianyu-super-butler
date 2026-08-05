@@ -336,7 +336,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   };
 
   const renderMessages = () => (
-    <div className="grid h-full min-h-[640px] bg-white lg:grid-cols-[356px_minmax(0,1fr)]">
+    <div className="grid h-full min-h-0 overflow-hidden bg-white lg:grid-cols-[356px_minmax(0,1fr)]">
       <aside className="flex min-h-0 flex-col border-b border-[#e9e9e9] lg:border-b-0 lg:border-r">
         <div className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[#eeeeee] px-4">
           <select
@@ -476,7 +476,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 </p>
                 {activeItem?.item_price && (
                   <p className="mt-1 text-base font-extrabold text-[#ff3b30]">
-                    <span className="text-xs">¥</span>{activeItem.item_price}
+                    <span className="text-xs">¥</span>
+                    {String(activeItem.item_price).replace(/^[¥￥]\s*/, '')}
                   </p>
                 )}
                 <p className="mt-1 truncate text-xs text-[#999]">
