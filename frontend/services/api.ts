@@ -268,6 +268,18 @@ export const syncItemsFromAccount = async (cookieId: string): Promise<any> => {
     return post('/items/get-all-from-account', { cookie_id: cookieId });
 }
 
+export const createManualItem = async (data: {
+  cookie_id: string;
+  item_id: string;
+  title: string;
+  price?: string;
+  image_url?: string;
+  description?: string;
+  detail?: string;
+}): Promise<{ success: boolean; message: string; item?: Item }> => {
+  return post('/items', data);
+}
+
 export const deleteItem = async (cookieId: string, itemId: string): Promise<any> => {
     return del(`/items/${cookieId}/${itemId}`);
 }
@@ -408,7 +420,8 @@ export const getShippingRules = async (): Promise<ShippingRule[]> => {
         card_group_id: item.card_id || 0,
         card_group_name: item.card_name || '',
         priority: item.delivery_count || 1,
-        enabled: item.enabled || false
+        enabled: Boolean(item.enabled),
+        delivery_times: item.delivery_times || 0
     }));
 }
 

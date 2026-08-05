@@ -1120,6 +1120,107 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】提取订单ID失败: {self._safe_str(e)}")
             return None
 
+    @staticmethod
+    def _extract_order_event_status(message: dict) -> str:
+        """从交易卡片中识别可安全落库的订单状态。"""
+        if not isinstance(message, dict):
+            return None
+
+        message_1 = message.get("1")
+        if not isinstance(message_1, dict):
+            return None
+
+        message_detail = message_1.get("10")
+        event_text = message_detail.get("reminderContent", "") if isinstance(message_detail, dict) else ""
+        if not event_text:
+            content = message_1.get("6")
+            content_detail = content.get("3") if isinstance(content, dict) else None
+            event_text = content_detail.get("2", "") if isinstance(content_detail, dict) else ""
+
+        return {
+            "[我已拍下，待付款]": "processing",
+            "[我已付款，等待你发货]": "pending_ship",
+            "[买家已付款]": "pending_ship",
+            "[付款完成]": "pending_ship",
+            "[已付款，待发货]": "pending_ship",
+            "[你已发货]": "shipped",
+            "[你已发货，请等待买家确认收货]": "shipped",
+            "[买家确认收货，交易成功]": "completed",
+            "[你已确认收货，交易成功]": "completed",
+            "[退款成功，钱款已原路退返]": "cancelled",
+            "[你关闭了订单，钱款已原路退返]": "cancelled",
+        }.get(str(event_text).strip())
+
+    def _save_order_event_snapshot(
+        self,
+        order_id: str,
+        message: dict,
+        item_id: str = None,
+        buyer_id: str = None,
+    ) -> bool:
+        """订单详情暂不可用时，先保存交易卡片中可信的基础信息。"""
+        order_status = self._extract_order_event_status(message)
+        if not order_id or not order_status:
+            return False
+
+        try:
+            from app.db_manager import db_manager
+
+            message_1 = message.get("1") if isinstance(message, dict) else None
+            message_1 = message_1 if isinstance(message_1, dict) else {}
+            chat_id_raw = message_1.get("2", "")
+            chat_id = str(chat_id_raw).split("@")[0] if chat_id_raw else ""
+
+            created_at = None
+            create_time = message_1.get("5")
+            if create_time:
+                try:
+                    created_at = time.strftime(
+                        "%Y-%m-%d %H:%M:%S",
+                        time.localtime(int(create_time) / 1000),
+                    )
+                except (TypeError, ValueError, OSError):
+                    created_at = None
+
+            amount = None
+            if item_id:
+                item_info = db_manager.get_item_info(self.cookie_id, item_id)
+                if item_info and item_info.get("item_price") is not None:
+                    amount = re.sub(r"^[¥￥]\s*", "", str(item_info["item_price"])).strip()
+
+            existing_order = db_manager.get_order_by_id(order_id)
+            snapshot_item_id = item_id
+            snapshot_buyer_id = buyer_id
+            snapshot_quantity = "1"
+            snapshot_created_at = created_at
+            if existing_order:
+                snapshot_item_id = item_id if not existing_order.get("item_id") else None
+                snapshot_buyer_id = buyer_id if not existing_order.get("buyer_id") else None
+                snapshot_quantity = "1" if not existing_order.get("quantity") else None
+                amount = amount if not existing_order.get("amount") else None
+                snapshot_created_at = created_at if not existing_order.get("created_at") else None
+
+            saved = db_manager.insert_or_update_order(
+                order_id=order_id,
+                item_id=snapshot_item_id,
+                buyer_id=snapshot_buyer_id,
+                quantity=snapshot_quantity,
+                amount=amount,
+                order_status=order_status,
+                cookie_id=self.cookie_id,
+                created_at=snapshot_created_at,
+                chat_id=chat_id,
+            )
+            if saved:
+                logger.info(
+                    f"【{self.cookie_id}】订单详情尚未拉取，已按交易卡片保存订单快照: "
+                    f"order_id={order_id}, item_id={item_id}, buyer_id={buyer_id}, status={order_status}"
+                )
+            return saved
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】保存订单事件快照失败 {order_id}: {self._safe_str(e)}")
+            return False
+
     async def _handle_auto_delivery(self, websocket, message: dict, send_user_name: str, send_user_id: str,
                                    item_id: str, chat_id: str, msg_time: str):
         """统一处理自动发货逻辑"""
@@ -8222,6 +8323,15 @@ class XianyuLive:
                                 temp_item_id = self.extract_item_id_from_message(message)
                         except:
                             pass
+
+                        # 交易卡片已经包含订单号、商品、买家和状态。先写入基础订单，
+                        # 避免 Playwright 或订单详情页面异常时订单中心完全看不到记录。
+                        self._save_order_event_snapshot(
+                            order_id=order_id,
+                            message=message,
+                            item_id=temp_item_id,
+                            buyer_id=temp_user_id,
+                        )
 
                         # 检查是否已经在获取该订单详情
                         order_detail_lock = self._order_detail_locks[order_id]

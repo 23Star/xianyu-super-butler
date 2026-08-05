@@ -4648,7 +4648,11 @@ class DBManager:
                                 item_data.get('category', ''),
                                 item_data.get('price', ''),
                                 item_data.get('item_image', ''),
-                                json.dumps(item_data, ensure_ascii=False),
+                                (
+                                    item_data.get('item_detail')
+                                    if 'item_detail' in item_data
+                                    else json.dumps(item_data, ensure_ascii=False)
+                                ),
                                 cookie_id, item_id
                             ))
                         logger.info(f"更新商品信息（覆盖）: {item_id}")
@@ -4677,7 +4681,11 @@ class DBManager:
                             item_data.get('category', '') if item_data else '',
                             item_data.get('price', '') if item_data else '',
                             item_data.get('item_image', '') if item_data else '',
-                            json.dumps(item_data, ensure_ascii=False) if item_data else ''
+                            (
+                                item_data.get('item_detail')
+                                if 'item_detail' in item_data
+                                else json.dumps(item_data, ensure_ascii=False)
+                            ) if item_data else ''
                         ))
                     logger.info(f"新增商品信息: {item_id}")
 

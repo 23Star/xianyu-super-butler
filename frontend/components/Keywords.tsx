@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AccountDetail, Item, ShippingRule, ReplyRule, DefaultReply } from '../types';
-import { getAccountDetails, getItems, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
+import { AccountDetail, ShippingRule, ReplyRule, DefaultReply } from '../types';
+import { getAccountDetails, getReplyRules, updateReplyRule, deleteReplyRule, getShippingRules, updateShippingRule, deleteShippingRule, getCards, getDefaultReplies, getDefaultReply, updateDefaultReply, deleteDefaultReply, clearDefaultReplyRecords } from '../services/api';
 import { Plus, Trash2, MessageSquare, X, Save, Loader2, Key, Truck, Power, PowerOff, Edit2, RefreshCw, Sparkles, Bot } from 'lucide-react';
 import DeliveryProtection from './DeliveryProtection';
 import { confirmAction, notify } from '../services/feedback';
@@ -25,7 +25,6 @@ interface Keyword {
 interface DeliveryRuleForm {
   keyword: string;
   cookie_id: string;
-  item_id: string;
   card_id: string;
   description: string;
   enabled: boolean;
@@ -57,13 +56,11 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   // 关键词发货相关状态
   const [shippingRules, setShippingRules] = useState<ShippingRule[]>([]);
   const [cards, setCards] = useState<any[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [editingDeliveryRule, setEditingDeliveryRule] = useState<ShippingRule | null>(null);
   const [deliveryForm, setDeliveryForm] = useState<DeliveryRuleForm>({
     keyword: '',
     cookie_id: '',
-    item_id: '',
     card_id: '',
     description: '',
     enabled: true
@@ -87,10 +84,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
     if (mode === 'delivery') {
       loadShippingRules();
       loadCards();
-      Promise.all([getAccountDetails(), getItems()]).then(([accountData, itemData]) => {
-        setAccounts(accountData);
-        setItems(itemData);
-      });
+      getAccountDetails().then(setAccounts);
       return;
     }
 
@@ -122,7 +116,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   const loadShippingRules = async () => {
     try {
       const data = await getShippingRules();
-      setShippingRules(data);
+      setShippingRules(data.filter(rule => !rule.item_id));
     } catch (e) {
       console.error('加载发货规则失败', e);
     }
@@ -153,7 +147,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   const handleAdd = () => {
     if (mode === 'delivery') {
       setEditingDeliveryRule(null);
-      setDeliveryForm({ keyword: '', cookie_id: '', item_id: '', card_id: '', description: '', enabled: true });
+      setDeliveryForm({ keyword: '', cookie_id: '', card_id: '', description: '', enabled: true });
       setShowDeliveryModal(true);
     } else if (activeTab === 'reply') {
       setEditingKeyword(null);
@@ -209,7 +203,6 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
     setDeliveryForm({
       keyword: rule.item_keyword,
       cookie_id: rule.cookie_id || '',
-      item_id: rule.item_id || '',
       card_id: String(rule.card_group_id),
       description: rule.name,
       enabled: rule.enabled
@@ -247,8 +240,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
   };
 
   const handleSaveDelivery = async () => {
-    if (!deliveryForm.item_id && !deliveryForm.keyword.trim()) {
-      notify('通用规则需要填写触发关键词');
+    if (!deliveryForm.keyword.trim()) {
+      notify('请填写触发关键词');
       return;
     }
     if (!deliveryForm.card_id) {
@@ -261,7 +254,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
         id: editingDeliveryRule?.id,
         item_keyword: deliveryForm.keyword,
         cookie_id: deliveryForm.cookie_id || undefined,
-        item_id: deliveryForm.item_id || undefined,
+        item_id: undefined,
         card_group_id: parseInt(deliveryForm.card_id),
         name: deliveryForm.description,
         priority: 1,
@@ -419,7 +412,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                 deliveryTab === 'keywords' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
               }`}
             >
-              关键词发货
+              通用发货规则
             </button>
             <button
               type="button"
@@ -451,7 +444,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                 </option>
               ))}
             </select>
-          </div> : <p className="w-full text-sm text-gray-500 sm:w-auto">按买家消息关键词匹配卡密并自动发货</p>}
+          </div> : <p className="w-full text-sm text-gray-500 sm:w-auto">商品专属发货在“商品管理”配置；这里保留账号或全局关键词规则</p>}
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
               onClick={() => {
@@ -475,7 +468,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
               className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-bold disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
             >
               <Plus className="w-5 h-5" />
-              {mode === 'delivery' ? '添加发货规则' : activeTab === 'reply' ? '添加关键词' : '编辑默认回复'}
+              {mode === 'delivery' ? '添加通用规则' : activeTab === 'reply' ? '添加关键词' : '编辑默认回复'}
             </button>
           </div>
         </div>
@@ -589,7 +582,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                 <div className="flex-1 min-w-0">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <h3 className="font-bold text-gray-900">
-                      {rule.item_title || rule.item_keyword || `商品 ${rule.item_id}`}
+                      {rule.item_keyword}
                     </h3>
                     <span className={`rounded px-2 py-1 text-xs font-bold ${
                       rule.enabled
@@ -599,7 +592,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                       {rule.enabled ? '已启用' : '已禁用'}
                     </span>
                     <span className="rounded bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700">
-                      {rule.item_id ? '指定商品' : rule.cookie_id ? '指定账号' : '全部账号'}
+                      {rule.cookie_id ? '指定账号' : '全部账号'}
                     </span>
                   </div>
                   <p className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">
@@ -656,8 +649,8 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-50">
                 <Truck className="h-8 w-8 text-blue-500" />
               </div>
-              <h3 className="mb-1 text-lg font-bold text-gray-900">暂无发货规则</h3>
-              <p className="text-sm text-gray-500">使用上方按钮添加新的发货规则</p>
+              <h3 className="mb-1 text-lg font-bold text-gray-900">暂无通用发货规则</h3>
+              <p className="text-sm text-gray-500">商品专属发货请前往商品管理；这里可添加关键词兜底规则。</p>
             </div>
           )}
         </div>
@@ -835,7 +828,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
         document.body
       )}
 
-      {/* 关键词发货弹窗 */}
+      {/* 通用发货规则弹窗 */}
       {mode === 'delivery' && showDeliveryModal && createPortal(
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden animate-scale-in">
@@ -847,7 +840,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                     <Truck className="w-7 h-7 text-white" />
                   </div>
                   <h3 className="text-3xl font-black text-white">
-                    {editingDeliveryRule ? '编辑发货规则' : '添加发货规则'}
+                    {editingDeliveryRule ? '编辑通用规则' : '添加通用规则'}
                   </h3>
                 </div>
                 <button
@@ -867,8 +860,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                   value={deliveryForm.cookie_id}
                   onChange={(e) => setDeliveryForm({
                     ...deliveryForm,
-                    cookie_id: e.target.value,
-                    item_id: ''
+                    cookie_id: e.target.value
                   })}
                   className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 font-medium focus:border-blue-400"
                 >
@@ -882,30 +874,9 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
               </div>
 
               <div>
-                <label className="mb-3 block text-sm font-black text-gray-900">指定商品（可选）</label>
-                <select
-                  value={deliveryForm.item_id}
-                  disabled={!deliveryForm.cookie_id}
-                  onChange={(e) => setDeliveryForm({ ...deliveryForm, item_id: e.target.value })}
-                  className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 font-medium focus:border-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <option value="">
-                    {deliveryForm.cookie_id ? '按关键词匹配该账号商品' : '请先选择账号'}
-                  </option>
-                  {items
-                    .filter(item => item.cookie_id === deliveryForm.cookie_id)
-                    .map(item => (
-                      <option key={`${item.cookie_id}-${item.item_id}`} value={item.item_id}>
-                        {item.item_title || item.item_id}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
                 <label className="flex items-center gap-2 text-sm font-black text-gray-900 mb-3">
                   <Key className="w-5 h-5 text-blue-500" />
-                  触发关键词{deliveryForm.item_id ? '（可选）' : ''}
+                  触发关键词
                 </label>
                 <input
                   type="text"
@@ -915,7 +886,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                   className="w-full px-6 py-4 rounded-2xl font-medium border-2 border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/20 transition-all bg-gray-50"
                 />
                 <p className="mt-2 ml-1 text-sm text-gray-500">
-                  指定商品后优先按商品 ID 发货；未指定商品时按标题和详情关键词匹配
+                  按商品标题和详情关键词匹配。指定商品的自动发货请在商品管理中配置。
                 </p>
               </div>
 
@@ -937,7 +908,7 @@ const Keywords: React.FC<KeywordsProps> = ({ mode }) => {
                     </option>
                   ))}
                 </select>
-                <p className="text-sm text-gray-500 mt-2 ml-1">🎁 选择触发关键词时发送的卡券</p>
+                <p className="text-sm text-gray-500 mt-2 ml-1">选择触发关键词时发送的卡券</p>
               </div>
 
               <div>

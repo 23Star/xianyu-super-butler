@@ -248,6 +248,7 @@ export interface ShippingRule {
   card_group_name?: string; // UI helper
   priority: number;
   enabled: boolean;
+  delivery_times?: number;
 }
 
 export interface DeliveryBlockRule {

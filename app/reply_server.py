@@ -4774,9 +4774,18 @@ def _validate_delivery_rule_scope(rule_data: dict, user_id: int):
     cookie_id = str(rule_data.get("cookie_id") or "").strip() or None
     item_id = str(rule_data.get("item_id") or "").strip() or None
     card_id = rule_data.get("card_id")
+    delivery_count_raw = rule_data.get("delivery_count", 1)
 
     if not card_id or not db_manager.get_card_by_id(int(card_id), user_id):
         raise HTTPException(status_code=400, detail="请选择当前用户可用的卡券")
+    if isinstance(delivery_count_raw, bool):
+        raise HTTPException(status_code=400, detail="每单发货数量必须是大于等于 1 的整数")
+    try:
+        delivery_count = int(delivery_count_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="每单发货数量必须是大于等于 1 的整数")
+    if str(delivery_count_raw).strip() != str(delivery_count) or delivery_count < 1:
+        raise HTTPException(status_code=400, detail="每单发货数量必须是大于等于 1 的整数")
     if item_id and not cookie_id:
         raise HTTPException(status_code=400, detail="指定商品时必须同时选择账号")
     if cookie_id:
@@ -4788,7 +4797,7 @@ def _validate_delivery_rule_scope(rule_data: dict, user_id: int):
     if not item_id and not keyword:
         raise HTTPException(status_code=400, detail="通用规则必须填写触发关键词")
 
-    return keyword, int(card_id), cookie_id, item_id
+    return keyword, int(card_id), cookie_id, item_id, delivery_count
 
 
 @app.get("/delivery-rules")
@@ -4809,13 +4818,27 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
     try:
         from app.db_manager import db_manager
         user_id = current_user['user_id']
-        keyword, card_id, cookie_id, item_id = _validate_delivery_rule_scope(
+        keyword, card_id, cookie_id, item_id, delivery_count = _validate_delivery_rule_scope(
             rule_data, user_id
         )
+        if item_id:
+            duplicate = next(
+                (
+                    rule for rule in db_manager.get_all_delivery_rules(user_id)
+                    if rule.get("cookie_id") == cookie_id
+                    and rule.get("item_id") == item_id
+                ),
+                None,
+            )
+            if duplicate:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该商品已配置自动发货，请编辑现有策略",
+                )
         rule_id = db_manager.create_delivery_rule(
             keyword=keyword,
             card_id=card_id,
-            delivery_count=rule_data.get('delivery_count', 1),
+            delivery_count=delivery_count,
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
             user_id=user_id,
@@ -4823,6 +4846,8 @@ def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends
             item_id=item_id,
         )
         return {"id": rule_id, "message": "发货规则创建成功"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4850,14 +4875,14 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
     try:
         from app.db_manager import db_manager
         user_id = current_user['user_id']
-        keyword, card_id, cookie_id, item_id = _validate_delivery_rule_scope(
+        keyword, card_id, cookie_id, item_id, delivery_count = _validate_delivery_rule_scope(
             rule_data, user_id
         )
         success = db_manager.update_delivery_rule(
             rule_id=rule_id,
             keyword=keyword,
             card_id=card_id,
-            delivery_count=rule_data.get('delivery_count', 1),
+            delivery_count=delivery_count,
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
             user_id=user_id,
@@ -5255,6 +5280,69 @@ def get_all_items(current_user: Dict[str, Any] = Depends(get_current_user)):
         return {"items": all_items}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取商品信息失败: {str(e)}")
+
+
+class ManualItemCreate(BaseModel):
+    cookie_id: str
+    item_id: str
+    title: str
+    price: Optional[str] = ""
+    image_url: Optional[str] = ""
+    description: Optional[str] = ""
+    detail: Optional[str] = ""
+
+
+@app.post("/items")
+def create_manual_item(
+    item: ManualItemCreate,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """手动添加未从闲鱼同步到本地的商品。"""
+    try:
+        from app.db_manager import db_manager
+
+        cookie_id = item.cookie_id.strip()
+        item_id = item.item_id.strip()
+        title = item.title.strip()
+        if not cookie_id:
+            raise HTTPException(status_code=400, detail="请选择商品所属账号")
+        if not item_id:
+            raise HTTPException(status_code=400, detail="请填写商品 ID")
+        if not title:
+            raise HTTPException(status_code=400, detail="请填写商品标题")
+
+        user_cookies = db_manager.get_all_cookies(current_user["user_id"])
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权使用该闲鱼账号")
+        if db_manager.get_item_info(cookie_id, item_id):
+            raise HTTPException(status_code=409, detail="该商品已存在，请直接编辑现有商品")
+
+        saved = db_manager.save_item_info(
+            cookie_id,
+            item_id,
+            {
+                "title": title,
+                "description": item.description.strip(),
+                "category": "",
+                "price": item.price.strip(),
+                "item_image": item.image_url.strip(),
+                "item_detail": item.detail.strip(),
+                "source": "manual",
+            },
+        )
+        if not saved:
+            raise HTTPException(status_code=500, detail="手动商品保存失败")
+
+        return {
+            "success": True,
+            "message": "商品添加成功",
+            "item": db_manager.get_item_info(cookie_id, item_id),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("手动添加商品失败")
+        raise HTTPException(status_code=500, detail=f"手动添加商品失败: {str(e)}")
 
 
 # ==================== 商品搜索 API ====================
