@@ -20,6 +20,7 @@ import {
   updateShippingRule,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
+import { EmptyState, SectionHeader } from './ui';
 
 interface GeneralDeliveryRulesProps {
   accounts: AccountDetail[];
@@ -149,17 +150,18 @@ const GeneralDeliveryRules: React.FC<GeneralDeliveryRulesProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="font-bold text-gray-900">账号与全局兜底规则</h3>
-          <p className="mt-1 text-sm text-gray-500">按商品标题或本地详情关键词匹配，商品专属规则优先。</p>
-        </div>
-        <div className="flex gap-2">
+      <section className="section-panel">
+        <SectionHeader
+          title="账号与全局兜底规则"
+          description="按商品标题或本地详情关键词匹配，商品专属规则优先。"
+          icon={KeyRound}
+          actions={(
+            <>
           <button
             type="button"
             onClick={() => void handleReload()}
             disabled={refreshing}
-            className="ios-btn-secondary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-bold disabled:opacity-50 sm:flex-none"
+                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             刷新
@@ -167,24 +169,22 @@ const GeneralDeliveryRules: React.FC<GeneralDeliveryRulesProps> = ({
           <button
             type="button"
             onClick={openCreate}
-            className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-bold sm:flex-none"
+                className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
           >
             <Plus className="h-4 w-4" />
             添加规则
           </button>
-        </div>
-      </div>
-
-      <div className="space-y-3">
+            </>
+          )}
+        />
+        <div className="divide-y divide-gray-100">
         {rules.map((rule) => {
           const busy = busyRuleId === rule.id;
           const account = accounts.find(item => item.id === rule.cookie_id);
           return (
             <article
               key={rule.id}
-              className={`rounded-lg border bg-white p-4 ${
-                rule.enabled ? 'border-gray-200' : 'border-gray-200 opacity-70'
-              }`}
+                className={`p-4 ${rule.enabled ? '' : 'opacity-70'}`}
             >
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
                 <div className={`flex h-11 w-11 flex-none items-center justify-center rounded-md ${
@@ -259,13 +259,15 @@ const GeneralDeliveryRules: React.FC<GeneralDeliveryRulesProps> = ({
         })}
 
         {rules.length === 0 && (
-          <div className="rounded-lg border border-dashed border-gray-300 bg-white py-16 text-center">
-            <PackageCheck className="mx-auto mb-3 h-9 w-9 text-gray-300" />
-            <h3 className="font-bold text-gray-800">暂无通用发货规则</h3>
-            <p className="mt-1 text-sm text-gray-500">可添加指定账号或全部账号适用的关键词兜底规则。</p>
-          </div>
+            <EmptyState
+              compact
+              title="暂无通用发货规则"
+              description="可添加指定账号或全部账号适用的关键词兜底规则。"
+              icon={PackageCheck}
+            />
         )}
-      </div>
+        </div>
+      </section>
 
       {showModal && createPortal(
         <div className="modal-overlay">

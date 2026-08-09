@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { Card } from '../types';
 import { getCards, createCard, updateCard, deleteCard } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Plus, CreditCard, Clock, FileText, Image as ImageIcon, Code, Edit, Trash2, Save, X, Eye, EyeOff, Package } from 'lucide-react';
+import { Plus, CreditCard, FileText, Image as ImageIcon, Code, Edit, Trash2, Save, X, Package, Boxes } from 'lucide-react';
+import { EmptyState, PageHeader, SectionHeader } from './ui';
 
 const CardList: React.FC = () => {
   const [cards, setCards] = useState<Card[]>([]);
@@ -54,10 +55,6 @@ const CardList: React.FC = () => {
       // 通用配置
       delay_seconds: card.delay_seconds || 0,
       description: card.description || '',
-      // 多规格配置
-      is_multi_spec: card.is_multi_spec || false,
-      spec_name: card.spec_name || '',
-      spec_value: card.spec_value || '',
       enabled: card.enabled
     });
     setShowEditModal(true);
@@ -82,10 +79,7 @@ const CardList: React.FC = () => {
         type: editForm.type as any,
         description: editForm.description?.trim(),
         delay_seconds: editForm.delay_seconds || 0,
-        enabled: editForm.enabled ?? true,
-        is_multi_spec: editForm.is_multi_spec,
-        spec_name: editForm.spec_name,
-        spec_value: editForm.spec_value
+        enabled: editForm.enabled ?? true
       };
 
       // 根据类型设置内容
@@ -187,36 +181,66 @@ const CardList: React.FC = () => {
     }
   };
 
+  const enabledCount = cards.filter(card => card.enabled).length;
+  const batchInventory = cards.reduce((total, card) => {
+    if (card.type !== 'data' || !card.data_content) return total;
+    return total + card.data_content.split('\n').filter(line => line.trim()).length;
+  }, 0);
+
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">卡密库存</h2>
-          <p className="mt-1 text-sm text-gray-500">管理自动发货的卡密、链接或图片资源。</p>
-        </div>
-        <button
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="卡密库存"
+        description="集中维护自动发货所需的固定文本、批量卡密、图片和 API 数据源。"
+        icon={CreditCard}
+        actions={(
+          <button
             onClick={() => setShowAddModal(true)}
-            className="ios-btn-primary flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 font-bold sm:w-auto"
-        >
-          <Plus className="w-5 h-5" />
-          添加新卡密
-        </button>
+            className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+          >
+            <Plus className="h-4 w-4" />
+            添加卡密
+          </button>
+        )}
+      />
+
+      <div className="metric-grid">
+        <div className="metric-card">
+          <p className="metric-card__label">卡密组</p>
+          <p className="metric-card__value">{cards.length}</p>
+          <p className="metric-card__meta">所有已配置的数据源</p>
+        </div>
+        <div className="metric-card">
+          <p className="metric-card__label">启用中</p>
+          <p className="metric-card__value">{enabledCount}</p>
+          <p className="metric-card__meta">{cards.length - enabledCount} 组已停用</p>
+        </div>
+        <div className="metric-card">
+          <p className="metric-card__label">批量库存</p>
+          <p className="metric-card__value">{batchInventory}</p>
+          <p className="metric-card__meta">按有效非空行统计</p>
+        </div>
       </div>
 
-      <div className="ios-card overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
+      <section className="section-panel">
+        <SectionHeader
+          title="库存数据源"
+          description="停用后不会被自动发货规则调用，已有内容仍会保留。"
+          icon={Boxes}
+        />
         <div className="overflow-x-auto">
-          <table className="min-w-[900px] w-full text-left border-collapse">
+          <table className="data-table responsive-data-table min-w-[860px]">
             <thead>
-              <tr className="bg-white text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-50">
-                <th className="px-8 py-5 w-[15%]">卡密名称</th>
-                <th className="px-6 py-5 w-[12%]">类型</th>
-                <th className="px-6 py-5 w-[25%]">内容/库存</th>
-                <th className="px-6 py-5 w-[20%]">描述</th>
-                <th className="px-6 py-5 w-[10%]">状态</th>
-                <th className="px-6 py-5 w-[10%] text-right">操作</th>
+              <tr>
+                <th className="w-[22%]">卡密名称</th>
+                <th className="w-[11%]">类型</th>
+                <th className="w-[25%]">内容 / 库存</th>
+                <th className="w-[22%]">说明</th>
+                <th className="w-[10%]">状态</th>
+                <th className="w-[10%] text-right">操作</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
+            <tbody>
               {cards.map((card) => {
                 // 计算库存或内容预览
                 let stockInfo = '';
@@ -227,22 +251,22 @@ const CardList: React.FC = () => {
                   stockInfo = card.text_content.substring(0, 20) + (card.text_content.length > 20 ? '...' : '');
                 } else if (card.type === 'api' && card.api_config) {
                   stockInfo = card.api_config.url;
-                } else if (card.type === 'image' && card.text_content) {
+                } else if (card.type === 'image' && card.image_url) {
                   stockInfo = '图片链接';
                 }
 
                 return (
-                  <tr key={card.id} className="hover:bg-[#FFFDE7]/50 transition-colors group">
-                    <td className="px-8 py-5">
+                  <tr key={card.id} className="group">
+                    <td data-label="卡密名称">
                       <div className="flex items-center gap-3">
-                        <div className="p-2 bg-gray-50 rounded-xl group-hover:bg-white transition-colors">
+                        <div className="rounded-md border border-gray-200 bg-gray-50 p-2">
                           <CardIcon type={card.type} />
                         </div>
-                        <span className="font-bold text-gray-900">{card.name}</span>
+                        <span className="text-sm font-bold text-gray-900">{card.name}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-5">
-                      <span className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                    <td data-label="类型">
+                      <span className={`inline-flex rounded px-2 py-1 text-xs font-bold ${
                         card.type === 'text' ? 'bg-blue-50 text-blue-600' :
                         card.type === 'data' ? 'bg-purple-50 text-purple-600' :
                         card.type === 'api' ? 'bg-orange-50 text-orange-600' :
@@ -253,38 +277,38 @@ const CardList: React.FC = () => {
                          card.type === 'api' ? 'API' : '图片'}
                       </span>
                     </td>
-                    <td className="px-6 py-5">
-                      <span className="text-sm text-gray-600 font-mono block truncate" title={stockInfo}>
+                    <td data-label="内容 / 库存">
+                      <span className="block max-w-[260px] truncate font-mono text-xs text-gray-600" title={stockInfo}>
                         {stockInfo}
                       </span>
                     </td>
-                    <td className="px-6 py-5">
+                    <td data-label="说明">
                       <span
-                        className="text-sm text-gray-500 block max-w-[200px] truncate"
+                        className="block max-w-[220px] truncate text-sm text-gray-500"
                         title={card.description || '-'}
                       >
                         {card.description || '-'}
                       </span>
                     </td>
-                    <td className="px-6 py-5">
+                    <td data-label="状态">
                       <button
                         onClick={() => toggleCardStatus(card)}
-                        className={`w-12 h-8 rounded-full relative transition-colors ${
-                          card.enabled ? 'bg-green-500' : 'bg-gray-300'
+                        className={`relative h-6 w-10 rounded-full transition-colors ${
+                          card.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'
                         }`}
                         title={card.enabled ? '停用' : '启用'}
                         aria-label={`${card.enabled ? '停用' : '启用'}卡密 ${card.name}`}
                       >
-                        <div className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-sm transition-transform ${
+                        <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
                           card.enabled ? 'left-5' : 'left-1'
-                        }`}></div>
+                        }`} />
                       </button>
                     </td>
-                    <td className="px-6 py-5">
-                      <div className="flex items-center justify-end gap-2">
+                    <td data-label="操作">
+                      <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => handleEdit(card)}
-                          className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
+                          className="rounded-md p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-black"
                           title="编辑"
                           aria-label={`编辑卡密 ${card.name}`}
                         >
@@ -292,11 +316,11 @@ const CardList: React.FC = () => {
                         </button>
                         <button
                           onClick={() => handleDelete(card.id)}
-                          className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                          className="rounded-md p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600"
                           title="删除"
                           aria-label={`删除卡密 ${card.name}`}
                         >
-                          <Trash2 className="w-5 h-5" />
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     </td>
@@ -308,25 +332,35 @@ const CardList: React.FC = () => {
         </div>
 
         {cards.length === 0 && (
-          <div className="py-20 text-center text-gray-400">
-            <Package className="w-12 h-12 mx-auto mb-4 opacity-30" />
-            <p>暂无卡密配置，请点击右上角添加。</p>
+          <div className="p-4">
+            <EmptyState
+              compact
+              icon={Package}
+              title="暂无卡密配置"
+              description="添加固定文本、批量卡密、图片或 API 数据源后，可在商品发货策略中直接选择。"
+            />
           </div>
         )}
-      </div>
+      </section>
 
       {/* 编辑卡密弹窗 - 使用 Portal */}
       {showEditModal && selectedCard && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container">
             <div className="modal-header">
-              <h3 className="text-2xl font-extrabold text-gray-900">编辑卡密</h3>
-              <button
-                onClick={() => setShowEditModal(false)}
-                className="p-2 rounded-xl hover:bg-gray-100 transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-500" />
-              </button>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">编辑卡密</h3>
+                  <p className="mt-1 text-xs text-gray-500">修改数据源内容及发货调用方式。</p>
+                </div>
+                <button
+                  onClick={() => setShowEditModal(false)}
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭编辑卡密"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
             </div>
 
             <div className="modal-body">
@@ -339,7 +373,7 @@ const CardList: React.FC = () => {
                       type="text"
                       value={editForm.name || ''}
                       onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                       placeholder="例如：游戏点卡、会员卡等"
                     />
                   </div>
@@ -348,7 +382,7 @@ const CardList: React.FC = () => {
                     <select
                       value={editForm.type || 'text'}
                       onChange={(e) => setEditForm({ ...editForm, type: e.target.value as any })}
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                     >
                       <option value="">请选择类型</option>
                       <option value="text">固定文字</option>
@@ -361,7 +395,7 @@ const CardList: React.FC = () => {
 
                 {/* API 配置 */}
                 {editForm.type === 'api' && (
-                  <div className="border border-gray-200 rounded-xl p-4 space-y-4 bg-gray-50">
+                  <div className="space-y-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                     <h3 className="font-bold text-gray-900">API 配置</h3>
                     <div>
                       <label className="block text-sm font-bold text-gray-700 mb-2">API 地址</label>
@@ -369,17 +403,17 @@ const CardList: React.FC = () => {
                         type="url"
                         value={editForm.api_url || ''}
                         onChange={(e) => setEditForm({ ...editForm, api_url: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl font-mono text-sm"
+                        className="ios-input w-full rounded-md px-3 py-2.5 font-mono text-sm"
                         placeholder="https://api.example.com/get-card"
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
                       <div>
                         <label className="block text-sm font-bold text-gray-700 mb-2">请求方法</label>
                         <select
                           value={editForm.api_method || 'GET'}
                           onChange={(e) => setEditForm({ ...editForm, api_method: e.target.value as 'GET' | 'POST' })}
-                          className="w-full ios-input px-4 py-3 rounded-xl"
+                          className="ios-input w-full rounded-md px-3 py-2.5"
                         >
                           <option value="GET">GET</option>
                           <option value="POST">POST</option>
@@ -391,7 +425,7 @@ const CardList: React.FC = () => {
                           type="number"
                           value={editForm.api_timeout || 10}
                           onChange={(e) => setEditForm({ ...editForm, api_timeout: parseInt(e.target.value) || 10 })}
-                          className="w-full ios-input px-4 py-3 rounded-xl"
+                          className="ios-input w-full rounded-md px-3 py-2.5"
                           min="1"
                           max="60"
                         />
@@ -402,7 +436,7 @@ const CardList: React.FC = () => {
                       <textarea
                         value={editForm.api_headers || ''}
                         onChange={(e) => setEditForm({ ...editForm, api_headers: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl h-20 resize-none font-mono text-sm"
+                        className="ios-input h-20 w-full resize-y rounded-md px-3 py-2.5 font-mono text-sm"
                         placeholder='{"Authorization": "Bearer token"}'
                       />
                     </div>
@@ -411,7 +445,7 @@ const CardList: React.FC = () => {
                       <textarea
                         value={editForm.api_params || ''}
                         onChange={(e) => setEditForm({ ...editForm, api_params: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl h-20 resize-none font-mono text-sm"
+                        className="ios-input h-20 w-full resize-y rounded-md px-3 py-2.5 font-mono text-sm"
                         placeholder='{"type": "card", "count": 1}'
                       />
                     </div>
@@ -420,14 +454,14 @@ const CardList: React.FC = () => {
 
                 {/* 固定文字配置 */}
                 {editForm.type === 'text' && (
-                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50">
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
                     <h3 className="font-bold text-gray-900 mb-3">固定文字配置</h3>
                     <div>
                       <label className="block text-sm font-bold text-gray-700 mb-2">文字内容</label>
                       <textarea
                         value={editForm.text_content || ''}
                         onChange={(e) => setEditForm({ ...editForm, text_content: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none"
+                        className="ios-input h-32 w-full resize-y rounded-md px-3 py-2.5"
                         placeholder="请输入要发送的固定文字内容..."
                       />
                     </div>
@@ -436,14 +470,14 @@ const CardList: React.FC = () => {
 
                 {/* 批量数据配置 */}
                 {editForm.type === 'data' && (
-                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50">
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
                     <h3 className="font-bold text-gray-900 mb-3">批量数据配置</h3>
                     <div>
                       <label className="block text-sm font-bold text-gray-700 mb-2">数据内容（一行一个）</label>
                       <textarea
                         value={editForm.data_content || ''}
                         onChange={(e) => setEditForm({ ...editForm, data_content: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl h-80 resize-none font-mono text-sm"
+                        className="ios-input h-72 w-full resize-y rounded-md px-3 py-2.5 font-mono text-sm"
                         placeholder="请输入数据，每行一个：&#10;卡号1:密码1&#10;卡号2:密码2&#10;或者&#10;兑换码1&#10;兑换码2"
                       />
                       <p className="text-xs text-gray-500 mt-2">支持格式：卡号:密码 或 单独的兑换码</p>
@@ -456,7 +490,7 @@ const CardList: React.FC = () => {
 
                 {/* 图片配置 */}
                 {editForm.type === 'image' && (
-                  <div className="border border-gray-200 rounded-xl p-4 bg-gray-50">
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-4">
                     <h3 className="font-bold text-gray-900 mb-3">图片配置</h3>
                     <div>
                       <label className="block text-sm font-bold text-gray-700 mb-2">图片 URL</label>
@@ -464,7 +498,7 @@ const CardList: React.FC = () => {
                         type="url"
                         value={editForm.image_url || ''}
                         onChange={(e) => setEditForm({ ...editForm, image_url: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl font-mono text-sm"
+                        className="ios-input w-full rounded-md px-3 py-2.5 font-mono text-sm"
                         placeholder="https://example.com/image.png"
                       />
                       <p className="text-xs text-gray-500 mt-2">输入图片卡密的 URL 地址</p>
@@ -475,7 +509,7 @@ const CardList: React.FC = () => {
                         <img
                           src={editForm.image_url}
                           alt="预览"
-                          className="max-w-full max-h-48 rounded-xl border border-gray-200"
+                          className="max-h-48 max-w-full rounded-md border border-gray-200"
                           onError={(e) => { e.currentTarget.src = 'https://via.placeholder.com/400x200?text=图片加载失败'; }}
                         />
                       </div>
@@ -491,7 +525,7 @@ const CardList: React.FC = () => {
                       type="number"
                       value={editForm.delay_seconds || 0}
                       onChange={(e) => setEditForm({ ...editForm, delay_seconds: parseInt(e.target.value) || 0 })}
-                      className="flex-1 ios-input px-4 py-3 rounded-xl"
+                      className="ios-input flex-1 rounded-md px-3 py-2.5"
                       min="0"
                       max="3600"
                       placeholder="0"
@@ -507,66 +541,24 @@ const CardList: React.FC = () => {
                   <textarea
                     value={editForm.description || ''}
                     onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                    className="w-full ios-input px-4 py-3 rounded-xl h-40 resize-none"
+                    className="ios-input h-32 w-full resize-y rounded-md px-3 py-2.5"
                     placeholder="可选的备注信息"
                   />
                 </div>
 
-                {/* 多规格设置 */}
-                <div className="border border-gray-200 rounded-xl p-4">
-                  <div className="flex items-center gap-3 mb-3">
-                    <input
-                      type="checkbox"
-                      id="edit-isMultiSpec"
-                      checked={editForm.is_multi_spec || false}
-                      onChange={(e) => setEditForm({ ...editForm, is_multi_spec: e.target.checked })}
-                      className="w-4 h-4 rounded"
-                    />
-                    <label htmlFor="edit-isMultiSpec" className="font-bold text-gray-900">
-                      多规格卡券
-                    </label>
-                  </div>
-                  <p className="text-xs text-gray-500 mb-3">开启后可以为同一商品的不同规格创建不同的卡券</p>
-
-                  {editForm.is_multi_spec && (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">规格名称</label>
-                        <input
-                          type="text"
-                          value={editForm.spec_name || ''}
-                          onChange={(e) => setEditForm({ ...editForm, spec_name: e.target.value })}
-                          className="w-full ios-input px-4 py-3 rounded-xl"
-                          placeholder="例如：套餐类型、颜色、尺寸"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">规格值</label>
-                        <input
-                          type="text"
-                          value={editForm.spec_value || ''}
-                          onChange={(e) => setEditForm({ ...editForm, spec_value: e.target.value })}
-                          className="w-full ios-input px-4 py-3 rounded-xl"
-                          placeholder="例如：30天、红色、XL"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
                 {/* 启用状态 */}
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+                <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                   <span className="font-bold text-gray-900">启用状态</span>
                   <button
                     type="button"
                     onClick={() => setEditForm({ ...editForm, enabled: !editForm.enabled })}
-                    className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${
+                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
                       editForm.enabled ? 'bg-[#FFE815]' : 'bg-gray-300'
                     }`}
                   >
                     <span
-                      className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 block ${
-                        editForm.enabled ? 'translate-x-7' : 'translate-x-1'
+                      className={`absolute left-1 top-1 block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                        editForm.enabled ? 'translate-x-5' : ''
                       }`}
                     />
                   </button>
@@ -575,16 +567,18 @@ const CardList: React.FC = () => {
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowEditModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                 >
                   取消
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveEdit}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                 >
                   <Save className="w-4 h-4" />
                   保存更改
@@ -598,19 +592,25 @@ const CardList: React.FC = () => {
 
       {/* 添加新卡密弹窗 - 使用 Portal */}
       {showAddModal && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container">
             <div className="modal-header">
-              <h3 className="text-2xl font-extrabold text-gray-900">添加新卡密</h3>
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="p-2 rounded-xl hover:bg-gray-100 transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-500" />
-              </button>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">添加卡密</h3>
+                  <p className="mt-1 text-xs text-gray-500">创建可复用的自动发货内容或库存来源。</p>
+                </div>
+                <button
+                  onClick={() => setShowAddModal(false)}
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭添加卡密"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto -mr-2 pr-2">
+            <div className="modal-body">
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">卡密名称</label>
@@ -619,7 +619,7 @@ const CardList: React.FC = () => {
                     value={addForm.name}
                     onChange={(e) => setAddForm({ ...addForm, name: e.target.value })}
                     placeholder="例如：VIP会员卡密"
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   />
                 </div>
 
@@ -629,7 +629,7 @@ const CardList: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setAddForm({ ...addForm, type: 'text' })}
-                      className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'text' ? 'bg-[#FFE815] text-black' : 'bg-gray-100 text-gray-600'}`}
+                      className={`rounded-md border p-3 text-sm font-bold transition-colors ${addForm.type === 'text' ? 'border-amber-400 bg-[#FFE815] text-black' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
                     >
                       <FileText className="w-5 h-5 mx-auto mb-1" />
                       文本
@@ -637,7 +637,7 @@ const CardList: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setAddForm({ ...addForm, type: 'data' })}
-                      className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'data' ? 'bg-[#FFE815] text-black' : 'bg-gray-100 text-gray-600'}`}
+                      className={`rounded-md border p-3 text-sm font-bold transition-colors ${addForm.type === 'data' ? 'border-amber-400 bg-[#FFE815] text-black' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
                     >
                       <Package className="w-5 h-5 mx-auto mb-1" />
                       批量
@@ -645,7 +645,7 @@ const CardList: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setAddForm({ ...addForm, type: 'image' })}
-                      className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'image' ? 'bg-[#FFE815] text-black' : 'bg-gray-100 text-gray-600'}`}
+                      className={`rounded-md border p-3 text-sm font-bold transition-colors ${addForm.type === 'image' ? 'border-amber-400 bg-[#FFE815] text-black' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
                     >
                       <ImageIcon className="w-5 h-5 mx-auto mb-1" />
                       图片
@@ -653,7 +653,7 @@ const CardList: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setAddForm({ ...addForm, type: 'api' })}
-                      className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'api' ? 'bg-[#FFE815] text-black' : 'bg-gray-100 text-gray-600'}`}
+                      className={`rounded-md border p-3 text-sm font-bold transition-colors ${addForm.type === 'api' ? 'border-amber-400 bg-[#FFE815] text-black' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
                     >
                       <Code className="w-5 h-5 mx-auto mb-1" />
                       API
@@ -677,13 +677,13 @@ const CardList: React.FC = () => {
                       value={addForm.content}
                       onChange={(e) => setAddForm({ ...addForm, content: e.target.value })}
                       placeholder="https://api.example.com/get-code"
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                     />
                   ) : (
                     <textarea
                       value={addForm.content}
                       onChange={(e) => setAddForm({ ...addForm, content: e.target.value })}
-                      className="w-full ios-input px-4 py-3 rounded-xl h-40 resize-none font-mono text-sm"
+                      className="ios-input h-36 w-full resize-y rounded-md px-3 py-2.5 font-mono text-sm"
                       placeholder={
                         addForm.type === 'text'
                           ? '请输入自动发送的固定文字'
@@ -706,7 +706,7 @@ const CardList: React.FC = () => {
                     value={addForm.description}
                     onChange={(e) => setAddForm({ ...addForm, description: e.target.value })}
                     placeholder="卡密用途描述"
-                    className="w-full ios-input px-4 py-3 rounded-xl h-20 resize-none"
+                    className="ios-input h-20 w-full resize-y rounded-md px-3 py-2.5"
                   />
                 </div>
 
@@ -716,7 +716,7 @@ const CardList: React.FC = () => {
                     type="number"
                     value={addForm.delay_seconds}
                     onChange={(e) => setAddForm({ ...addForm, delay_seconds: parseInt(e.target.value) || 0 })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                     min="0"
                     placeholder="0"
                   />
@@ -725,16 +725,18 @@ const CardList: React.FC = () => {
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                 >
                   取消
                 </button>
                 <button
+                  type="button"
                   onClick={handleAddCard}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                 >
                   <Plus className="w-4 h-4" />
                   添加卡密

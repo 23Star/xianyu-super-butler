@@ -11,6 +11,7 @@ import {
   updatePersonalBlacklist,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
+import { EmptyState, SectionHeader } from './ui';
 
 interface DeliveryProtectionProps {
   accounts?: AccountDetail[];
@@ -152,14 +153,15 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div className="w-full sm:max-w-sm">
-          <label className="mb-2 block text-sm font-bold text-gray-700">应用账号</label>
+    <div className="space-y-4">
+      <div className="toolbar">
+        <div className="toolbar__group w-full sm:w-auto">
+          <label htmlFor="protection-account" className="text-xs font-bold text-gray-600">应用账号</label>
           <select
+            id="protection-account"
             value={selectedAccount}
             onChange={(event) => onSelectedAccountChange?.(event.target.value)}
-            className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium focus:border-yellow-400 focus:outline-none"
+            className="ios-input w-full rounded-md px-3 py-2.5 text-sm sm:min-w-72"
           >
             <option value="">请选择账号</option>
             {accounts.map((account) => (
@@ -173,7 +175,7 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
           type="button"
           onClick={() => void loadData()}
           disabled={!selectedAccount || loading}
-          className="flex items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+          className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           刷新
@@ -181,17 +183,16 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
       </div>
 
       {!selectedAccount ? (
-        <div className="border-2 border-dashed border-gray-200 py-16 text-center text-sm text-gray-500">
-          选择账号后配置发货保护
-        </div>
+        <EmptyState title="请选择闲鱼账号" description="选择账号后可管理发货拦截规则和买家黑名单。" icon={ShieldAlert} />
       ) : (
         <>
-          <section>
-            <div className="mb-3 flex items-center gap-2">
-              <ShieldAlert className="h-5 w-5 text-amber-600" />
-              <h3 className="text-base font-bold text-gray-900">拦截规则</h3>
-            </div>
-            <div className="divide-y divide-gray-100 border-y border-gray-200">
+          <section className="section-panel">
+            <SectionHeader
+              title="发货拦截规则"
+              description="规则按优先级判定，可对指定商品设置排除项。"
+              icon={ShieldAlert}
+            />
+            <div className="divide-y divide-gray-100 px-4">
               {rules.map((rule) => (
                 <div key={rule.rule_code} className="grid gap-4 py-5 xl:grid-cols-[minmax(230px,1fr)_minmax(360px,1.5fr)_44px] xl:items-start">
                   <div>
@@ -201,7 +202,7 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                         role="switch"
                         aria-checked={rule.enabled}
                         onClick={() => patchRule(rule.rule_code, { enabled: !rule.enabled })}
-                        className={`relative h-6 w-11 rounded-full transition-colors ${rule.enabled ? 'bg-amber-500' : 'bg-gray-300'}`}
+                        className={`relative h-6 w-11 rounded-full transition-colors ${rule.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'}`}
                       >
                         <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${rule.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
                       </button>
@@ -375,7 +376,7 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                             onChange={(event) => patchRule(rule.rule_code, {
                               config: { ...rule.config, min_count: Math.max(1, Number(event.target.value) || 1) },
                             })}
-                            className="mt-1 w-full rounded-md border border-gray-200 px-2 py-2 text-sm"
+                            className="ios-input mt-1 w-full rounded-md px-3 py-2 text-sm"
                           />
                         </label>
                         <label className="flex items-center gap-2 self-end pb-2 text-xs font-bold text-gray-600">
@@ -397,7 +398,7 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                     onClick={() => void saveRule(rule)}
                     disabled={savingRule === rule.rule_code}
                     title="保存规则"
-                    className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-50"
+                    className="ios-btn-primary flex h-10 w-10 items-center justify-center rounded-md p-0 disabled:opacity-50"
                   >
                     {savingRule === rule.rule_code
                       ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -405,15 +406,19 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                   </button>
                 </div>
               ))}
+              {!loading && rules.length === 0 && (
+                <EmptyState compact title="暂无发货拦截规则" description="当前账号没有可配置的拦截规则。" icon={ShieldAlert} />
+              )}
             </div>
           </section>
 
-          <section className="pt-2">
-            <div className="mb-3 flex items-center gap-2">
-              <UserRoundX className="h-5 w-5 text-red-600" />
-              <h3 className="text-base font-bold text-gray-900">买家黑名单</h3>
-            </div>
-            <div className="grid gap-2 border-y border-gray-200 py-4 md:grid-cols-2 xl:grid-cols-6">
+          <section className="section-panel">
+            <SectionHeader
+              title="买家黑名单"
+              description="支持商品级、账号级和全部账号三种生效范围。"
+              icon={UserRoundX}
+            />
+            <div className="grid gap-2 border-b border-gray-200 bg-gray-50/60 p-4 md:grid-cols-2 xl:grid-cols-6">
               <select
                 value={form.scope}
                 onChange={(event) => setForm({
@@ -421,7 +426,7 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                   scope: event.target.value as BlacklistScope,
                   item_id: '',
                 })}
-                className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
+                className="ios-input rounded-md px-3 py-2 text-sm"
               >
                 <option value="item">当前商品</option>
                 <option value="account">当前账号</option>
@@ -431,19 +436,19 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                 value={form.buyer_id}
                 onChange={(event) => setForm({ ...form, buyer_id: event.target.value })}
                 placeholder="买家 ID *"
-                className="rounded-md border border-gray-200 px-3 py-2 text-sm"
+                className="ios-input rounded-md px-3 py-2 text-sm"
               />
               <input
                 value={form.buyer_nick}
                 onChange={(event) => setForm({ ...form, buyer_nick: event.target.value })}
                 placeholder="买家昵称"
-                className="rounded-md border border-gray-200 px-3 py-2 text-sm"
+                className="ios-input rounded-md px-3 py-2 text-sm"
               />
               {form.scope === 'item' ? (
                 <select
                   value={form.item_id}
                   onChange={(event) => setForm({ ...form, item_id: event.target.value })}
-                  className="rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
+                  className="ios-input rounded-md px-3 py-2 text-sm"
                 >
                   <option value="">选择商品 *</option>
                   {accountItems.map((item) => (
@@ -461,17 +466,17 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                 value={form.reason}
                 onChange={(event) => setForm({ ...form, reason: event.target.value })}
                 placeholder="拉黑原因"
-                className="rounded-md border border-gray-200 px-3 py-2 text-sm"
+                className="ios-input rounded-md px-3 py-2 text-sm"
               />
               <button
                 type="button"
                 onClick={() => void addBlacklist()}
-                className="rounded-md bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700"
+                className="ios-btn-danger rounded-md px-4 py-2 text-sm"
               >
                 加入黑名单
               </button>
             </div>
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-gray-100 px-4">
               {blacklist.map((entry) => (
                 <div key={entry.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center">
                   <button
@@ -499,14 +504,14 @@ const DeliveryProtection: React.FC<DeliveryProtectionProps> = ({
                     type="button"
                     onClick={() => void removeBlacklist(entry)}
                     title="移除黑名单"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100"
+                    className="ios-btn-danger flex h-9 w-9 items-center justify-center rounded-md p-0"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
               ))}
               {blacklist.length === 0 && (
-                <p className="py-8 text-center text-sm text-gray-500">暂无适用于当前账号的黑名单记录</p>
+                <EmptyState compact title="暂无买家黑名单" description="当前账号没有适用的黑名单记录。" icon={UserRoundX} />
               )}
             </div>
           </section>

@@ -37,6 +37,7 @@ import {
   updateNotificationChannel,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
+import { EmptyState, PageHeader, PageTabs, SectionHeader } from './ui';
 
 type PageTab = 'channels' | 'bindings' | 'risk' | 'system';
 
@@ -353,61 +354,49 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   ];
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">通知与日志</h2>
-          <p className="mt-1 text-sm text-gray-500">集中管理外部通知、账号绑定和运行异常记录</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void loadBaseData()}
-          disabled={loadingBase}
-          className="flex items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loadingBase ? 'animate-spin' : ''}`} />
-          刷新配置
-        </button>
-      </div>
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="通知与日志"
+        description="统一管理外部通知渠道、账号绑定、风控事件和系统运行日志。"
+        icon={BellRing}
+        actions={(
+          <button
+            type="button"
+            onClick={() => void loadBaseData()}
+            disabled={loadingBase}
+            className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loadingBase ? 'animate-spin' : ''}`} />
+            刷新配置
+          </button>
+        )}
+      />
 
-      <div className="flex gap-1 overflow-x-auto border-b border-gray-200">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-bold ${
-                activeTab === tab.id
-                  ? 'border-yellow-400 text-gray-950'
-                  : 'border-transparent text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      <PageTabs
+        value={activeTab}
+        onChange={setActiveTab}
+        items={tabs}
+        ariaLabel="通知与日志功能"
+      />
 
       {activeTab === 'channels' && (
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <h3 className="font-bold text-gray-900">通知渠道</h3>
-              <p className="mt-1 text-xs text-gray-500">密钥仅用于服务端发送通知，请避免在日志或截图中公开。</p>
-            </div>
-            <button
-              type="button"
-              onClick={openCreateEditor}
-              className="flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-gray-700"
-            >
-              <Plus className="h-4 w-4" />
-              新建渠道
-            </button>
-          </div>
-          <div className="divide-y divide-gray-100 border-y border-gray-200">
+        <section className="section-panel">
+          <SectionHeader
+            title="通知渠道"
+            description="密钥仅用于服务端发送通知，请避免在日志或截图中公开。"
+            icon={BellRing}
+            actions={(
+              <button
+                type="button"
+                onClick={openCreateEditor}
+                className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm"
+              >
+                <Plus className="h-4 w-4" />
+                新建渠道
+              </button>
+            )}
+          />
+          <div className="divide-y divide-gray-100 px-4">
             {channels.map((channel) => (
               <div key={channel.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center">
                 <button
@@ -415,7 +404,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                   role="switch"
                   aria-checked={channel.enabled}
                   onClick={() => void toggleChannel(channel)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${channel.enabled ? 'bg-amber-500' : 'bg-gray-300'}`}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${channel.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'}`}
                   title={channel.enabled ? '停用渠道' : '启用渠道'}
                 >
                   <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${channel.enabled ? 'translate-x-5' : ''}`} />
@@ -437,7 +426,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                     type="button"
                     onClick={() => openEditEditor(channel)}
                     title="编辑渠道"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    className="flex h-9 w-9 items-center justify-center rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
                   >
                     <Edit3 className="h-4 w-4" />
                   </button>
@@ -445,7 +434,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                     type="button"
                     onClick={() => void removeChannel(channel)}
                     title="删除渠道"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100"
+                    className="flex h-9 w-9 items-center justify-center rounded-md bg-red-50 text-red-600 hover:bg-red-100"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -453,19 +442,24 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               </div>
             ))}
             {!loadingBase && channels.length === 0 && (
-              <p className="py-12 text-center text-sm text-gray-500">暂无通知渠道</p>
+              <EmptyState compact title="暂无通知渠道" description="新建渠道后可绑定到指定闲鱼账号。" icon={BellRing} />
             )}
           </div>
         </section>
       )}
 
       {activeTab === 'bindings' && (
-        <section>
-          <div className="grid gap-3 border-y border-gray-200 py-4 md:grid-cols-[1fr_1fr_auto]">
+        <section className="section-panel">
+          <SectionHeader
+            title="账号通知绑定"
+            description="将闲鱼账号的订单、风控和运行事件发送到指定通知渠道。"
+            icon={Link2}
+          />
+          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 md:grid-cols-[1fr_1fr_auto]">
             <select
               value={bindingAccount}
               onChange={(event) => setBindingAccount(event.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             >
               <option value="">选择账号</option>
               {accounts.map((account) => (
@@ -475,7 +469,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
             <select
               value={bindingChannel}
               onChange={(event) => setBindingChannel(event.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             >
               <option value="">选择已启用渠道</option>
               {channels.filter((channel) => channel.enabled).map((channel) => (
@@ -486,13 +480,13 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               type="button"
               onClick={() => void addBinding()}
               disabled={savingBinding}
-              className="flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+              className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
             >
               {savingBinding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
               添加绑定
             </button>
           </div>
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-100 px-4">
             {bindings.map((binding) => {
               const account = accounts.find((item) => item.id === binding.cookie_id);
               return (
@@ -502,7 +496,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                     role="switch"
                     aria-checked={binding.enabled}
                     onClick={() => void toggleBinding(binding)}
-                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${binding.enabled ? 'bg-amber-500' : 'bg-gray-300'}`}
+                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${binding.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'}`}
                   >
                     <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${binding.enabled ? 'translate-x-5' : ''}`} />
                   </button>
@@ -516,7 +510,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                     type="button"
                     onClick={() => void removeBinding(binding)}
                     title="解除绑定"
-                    className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100"
+                    className="flex h-9 w-9 items-center justify-center rounded-md bg-red-50 text-red-600 hover:bg-red-100"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -524,22 +518,28 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               );
             })}
             {!loadingBase && bindings.length === 0 && (
-              <p className="py-12 text-center text-sm text-gray-500">暂无账号通知绑定</p>
+              <EmptyState compact title="暂无账号通知绑定" description="先创建并启用通知渠道，再将账号绑定到渠道。" icon={Link2} />
             )}
           </div>
         </section>
       )}
 
       {activeTab === 'risk' && (
-        <section>
-          <div className="flex flex-col gap-3 border-y border-gray-200 py-4 sm:flex-row">
+        <section className="section-panel">
+          <SectionHeader
+            title="发货风控日志"
+            description="查看发货前拦截、关单、补偿和异常处理结果。"
+            icon={ShieldAlert}
+          />
+          <div className="toolbar rounded-none border-x-0 border-t-0 shadow-none">
+            <div className="toolbar__group">
             <select
               value={riskAccount}
               onChange={(event) => {
                 setRiskAccount(event.target.value);
                 setRiskPage(0);
               }}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium sm:min-w-56"
+              className="ios-input rounded-md px-3 py-2.5 text-sm sm:min-w-56"
             >
               <option value="">全部账号</option>
               {accounts.map((account) => (
@@ -552,7 +552,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                 setRiskStatus(event.target.value);
                 setRiskPage(0);
               }}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium sm:min-w-40"
+              className="ios-input rounded-md px-3 py-2.5 text-sm sm:min-w-40"
             >
               <option value="">全部状态</option>
               <option value="processing">处理中</option>
@@ -563,13 +563,14 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               type="button"
               onClick={() => void loadRiskLogs()}
               disabled={riskLoading}
-              className="flex items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-bold text-gray-700"
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
             >
               <RefreshCw className={`h-4 w-4 ${riskLoading ? 'animate-spin' : ''}`} />
               刷新
             </button>
+            </div>
           </div>
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-gray-100 px-4">
             {riskLogs.map((log) => (
               <div key={log.id} className="grid gap-3 py-4 lg:grid-cols-[180px_120px_minmax(0,1fr)_44px] lg:items-start">
                 <div>
@@ -601,17 +602,17 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                   type="button"
                   onClick={() => void removeRiskLog(log)}
                   title="删除日志"
-                  className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-50 text-red-600 hover:bg-red-100"
+                  className="flex h-9 w-9 items-center justify-center rounded-md bg-red-50 text-red-600 hover:bg-red-100"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
             ))}
             {!riskLoading && riskLogs.length === 0 && (
-              <p className="py-12 text-center text-sm text-gray-500">没有符合条件的风控日志</p>
+              <EmptyState compact title="没有符合条件的风控日志" description="调整账号或状态筛选条件后重新查询。" icon={ShieldAlert} />
             )}
           </div>
-          <div className="flex items-center justify-between border-t border-gray-200 pt-4">
+          <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3">
             <p className="text-xs text-gray-500">共 {riskTotal} 条</p>
             <div className="flex items-center gap-2">
               <button
@@ -619,7 +620,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                 onClick={() => setRiskPage((page) => Math.max(0, page - 1))}
                 disabled={riskPage === 0}
                 title="上一页"
-                className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100 disabled:opacity-40"
+                className="flex h-9 w-9 items-center justify-center rounded-md bg-gray-100 disabled:opacity-40"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
@@ -629,7 +630,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                 onClick={() => setRiskPage((page) => Math.min(riskPageCount - 1, page + 1))}
                 disabled={riskPage + 1 >= riskPageCount}
                 title="下一页"
-                className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-100 disabled:opacity-40"
+                className="flex h-9 w-9 items-center justify-center rounded-md bg-gray-100 disabled:opacity-40"
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
@@ -639,12 +640,17 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       )}
 
       {activeTab === 'system' && isAdmin && (
-        <section>
-          <div className="grid gap-3 border-y border-gray-200 py-4 sm:grid-cols-[160px_1fr_auto]">
+        <section className="section-panel">
+          <SectionHeader
+            title="系统运行日志"
+            description="最多读取最近 300 行，可按级别和来源快速定位运行异常。"
+            icon={Activity}
+          />
+          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-[160px_1fr_auto]">
             <select
               value={systemLevel}
               onChange={(event) => setSystemLevel(event.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             >
               <option value="">全部级别</option>
               <option value="DEBUG">DEBUG</option>
@@ -656,19 +662,19 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               value={systemSource}
               onChange={(event) => setSystemSource(event.target.value)}
               placeholder="按日志来源筛选"
-              className="rounded-lg border border-gray-200 px-3 py-2.5 text-sm"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             />
             <button
               type="button"
               onClick={() => void loadSystemLogs()}
               disabled={systemLoading}
-              className="flex items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-bold text-gray-700"
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
             >
               <RefreshCw className={`h-4 w-4 ${systemLoading ? 'animate-spin' : ''}`} />
               查询
             </button>
           </div>
-          <div className="divide-y divide-gray-100 font-mono text-xs">
+          <div className="max-h-[620px] divide-y divide-gray-100 overflow-y-auto px-4 font-mono text-xs">
             {[...systemLogs].reverse().map((log, index) => (
               <div key={`${log.timestamp}-${index}`} className="grid gap-2 py-3 lg:grid-cols-[165px_80px_180px_minmax(0,1fr)]">
                 <span className="text-gray-500">{formatTime(log.timestamp)}</span>
@@ -680,34 +686,37 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               </div>
             ))}
             {!systemLoading && systemLogs.length === 0 && (
-              <p className="py-12 text-center font-sans text-sm text-gray-500">暂无系统日志</p>
+              <EmptyState compact title="暂无系统日志" description="当前筛选条件没有返回运行记录。" icon={Activity} />
             )}
           </div>
         </section>
       )}
 
       {editorOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
-              <h3 className="font-bold text-gray-900">{editingChannel ? '编辑通知渠道' : '新建通知渠道'}</h3>
+        <div className="modal-overlay">
+          <div className="modal-container max-w-xl">
+            <div className="modal-header flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">{editingChannel ? '编辑通知渠道' : '新建通知渠道'}</h3>
+                <p className="mt-1 text-sm text-gray-500">配置服务端发送通知所需的连接信息。</p>
+              </div>
               <button
                 type="button"
                 onClick={() => setEditorOpen(false)}
                 title="关闭"
-                className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-gray-100"
+                className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-gray-100"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-4 p-5">
+            <div className="modal-body space-y-4">
               <label className="block text-sm font-bold text-gray-700">
                 渠道名称
                 <input
                   value={channelName}
                   onChange={(event) => setChannelName(event.target.value)}
                   placeholder="例如：订单告警群"
-                  className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2.5 font-normal"
+                  className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal"
                 />
               </label>
               <label className="block text-sm font-bold text-gray-700">
@@ -716,7 +725,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                   value={channelType}
                   disabled={Boolean(editingChannel)}
                   onChange={(event) => changeChannelType(event.target.value as NotificationChannelType)}
-                  className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal disabled:bg-gray-100"
+                  className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal disabled:bg-gray-100"
                 >
                   {Object.entries(CHANNEL_DEFINITIONS).map(([type, definition]) => (
                     <option key={type} value={type}>{definition.label}</option>
@@ -732,13 +741,13 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                       onChange={(event) => setChannelConfig({ ...channelConfig, [field.key]: event.target.value })}
                       placeholder={field.placeholder}
                       rows={4}
-                      className="mt-2 w-full resize-y rounded-lg border border-gray-200 px-3 py-2.5 font-mono text-sm font-normal"
+                      className="ios-input mt-2 w-full resize-y rounded-md px-3 py-2.5 font-mono text-sm font-normal"
                     />
                   ) : field.type === 'select' ? (
                     <select
                       value={String(channelConfig[field.key] ?? '')}
                       onChange={(event) => setChannelConfig({ ...channelConfig, [field.key]: event.target.value })}
-                      className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 font-normal"
+                      className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal"
                     >
                       {field.options?.map((option) => <option key={option}>{option}</option>)}
                     </select>
@@ -751,17 +760,17 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                         [field.key]: field.type === 'number' ? Number(event.target.value) : event.target.value,
                       })}
                       placeholder={field.placeholder}
-                      className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2.5 font-normal"
+                      className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal"
                     />
                   )}
                 </label>
               ))}
             </div>
-            <div className="flex justify-end gap-3 border-t border-gray-200 px-5 py-4">
+            <div className="modal-footer flex justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setEditorOpen(false)}
-                className="rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-bold text-gray-700"
+                className="ios-btn-secondary rounded-md px-4 py-2.5 text-sm"
               >
                 取消
               </button>
@@ -769,7 +778,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                 type="button"
                 onClick={() => void saveChannel()}
                 disabled={savingChannel}
-                className="flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
               >
                 {savingChannel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 保存

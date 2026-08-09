@@ -23,6 +23,7 @@ import sys
 import aiohttp
 from collections import defaultdict
 from app.db_manager import db_manager
+from app.specification import combine_legacy_specification
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
@@ -1627,13 +1628,52 @@ class XianyuLive:
                     else:
                         logger.info(f"无订单ID，发送单个卡券")
 
-                    # 多次调用自动发货方法，每次获取不同的内容
+                    # 先解析一次商品规格与库存绑定，再按订单数量和每件发货份数取内容。
                     delivery_contents = []
+                    delivery_context = {}
 
-                    for i in range(quantity_to_send):
+                    try:
+                        first_content = await self._auto_delivery(
+                            item_id,
+                            item_title,
+                            order_id,
+                            send_user_id,
+                            order_detail=order_detail,
+                            delivery_context=delivery_context,
+                            requested_item_quantity=quantity_to_send,
+                        )
+                    except Exception as e:
+                        logger.error(f"第 1 个卡券获取异常: {self._safe_str(e)}")
+                        first_content = None
+
+                    if first_content:
+                        per_item_delivery_count = max(
+                            1,
+                            int(delivery_context.get("delivery_count") or 1),
+                        )
+                        quantity_to_send *= per_item_delivery_count
+                        delivery_contents.append(first_content)
+                        logger.info(
+                            f"自动发货数量已确定: 订单商品数量系数="
+                            f"{max(1, quantity_to_send // per_item_delivery_count)}, "
+                            f"每件发货={per_item_delivery_count}，合计={quantity_to_send}"
+                        )
+                    else:
+                        logger.warning("第 1 个卡券内容获取失败，停止本次自动发货")
+
+                    for i in range(1, quantity_to_send):
+                        if not delivery_contents:
+                            break
                         try:
                             # 每次调用都可能获取不同的内容（API卡券、批量数据等）
-                            delivery_content = await self._auto_delivery(item_id, item_title, order_id, send_user_id)
+                            delivery_content = await self._auto_delivery(
+                                item_id,
+                                item_title,
+                                order_id,
+                                send_user_id,
+                                order_detail=order_detail,
+                                delivery_context=delivery_context,
+                            )
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
                                 if quantity_to_send > 1:
@@ -5268,8 +5308,18 @@ class XianyuLive:
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
-    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
-        """匹配并取得发货内容；消息发送和确认发货由调用方在成功判定后执行。"""
+    async def _auto_delivery(
+        self,
+        item_id: str,
+        item_title: str = None,
+        order_id: str = None,
+        send_user_id: str = None,
+        *,
+        order_detail: dict = None,
+        delivery_context: dict = None,
+        requested_item_quantity: int = 1,
+    ):
+        """匹配并取得发货内容；批量库存会在首次调用时按整单需求原子扣减。"""
         try:
             from app.db_manager import db_manager
 
@@ -5339,65 +5389,166 @@ class XianyuLive:
 
             logger.info(f"使用搜索文本匹配发货规则: {search_text[:100]}...")
 
-            # 检查商品是否为多规格商品
-            is_multi_spec = db_manager.get_item_multi_spec_status(self.cookie_id, item_id)
             spec_name = None
             spec_value = None
+            spec_text = ""
+            spec_payload = {}
+            platform_sku_id = ""
+            rule = delivery_context.get("resolved_rule") if delivery_context else None
 
-            # 如果是多规格商品且有订单ID，获取规格信息
-            if is_multi_spec and order_id:
-                logger.info(f"检测到多规格商品，获取订单规格信息: {order_id}")
-                try:
-                    order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
-                    # 确保order_detail是字典类型
-                    if order_detail and isinstance(order_detail, dict):
-                        spec_name = order_detail.get('spec_name', '')
-                        spec_value = order_detail.get('spec_value', '')
-                        if spec_name and spec_value:
-                            logger.info(f"获取到规格信息: {spec_name} = {spec_value}")
-                        else:
-                            logger.warning(f"未能获取到规格信息，将跳过自动发货")
-                            return None
-                    else:
-                        logger.warning(f"获取订单详情失败（返回类型: {type(order_detail).__name__}），将跳过自动发货")
-                        return None
-                except Exception as e:
-                    logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
-                    return None
-
-            if is_multi_spec and not (spec_name and spec_value):
-                logger.warning("❌ 多规格商品但无规格信息，跳过自动发货")
-                return None
-
-            delivery_rules = db_manager.get_delivery_rules_for_item(
-                search_text,
-                self.cookie_id,
-                item_id,
-                spec_name=spec_name if is_multi_spec else None,
-                spec_value=spec_value if is_multi_spec else None,
-            )
-            if delivery_rules:
-                scope_names = {0: "指定商品", 1: "账号关键词", 2: "全局关键词"}
-                logger.info(
-                    f"✅ 找到 {len(delivery_rules)} 个{scope_names.get(delivery_rules[0].get('scope_rank'), '有效')}发货规则"
-                )
+            if rule:
+                spec_name = delivery_context.get("spec_name")
+                spec_value = delivery_context.get("spec_value")
+                spec_text = delivery_context.get("spec_text") or ""
+                spec_payload = delivery_context.get("spec_payload") or {}
+                platform_sku_id = delivery_context.get("platform_sku_id") or ""
             else:
-                logger.warning(f"❌ 商品未找到匹配的发货规则，跳过自动发货: {item_id}")
-                return None
+                delivery_config = db_manager.get_item_delivery_config(
+                    self.cookie_id,
+                    item_id,
+                )
+                if delivery_config:
+                    if delivery_config.get("is_multi_spec"):
+                        logger.info(f"检测到新版多规格商品配置，解析订单规格: {order_id}")
+                        try:
+                            if order_detail is None and order_id:
+                                order_detail = await self.fetch_order_detail_info(
+                                    order_id,
+                                    item_id,
+                                    send_user_id,
+                                )
+                        except Exception as e:
+                            logger.error(
+                                f"获取订单规格信息失败: {self._safe_str(e)}，"
+                                "为避免错发已停止自动发货"
+                            )
+                            return None
 
-            # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
-            if len(delivery_rules) > 1:
-                rule_names = [f"{r['card_name']}({r.get('spec_name', '')}:{r.get('spec_value', '')})" if r.get('is_multi_spec') else r['card_name'] for r in delivery_rules]
-                logger.warning(f"❌ 匹配到多个发货规则({len(delivery_rules)}个)，无法确定使用哪个，跳过自动发货: {', '.join(rule_names)}")
-                return None
+                        if isinstance(order_detail, dict):
+                            sku_info = order_detail.get("sku_info") or {}
+                            spec_payload = (
+                                order_detail.get("spec_payload")
+                                or sku_info.get("spec_payload")
+                                or {}
+                            )
+                            spec_text = (
+                                order_detail.get("spec_text")
+                                or sku_info.get("spec_text")
+                                or combine_legacy_specification(
+                                    order_detail.get("spec_name"),
+                                    order_detail.get("spec_value"),
+                                )
+                            )
+                            platform_sku_id = str(
+                                order_detail.get("platform_sku_id")
+                                or sku_info.get("platform_sku_id")
+                                or ""
+                            ).strip()
+                            spec_name = order_detail.get("spec_name") or sku_info.get("spec_name")
+                            spec_value = order_detail.get("spec_value") or sku_info.get("spec_value")
 
-            if not delivery_rules:
-                logger.warning(f"未找到匹配的发货规则: {search_text[:50]}...")
-                return None
+                    rule = db_manager.resolve_item_delivery_binding(
+                        self.cookie_id,
+                        item_id,
+                        spec_text=spec_text,
+                        spec_payload=spec_payload,
+                        platform_sku_id=platform_sku_id,
+                    )
+                    if not rule.get("matched"):
+                        reason_messages = {
+                            "config_disabled": "商品自动发货已暂停",
+                            "missing_specification": "订单未获取到规格",
+                            "unknown_specification": "订单规格未绑定库存",
+                            "conflicting_specification": "规格配置冲突",
+                            "variant_disabled": "对应商品规格已停用",
+                            "binding_disabled": "对应规格的发货绑定已停用",
+                            "card_disabled": "对应规格绑定的卡密已停用",
+                        }
+                        reason = rule.get("reason") or "unknown"
+                        logger.warning(
+                            f"❌ 新版商品发货配置未通过: 商品={item_id}, "
+                            f"原因={reason_messages.get(reason, reason)}, "
+                            f"规格={spec_text or spec_payload or '空'}。"
+                            "不会回退到普通卡密。"
+                        )
+                        return None
+                    logger.info(
+                        f"✅ 精确匹配商品规格库存: "
+                        f"{rule.get('variant_name')} -> {rule.get('card_name')}"
+                    )
+                else:
+                    # 仅未迁移的商品兼容旧发货规则；存在新版配置时禁止回退。
+                    is_multi_spec = db_manager.get_item_multi_spec_status(
+                        self.cookie_id,
+                        item_id,
+                    )
+                    if is_multi_spec and order_id:
+                        logger.info(f"检测到旧版多规格商品，获取订单规格信息: {order_id}")
+                        try:
+                            if order_detail is None:
+                                order_detail = await self.fetch_order_detail_info(
+                                    order_id,
+                                    item_id,
+                                    send_user_id,
+                                )
+                            if order_detail and isinstance(order_detail, dict):
+                                spec_name = order_detail.get("spec_name", "")
+                                spec_value = order_detail.get("spec_value", "")
+                            else:
+                                logger.warning("旧版多规格订单详情获取失败，停止自动发货")
+                                return None
+                        except Exception as e:
+                            logger.error(
+                                f"获取旧版订单规格失败: {self._safe_str(e)}，停止自动发货"
+                            )
+                            return None
 
-            # 使用唯一匹配的规则
-            rule = delivery_rules[0]
-            logger.info(f"✅ 唯一匹配发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
+                    if is_multi_spec and not (spec_name and spec_value):
+                        logger.warning("❌ 旧版多规格商品无规格信息，跳过自动发货")
+                        return None
+
+                    delivery_rules = db_manager.get_delivery_rules_for_item(
+                        search_text,
+                        self.cookie_id,
+                        item_id,
+                        spec_name=spec_name if is_multi_spec else None,
+                        spec_value=spec_value if is_multi_spec else None,
+                    )
+                    if not delivery_rules:
+                        logger.warning(f"❌ 商品未找到匹配的发货规则，跳过自动发货: {item_id}")
+                        return None
+                    if len(delivery_rules) > 1:
+                        rule_names = [
+                            (
+                                f"{candidate['card_name']}"
+                                f"({candidate.get('spec_name', '')}:"
+                                f"{candidate.get('spec_value', '')})"
+                            )
+                            if candidate.get("is_multi_spec")
+                            else candidate["card_name"]
+                            for candidate in delivery_rules
+                        ]
+                        logger.warning(
+                            f"❌ 匹配到多个旧版发货规则({len(delivery_rules)}个)，"
+                            f"无法确定使用哪个: {', '.join(rule_names)}"
+                        )
+                        return None
+                    rule = delivery_rules[0]
+                    logger.info(
+                        f"✅ 唯一匹配旧版发货规则: "
+                        f"{rule['keyword']} -> {rule['card_name']} ({rule['card_type']})"
+                    )
+
+                if delivery_context is not None:
+                    delivery_context.update({
+                        "resolved_rule": rule,
+                        "delivery_count": max(1, int(rule.get("delivery_count") or 1)),
+                        "spec_name": spec_name,
+                        "spec_value": spec_value,
+                        "spec_text": spec_text,
+                        "spec_payload": spec_payload,
+                        "platform_sku_id": platform_sku_id,
+                    })
 
             # 保存商品信息到数据库（需要有商品标题才保存）
             # 尝试获取商品标题
@@ -5491,8 +5642,40 @@ class XianyuLive:
                     delivery_content = rule['text_content']
 
                 elif rule['card_type'] == 'data':
-                    # 批量数据类型：获取并消费第一条数据
-                    delivery_content = db_manager.consume_batch_data(rule['card_id'])
+                    # 首次调用按“订单数量 * 每件发货数”一次性扣减，后续只读取内存队列。
+                    if delivery_context is not None:
+                        batch_queue = delivery_context.get("batch_data_queue")
+                        if batch_queue is None:
+                            try:
+                                item_quantity = max(1, int(requested_item_quantity or 1))
+                            except (TypeError, ValueError):
+                                item_quantity = 1
+                            delivery_count = max(
+                                1,
+                                int(delivery_context.get("delivery_count") or 1),
+                            )
+                            required_count = item_quantity * delivery_count
+                            batch_queue = db_manager.consume_batch_data_batch(
+                                rule['card_id'],
+                                required_count,
+                            )
+                            if not batch_queue:
+                                logger.warning(
+                                    f"批量库存不足，整单未扣减: 卡券ID={rule['card_id']}, "
+                                    f"需要={required_count}条"
+                                )
+                                return None
+                            delivery_context["batch_data_queue"] = batch_queue
+                            delivery_context["batch_data_required_count"] = required_count
+
+                        if not batch_queue:
+                            logger.error(
+                                f"批量库存内存队列已耗尽: 卡券ID={rule['card_id']}"
+                            )
+                            return None
+                        delivery_content = batch_queue.pop(0)
+                    else:
+                        delivery_content = db_manager.consume_batch_data(rule['card_id'])
 
                 elif rule['card_type'] == 'image':
                     # 图片类型：返回图片发送标记，包含卡券ID
@@ -5508,8 +5691,13 @@ class XianyuLive:
                     # 处理备注信息和变量替换
                     final_content = self._process_delivery_content_with_description(delivery_content, rule.get('card_description', ''))
 
-                    # 增加发货次数统计
-                    db_manager.increment_delivery_times(rule['id'])
+                    # 增加对应规则或商品规格绑定的发货次数统计。
+                    if rule.get("rule_kind") == "variant_binding":
+                        db_manager.increment_variant_binding_delivery_times(
+                            rule["variant_binding_id"]
+                        )
+                    else:
+                        db_manager.increment_delivery_times(rule['id'])
                     logger.info(f"自动发货成功: 规则ID={rule['id']}, 内容长度={len(final_content)}")
                     return final_content
                 else:

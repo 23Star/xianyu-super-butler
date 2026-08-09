@@ -12,6 +12,11 @@ import base64
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Dict, Optional, Any
 from loguru import logger
+from app.specification import (
+    DEFAULT_SPEC_KEY,
+    canonicalize_specification,
+    specification_text,
+)
 
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
@@ -424,6 +429,70 @@ class DBManager:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
             )
+            ''')
+
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS item_delivery_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                enabled BOOLEAN DEFAULT TRUE,
+                is_multi_spec BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, cookie_id, item_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS product_variants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                platform_sku_id TEXT,
+                spec_payload_json TEXT NOT NULL DEFAULT '{}',
+                canonical_spec_key TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'manual',
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, cookie_id, item_id, canonical_spec_key),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_product_variants_sku
+            ON product_variants(user_id, cookie_id, item_id, platform_sku_id)
+            WHERE platform_sku_id IS NOT NULL AND platform_sku_id <> ''
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_product_variants_lookup
+            ON product_variants(cookie_id, item_id, canonical_spec_key, enabled)
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS variant_delivery_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                variant_id INTEGER NOT NULL UNIQUE,
+                card_id INTEGER NOT NULL,
+                delivery_count INTEGER NOT NULL DEFAULT 1,
+                delivery_times INTEGER NOT NULL DEFAULT 0,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE RESTRICT
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_variant_bindings_card
+            ON variant_delivery_bindings(user_id, card_id, enabled)
             ''')
 
             # 创建默认回复表
@@ -4449,8 +4518,18 @@ class DBManager:
                 self.conn.rollback()
                 raise
 
-    def consume_batch_data(self, card_id: int):
-        """消费批量数据的第一条记录（线程安全）"""
+    def consume_batch_data_batch(self, card_id: int, quantity: int):
+        """原子消费指定数量的批量数据；库存不足时不修改任何内容。"""
+        try:
+            requested_quantity = int(quantity)
+        except (TypeError, ValueError):
+            logger.warning(f"卡券 {card_id} 的批量数据消费数量无效: {quantity}")
+            return None
+
+        if requested_quantity < 1:
+            logger.warning(f"卡券 {card_id} 的批量数据消费数量必须大于 0: {requested_quantity}")
+            return None
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
@@ -4470,11 +4549,15 @@ class DBManager:
                     logger.warning(f"卡券 {card_id} 批量数据为空")
                     return None
 
-                # 获取第一条数据
-                first_line = lines[0]
+                if len(lines) < requested_quantity:
+                    logger.warning(
+                        f"卡券 {card_id} 批量数据不足: "
+                        f"需要={requested_quantity}条, 可用={len(lines)}条，未扣减库存"
+                    )
+                    return None
 
-                # 移除第一条数据，更新数据库
-                remaining_lines = lines[1:]
+                consumed_lines = lines[:requested_quantity]
+                remaining_lines = lines[requested_quantity:]
                 new_data_content = '\n'.join(remaining_lines)
 
                 cursor.execute('''
@@ -4485,13 +4568,21 @@ class DBManager:
 
                 self.conn.commit()
 
-                logger.info(f"消费批量数据成功: 卡券ID={card_id}, 剩余={len(remaining_lines)}条")
-                return first_line
+                logger.info(
+                    f"批量数据原子消费成功: 卡券ID={card_id}, "
+                    f"消费={requested_quantity}条, 剩余={len(remaining_lines)}条"
+                )
+                return consumed_lines
 
             except Exception as e:
-                logger.error(f"消费批量数据失败: {e}")
+                logger.error(f"批量数据原子消费失败: {e}")
                 self.conn.rollback()
                 return None
+
+    def consume_batch_data(self, card_id: int):
+        """消费批量数据的第一条记录（线程安全）。"""
+        consumed_lines = self.consume_batch_data_batch(card_id, 1)
+        return consumed_lines[0] if consumed_lines else None
 
     # ==================== 商品信息管理 ====================
 
@@ -4820,6 +4911,481 @@ class DBManager:
             logger.error(f"获取商品多数量发货状态失败: {e}")
             return False
 
+    # ==================== 商品变体发货配置 ====================
+
+    @staticmethod
+    def _card_stock_count(card_type: str, data_content: Optional[str]) -> Optional[int]:
+        if card_type != "data":
+            return None
+        return len([line for line in (data_content or "").splitlines() if line.strip()])
+
+    def get_item_delivery_config(
+        self,
+        cookie_id: str,
+        item_id: str,
+        user_id: int = None,
+    ) -> Optional[Dict[str, Any]]:
+        """获取商品的变体发货配置和每个变体的库存绑定。"""
+        with self.lock:
+            cursor = self.conn.cursor()
+            sql = '''
+                SELECT id, user_id, cookie_id, item_id, enabled, is_multi_spec,
+                       created_at, updated_at
+                FROM item_delivery_configs
+                WHERE cookie_id = ? AND item_id = ?
+            '''
+            params: List[Any] = [cookie_id, item_id]
+            if user_id is not None:
+                sql += " AND user_id = ?"
+                params.append(user_id)
+            cursor.execute(sql, params)
+            config_row = cursor.fetchone()
+            if not config_row:
+                return None
+
+            cursor.execute(
+                '''
+                SELECT pv.id, pv.display_name, pv.platform_sku_id,
+                       pv.spec_payload_json, pv.canonical_spec_key, pv.source,
+                       pv.enabled, pv.created_at, pv.updated_at,
+                       vdb.id, vdb.card_id, vdb.delivery_count,
+                       vdb.delivery_times, vdb.enabled,
+                       c.name, c.type, c.enabled, c.data_content
+                FROM product_variants pv
+                LEFT JOIN variant_delivery_bindings vdb
+                  ON vdb.variant_id = pv.id
+                LEFT JOIN cards c
+                  ON c.id = vdb.card_id
+                WHERE pv.user_id = ? AND pv.cookie_id = ? AND pv.item_id = ?
+                ORDER BY pv.id ASC
+                ''',
+                (config_row[1], cookie_id, item_id),
+            )
+
+            variants = []
+            for row in cursor.fetchall():
+                try:
+                    payload = json.loads(row[3] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    payload = {}
+                variants.append({
+                    "id": row[0],
+                    "display_name": row[1],
+                    "platform_sku_id": row[2] or "",
+                    "spec_payload": payload,
+                    "spec_text": specification_text(payload),
+                    "canonical_spec_key": row[4],
+                    "source": row[5],
+                    "enabled": bool(row[6]),
+                    "created_at": row[7],
+                    "updated_at": row[8],
+                    "binding_id": row[9],
+                    "card_id": row[10],
+                    "delivery_count": row[11] or 1,
+                    "delivery_times": row[12] or 0,
+                    "binding_enabled": bool(row[13]) if row[13] is not None else False,
+                    "card_name": row[14],
+                    "card_type": row[15],
+                    "card_enabled": bool(row[16]) if row[16] is not None else False,
+                    "stock_count": self._card_stock_count(row[15], row[17]),
+                })
+
+            configured_count = sum(
+                1 for variant in variants
+                if variant["card_id"] and variant["binding_enabled"] and variant["card_enabled"]
+            )
+            return {
+                "id": config_row[0],
+                "user_id": config_row[1],
+                "cookie_id": config_row[2],
+                "item_id": config_row[3],
+                "enabled": bool(config_row[4]),
+                "is_multi_spec": bool(config_row[5]),
+                "created_at": config_row[6],
+                "updated_at": config_row[7],
+                "variant_count": len(variants),
+                "configured_count": configured_count,
+                "complete": bool(variants) and configured_count == len(variants),
+                "variants": variants,
+            }
+
+    def get_item_delivery_config_summaries(self, user_id: int) -> List[Dict[str, Any]]:
+        """获取当前用户所有商品变体发货配置摘要。"""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                '''
+                SELECT idc.cookie_id, idc.item_id, idc.enabled, idc.is_multi_spec,
+                       COUNT(pv.id) AS variant_count,
+                       SUM(
+                           CASE
+                               WHEN vdb.id IS NOT NULL
+                                AND vdb.enabled = 1
+                                AND c.enabled = 1
+                               THEN 1 ELSE 0
+                           END
+                       ) AS configured_count,
+                       COALESCE(SUM(vdb.delivery_times), 0) AS delivery_times
+                FROM item_delivery_configs idc
+                LEFT JOIN product_variants pv
+                  ON pv.user_id = idc.user_id
+                 AND pv.cookie_id = idc.cookie_id
+                 AND pv.item_id = idc.item_id
+                LEFT JOIN variant_delivery_bindings vdb
+                  ON vdb.variant_id = pv.id
+                LEFT JOIN cards c
+                  ON c.id = vdb.card_id
+                WHERE idc.user_id = ?
+                GROUP BY idc.id
+                ORDER BY idc.updated_at DESC
+                ''',
+                (user_id,),
+            )
+            return [{
+                "cookie_id": row[0],
+                "item_id": row[1],
+                "enabled": bool(row[2]),
+                "is_multi_spec": bool(row[3]),
+                "variant_count": row[4] or 0,
+                "configured_count": row[5] or 0,
+                "complete": bool(row[4]) and (row[5] or 0) == row[4],
+                "delivery_times": row[6] or 0,
+            } for row in cursor.fetchall()]
+
+    def save_item_delivery_config(
+        self,
+        user_id: int,
+        cookie_id: str,
+        item_id: str,
+        enabled: bool,
+        is_multi_spec: bool,
+        variants: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """在一个事务内保存商品配置、变体和库存绑定。"""
+        if not variants:
+            raise ValueError("至少需要配置一个发货规格")
+
+        normalized_variants = []
+        spec_keys = set()
+        sku_ids = set()
+        for index, variant in enumerate(variants):
+            spec_source = variant.get("spec_payload") or variant.get("spec_text")
+            canonical_key, payload = canonicalize_specification(
+                spec_source,
+                allow_default=not is_multi_spec,
+            )
+            if is_multi_spec and not canonical_key:
+                raise ValueError(f"第 {index + 1} 个规格格式无效，请使用“规格名=规格值”")
+            if not is_multi_spec:
+                canonical_key = DEFAULT_SPEC_KEY
+                payload = {}
+            if canonical_key in spec_keys:
+                raise ValueError(f"存在重复规格组合：{canonical_key}")
+            spec_keys.add(canonical_key)
+
+            platform_sku_id = str(variant.get("platform_sku_id") or "").strip()
+            if platform_sku_id:
+                if platform_sku_id in sku_ids:
+                    raise ValueError(f"平台 SKU ID 重复：{platform_sku_id}")
+                sku_ids.add(platform_sku_id)
+
+            try:
+                card_id = int(variant.get("card_id"))
+                delivery_count = int(variant.get("delivery_count", 1))
+            except (TypeError, ValueError):
+                raise ValueError(f"第 {index + 1} 个规格的库存或发货数量无效")
+            if delivery_count < 1:
+                raise ValueError("每单发货数量必须大于等于 1")
+
+            display_name = str(variant.get("display_name") or "").strip()
+            if not display_name:
+                display_name = specification_text(payload) or "默认规格"
+
+            normalized_variants.append({
+                "display_name": display_name,
+                "platform_sku_id": platform_sku_id or None,
+                "spec_payload": payload,
+                "canonical_spec_key": canonical_key,
+                "source": str(variant.get("source") or "manual").strip() or "manual",
+                "enabled": bool(variant.get("enabled", True)),
+                "card_id": card_id,
+                "delivery_count": delivery_count,
+                "binding_enabled": bool(variant.get("binding_enabled", True)),
+            })
+
+        with self.lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute(
+                    '''
+                    SELECT 1 FROM item_info ii
+                    JOIN cookies c ON c.id = ii.cookie_id
+                    WHERE ii.cookie_id = ? AND ii.item_id = ? AND c.user_id = ?
+                    ''',
+                    (cookie_id, item_id, user_id),
+                )
+                if not cursor.fetchone():
+                    raise ValueError("商品不存在或不属于当前用户")
+
+                card_ids = sorted({variant["card_id"] for variant in normalized_variants})
+                placeholders = ",".join("?" for _ in card_ids)
+                cursor.execute(
+                    f'''
+                    SELECT id FROM cards
+                    WHERE user_id = ? AND enabled = 1 AND id IN ({placeholders})
+                    ''',
+                    [user_id, *card_ids],
+                )
+                owned_card_ids = {row[0] for row in cursor.fetchall()}
+                missing_card_ids = [card_id for card_id in card_ids if card_id not in owned_card_ids]
+                if missing_card_ids:
+                    raise ValueError(f"卡密不存在、已停用或无权使用：{missing_card_ids[0]}")
+
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute(
+                    '''
+                    INSERT INTO item_delivery_configs (
+                        user_id, cookie_id, item_id, enabled, is_multi_spec
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, cookie_id, item_id) DO UPDATE SET
+                        enabled = excluded.enabled,
+                        is_multi_spec = excluded.is_multi_spec,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    (user_id, cookie_id, item_id, int(enabled), int(is_multi_spec)),
+                )
+                cursor.execute(
+                    '''
+                    DELETE FROM variant_delivery_bindings
+                    WHERE variant_id IN (
+                        SELECT id FROM product_variants
+                        WHERE user_id = ? AND cookie_id = ? AND item_id = ?
+                    )
+                    ''',
+                    (user_id, cookie_id, item_id),
+                )
+                cursor.execute(
+                    '''
+                    DELETE FROM product_variants
+                    WHERE user_id = ? AND cookie_id = ? AND item_id = ?
+                    ''',
+                    (user_id, cookie_id, item_id),
+                )
+
+                for variant in normalized_variants:
+                    cursor.execute(
+                        '''
+                        INSERT INTO product_variants (
+                            user_id, cookie_id, item_id, display_name,
+                            platform_sku_id, spec_payload_json, canonical_spec_key,
+                            source, enabled
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            user_id, cookie_id, item_id, variant["display_name"],
+                            variant["platform_sku_id"],
+                            json.dumps(variant["spec_payload"], ensure_ascii=False, sort_keys=True),
+                            variant["canonical_spec_key"], variant["source"],
+                            int(variant["enabled"]),
+                        ),
+                    )
+                    variant_id = cursor.lastrowid
+                    cursor.execute(
+                        '''
+                        INSERT INTO variant_delivery_bindings (
+                            user_id, variant_id, card_id, delivery_count, enabled
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            user_id, variant_id, variant["card_id"],
+                            variant["delivery_count"], int(variant["binding_enabled"]),
+                        ),
+                    )
+
+                cursor.execute(
+                    '''
+                    UPDATE item_info
+                    SET is_multi_spec = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE cookie_id = ? AND item_id = ?
+                    ''',
+                    (int(is_multi_spec), cookie_id, item_id),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        return self.get_item_delivery_config(cookie_id, item_id, user_id)
+
+    def resolve_item_delivery_binding(
+        self,
+        cookie_id: str,
+        item_id: str,
+        *,
+        spec_text: str = None,
+        spec_payload: Dict[str, Any] = None,
+        platform_sku_id: str = None,
+    ) -> Dict[str, Any]:
+        """按 SKU ID 或规范化规格精确解析商品发货绑定。"""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, user_id, enabled, is_multi_spec
+                FROM item_delivery_configs
+                WHERE cookie_id = ? AND item_id = ?
+                ''',
+                (cookie_id, item_id),
+            )
+            config = cursor.fetchone()
+            if not config:
+                return {"configured": False, "matched": False, "reason": "not_configured"}
+            if not bool(config[2]):
+                return {"configured": True, "matched": False, "reason": "config_disabled"}
+
+            is_multi_spec = bool(config[3])
+            canonical_key = DEFAULT_SPEC_KEY
+            specification_supplied = bool(spec_payload) or bool(str(spec_text or "").strip())
+            if is_multi_spec:
+                canonical_key, _ = canonicalize_specification(spec_payload or spec_text)
+                if specification_supplied and not canonical_key:
+                    return {
+                        "configured": True,
+                        "matched": False,
+                        "reason": "conflicting_specification",
+                    }
+                if not canonical_key and not platform_sku_id:
+                    return {"configured": True, "matched": False, "reason": "missing_specification"}
+
+            where_clause = "pv.canonical_spec_key = ?"
+            lookup_value = canonical_key
+            sku_id = str(platform_sku_id or "").strip()
+            if is_multi_spec and sku_id:
+                where_clause = "pv.platform_sku_id = ?"
+                lookup_value = sku_id
+
+            cursor.execute(
+                f'''
+                SELECT pv.id, pv.display_name, pv.spec_payload_json,
+                       pv.canonical_spec_key, pv.platform_sku_id,
+                       vdb.id, vdb.card_id, vdb.delivery_count,
+                       vdb.delivery_times, vdb.enabled,
+                       c.name, c.type, c.api_config, c.text_content,
+                       c.data_content, c.image_url, c.enabled, c.description,
+                       c.delay_seconds, pv.enabled
+                FROM product_variants pv
+                LEFT JOIN variant_delivery_bindings vdb
+                  ON vdb.variant_id = pv.id
+                LEFT JOIN cards c
+                  ON c.id = vdb.card_id
+                WHERE pv.user_id = ? AND pv.cookie_id = ? AND pv.item_id = ?
+                  AND {where_clause}
+                ''',
+                (config[1], cookie_id, item_id, lookup_value),
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return {
+                    "configured": True,
+                    "matched": False,
+                    "reason": "unknown_specification",
+                    "canonical_spec_key": canonical_key,
+                }
+            if len(rows) != 1:
+                return {"configured": True, "matched": False, "reason": "conflicting_specification"}
+
+            row = rows[0]
+            if is_multi_spec and sku_id and canonical_key and row[3] != canonical_key:
+                return {"configured": True, "matched": False, "reason": "conflicting_specification"}
+            if not bool(row[19]):
+                return {"configured": True, "matched": False, "reason": "variant_disabled"}
+            if not row[5] or not bool(row[9]) or not row[6]:
+                return {"configured": True, "matched": False, "reason": "binding_disabled"}
+            if not bool(row[16]):
+                return {"configured": True, "matched": False, "reason": "card_disabled"}
+
+            api_config = row[12]
+            if api_config:
+                try:
+                    api_config = json.loads(api_config)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            try:
+                payload = json.loads(row[2] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+
+            return {
+                "configured": True,
+                "matched": True,
+                "reason": "matched",
+                "rule_kind": "variant_binding",
+                "variant_id": row[0],
+                "variant_name": row[1],
+                "spec_payload": payload,
+                "canonical_spec_key": row[3],
+                "platform_sku_id": row[4],
+                "variant_binding_id": row[5],
+                "id": row[5],
+                "keyword": row[1],
+                "card_id": row[6],
+                "delivery_count": row[7] or 1,
+                "delivery_times": row[8] or 0,
+                "enabled": True,
+                "card_name": row[10],
+                "card_type": row[11],
+                "api_config": api_config,
+                "text_content": row[13],
+                "data_content": row[14],
+                "image_url": row[15],
+                "card_enabled": True,
+                "card_description": row[17],
+                "card_delay_seconds": row[18] or 0,
+                "is_multi_spec": bool(config[3]),
+                "spec_name": "规格组合" if bool(config[3]) else None,
+                "spec_value": specification_text(payload) if bool(config[3]) else None,
+                "scope_rank": -1,
+                "cookie_id": cookie_id,
+                "item_id": item_id,
+            }
+
+    def increment_variant_binding_delivery_times(self, binding_id: int) -> bool:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE variant_delivery_bindings
+                SET delivery_times = delivery_times + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (binding_id,),
+            )
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def get_card_variant_references(self, card_id: int, user_id: int) -> List[Dict[str, Any]]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                '''
+                SELECT pv.cookie_id, pv.item_id, pv.display_name, ii.item_title
+                FROM variant_delivery_bindings vdb
+                JOIN product_variants pv ON pv.id = vdb.variant_id
+                LEFT JOIN item_info ii
+                  ON ii.cookie_id = pv.cookie_id AND ii.item_id = pv.item_id
+                WHERE vdb.user_id = ? AND vdb.card_id = ?
+                ORDER BY pv.item_id, pv.id
+                ''',
+                (user_id, card_id),
+            )
+            return [{
+                "cookie_id": row[0],
+                "item_id": row[1],
+                "variant_name": row[2],
+                "item_title": row[3],
+            } for row in cursor.fetchall()]
+
     def get_items_by_cookie(self, cookie_id: str) -> List[Dict]:
         """获取指定Cookie的所有商品信息
 
@@ -5074,6 +5640,24 @@ class DBManager:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
+                cursor.execute(
+                    '''
+                    DELETE FROM variant_delivery_bindings
+                    WHERE variant_id IN (
+                        SELECT id FROM product_variants
+                        WHERE cookie_id = ? AND item_id = ?
+                    )
+                    ''',
+                    (cookie_id, item_id),
+                )
+                cursor.execute(
+                    'DELETE FROM product_variants WHERE cookie_id = ? AND item_id = ?',
+                    (cookie_id, item_id),
+                )
+                cursor.execute(
+                    'DELETE FROM item_delivery_configs WHERE cookie_id = ? AND item_id = ?',
+                    (cookie_id, item_id),
+                )
                 cursor.execute('DELETE FROM item_info WHERE cookie_id = ? AND item_id = ?',
                              (cookie_id, item_id))
 
@@ -5116,6 +5700,24 @@ class DBManager:
                         if not cookie_id or not item_id:
                             continue
 
+                        cursor.execute(
+                            '''
+                            DELETE FROM variant_delivery_bindings
+                            WHERE variant_id IN (
+                                SELECT id FROM product_variants
+                                WHERE cookie_id = ? AND item_id = ?
+                            )
+                            ''',
+                            (cookie_id, item_id),
+                        )
+                        cursor.execute(
+                            'DELETE FROM product_variants WHERE cookie_id = ? AND item_id = ?',
+                            (cookie_id, item_id),
+                        )
+                        cursor.execute(
+                            'DELETE FROM item_delivery_configs WHERE cookie_id = ? AND item_id = ?',
+                            (cookie_id, item_id),
+                        )
                         cursor.execute('DELETE FROM item_info WHERE cookie_id = ? AND item_id = ?',
                                      (cookie_id, item_id))
 

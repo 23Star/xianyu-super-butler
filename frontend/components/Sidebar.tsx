@@ -1,5 +1,19 @@
 import React from 'react';
-import { LayoutDashboard, Users, ShoppingBag, CreditCard, Settings, LogOut, Box, MessageSquare, X, BellRing, ListFilter, Workflow, Bot } from 'lucide-react';
+import {
+  BellRing,
+  Bot,
+  Box,
+  CreditCard,
+  LayoutDashboard,
+  ListFilter,
+  LogOut,
+  MessageSquare,
+  Settings,
+  ShoppingBag,
+  Users,
+  Workflow,
+  X,
+} from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -10,18 +24,43 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mobileOpen, onMobileClose }) => {
-  const menuItems = [
-    { id: 'dashboard', icon: LayoutDashboard, label: '总览' },
-    { id: 'accounts', icon: Users, label: '账号' },
-    { id: 'items', icon: Box, label: '商品' },
-    { id: 'product-automation', icon: Workflow, label: '商品自动化' },
-    { id: 'orders', icon: ShoppingBag, label: '订单' },
-    { id: 'cards', icon: CreditCard, label: '卡密' },
-    { id: 'auto-reply', icon: MessageSquare, label: '自动回复' },
-    { id: 'ai-reply', icon: Bot, label: '人工智能回复' },
-    { id: 'messages', icon: ListFilter, label: '消息管理' },
-    { id: 'notifications', icon: BellRing, label: '通知与日志' },
-    { id: 'settings', icon: Settings, label: '设置' },
+  const menuGroups = [
+    {
+      label: '经营概览',
+      items: [
+        { id: 'dashboard', icon: LayoutDashboard, label: '总览' },
+      ],
+    },
+    {
+      label: '闲鱼业务',
+      items: [
+        { id: 'accounts', icon: Users, label: '账号管理' },
+        { id: 'items', icon: Box, label: '商品与发货' },
+        { id: 'orders', icon: ShoppingBag, label: '订单管理' },
+        { id: 'cards', icon: CreditCard, label: '卡密库存' },
+      ],
+    },
+    {
+      label: '客户沟通',
+      items: [
+        { id: 'messages', icon: ListFilter, label: '消息中心' },
+        { id: 'auto-reply', icon: MessageSquare, label: '自动回复' },
+        { id: 'ai-reply', icon: Bot, label: 'AI 回复' },
+      ],
+    },
+    {
+      label: '自动化',
+      items: [
+        { id: 'product-automation', icon: Workflow, label: '商品自动化' },
+      ],
+    },
+    {
+      label: '系统',
+      items: [
+        { id: 'notifications', icon: BellRing, label: '通知与日志' },
+        { id: 'settings', icon: Settings, label: '系统设置' },
+      ],
+    },
   ];
 
   return (
@@ -34,48 +73,60 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         aria-label="关闭导航"
       />
     )}
-    <aside className={`w-64 h-screen fixed left-0 top-0 bg-white border-r border-gray-200 flex flex-col justify-between z-40 transition-transform lg:translate-x-0 ${
+    <aside className={`fixed left-0 top-0 z-40 flex h-screen w-[248px] flex-col border-r border-[#e4e6e8] bg-white transition-transform lg:translate-x-0 ${
       mobileOpen ? 'translate-x-0' : '-translate-x-full'
     }`}>
-      <div className="p-6">
-        <div className="flex items-center gap-3 mb-8 px-2">
-          <div className="w-10 h-10 bg-[#FFE815] rounded-lg flex items-center justify-center">
-            <span className="text-black font-extrabold text-xl">闲</span>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex h-[72px] shrink-0 items-center gap-3 border-b border-[#eef0f2] px-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e4cf00] bg-[#ffe100]">
+            <span className="text-lg font-black text-[#1f2328]">闲</span>
           </div>
-          <h1 className="text-xl font-extrabold text-gray-900 flex-1">闲鱼智控</h1>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-base font-extrabold text-[#1f2328]">闲鱼智控</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[#939aa2]">运营工作台</p>
+          </div>
           <button type="button" onClick={onMobileClose} className="p-2 rounded-md hover:bg-gray-100 lg:hidden" aria-label="关闭导航">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="space-y-2">
-          {menuItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-md transition-colors group ${
-                  isActive 
-                    ? 'bg-[#FFE815] text-black font-bold'
-                    : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
-                }`}
-              >
-                <Icon className={`w-5 h-5 transition-colors ${isActive ? 'text-black' : 'text-gray-400 group-hover:text-gray-600'}`} />
-                <span className="text-sm tracking-wide">{item.label}</span>
-              </button>
-            );
-          })}
+        <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          {menuGroups.map((group, groupIndex) => (
+            <div key={group.label} className={groupIndex === 0 ? '' : 'mt-5'}>
+              <p className="mb-1.5 px-3 text-[11px] font-bold text-[#9aa1a8]">{group.label}</p>
+              <div className="space-y-1">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setActiveTab(item.id)}
+                      className={`group flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-left transition-colors ${
+                        isActive
+                          ? 'bg-[#ffe100] font-bold text-[#1f2328]'
+                          : 'font-medium text-[#60676f] hover:bg-[#f4f5f6] hover:text-[#1f2328]'
+                      }`}
+                    >
+                      <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-[#1f2328]' : 'text-[#8d949c] group-hover:text-[#60676f]'}`} />
+                      <span className="truncate text-sm">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
       </div>
 
-      <div className="p-6 border-t border-gray-50">
+      <div className="shrink-0 border-t border-[#eef0f2] p-3">
         <button 
+          type="button"
           onClick={onLogout}
-          className="w-full flex items-center gap-3 px-4 py-3 text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors font-medium"
+          className="flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-[#6d747c] transition-colors hover:bg-red-50 hover:text-red-600"
         >
-          <LogOut className="w-5 h-5" />
+          <LogOut className="h-[18px] w-[18px]" />
           <span className="text-sm">退出登录</span>
         </button>
       </div>

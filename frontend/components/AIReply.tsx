@@ -18,6 +18,7 @@ import {
   updateAccountAISettings,
 } from '../services/api';
 import { notify } from '../services/feedback';
+import { EmptyState, PageHeader, PageLoading, SectionHeader } from './ui';
 
 const defaultSettings: AIReplySettings = {
   ai_enabled: false,
@@ -122,46 +123,53 @@ const AIReply: React.FC = () => {
   };
 
   if (loading && accounts.length === 0) {
-    return (
-      <div className="flex min-h-[420px] items-center justify-center">
-        <Loader2 className="h-7 w-7 animate-spin text-yellow-500" />
-      </div>
-    );
+    return <PageLoading label="正在加载 AI 回复配置" />;
   }
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-extrabold text-gray-900">
-            <Bot className="h-6 w-6" />
-            人工智能回复
-          </h1>
-          <p className="mt-1 text-sm text-gray-500">为每个闲鱼账号配置模型、回复风格和议价边界。</p>
-        </div>
-        <label className="min-w-0 sm:w-80">
-          <span className="mb-1.5 block text-xs font-bold text-gray-500">当前账号</span>
-          <select
-            value={selectedAccountId}
-            onChange={event => setSelectedAccountId(event.target.value)}
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2.5 text-sm font-semibold text-gray-800"
-          >
-            {accounts.map(account => (
-              <option key={account.id} value={account.id}>
-                {account.nickname || account.remark || `账号 ${account.id.slice(0, 8)}`}
-              </option>
-            ))}
-          </select>
-        </label>
-      </header>
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="AI 回复"
+        description="按账号配置模型连接、上下文记忆、议价边界和业务回复规则。"
+        icon={Bot}
+        actions={(
+          <div className="flex min-w-0 flex-wrap items-end gap-2">
+            <label className="min-w-0 sm:w-72">
+              <span className="field-label">当前账号</span>
+              <select
+                value={selectedAccountId}
+                onChange={event => setSelectedAccountId(event.target.value)}
+                className="ios-input w-full rounded-md px-3 py-2 text-sm font-semibold"
+              >
+                {accounts.map(account => (
+                  <option key={account.id} value={account.id}>
+                    {account.nickname || account.remark || `账号 ${account.id.slice(0, 8)}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || !selectedAccountId}
+              className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {saving ? '保存中' : '保存配置'}
+            </button>
+          </div>
+        )}
+      />
 
       {!selectedAccountId ? (
-        <div className="border border-dashed border-gray-300 bg-white px-6 py-16 text-center text-sm text-gray-500">
-          请先在账号管理中添加闲鱼账号。
-        </div>
+        <EmptyState
+          icon={Bot}
+          title="暂无可配置账号"
+          description="请先在账号管理中添加并登录闲鱼账号。"
+        />
       ) : (
         <>
-          <section className="grid gap-4 border-b border-gray-200 pb-6 lg:grid-cols-[1fr_auto] lg:items-center">
+          <section className="section-panel grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
             <div>
               <div className="flex items-center gap-2 font-bold text-gray-900">
                 <MessageSquareText className="h-5 w-5" />
@@ -186,15 +194,19 @@ const AIReply: React.FC = () => {
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.65fr)]">
             <div className="space-y-6">
-              <section>
-                <h2 className="mb-3 text-base font-bold text-gray-900">模型连接</h2>
-                <div className="grid gap-4 rounded-md border border-gray-200 bg-white p-5 md:grid-cols-2">
+              <section className="section-panel">
+                <SectionHeader
+                  title="模型连接"
+                  description="支持 OpenAI 兼容接口；密钥留空时保留服务器中已有配置。"
+                  icon={Bot}
+                />
+                <div className="grid gap-4 p-5 md:grid-cols-2">
                   <label>
                     <span className="mb-1.5 block text-sm font-semibold text-gray-700">接口地址</span>
                     <input
                       value={settings.base_url}
                       onChange={event => updateSetting('base_url', event.target.value)}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
                       placeholder="https://api.openai.com/v1"
                     />
                   </label>
@@ -203,7 +215,7 @@ const AIReply: React.FC = () => {
                     <input
                       value={settings.model_name}
                       onChange={event => updateSetting('model_name', event.target.value)}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
                       placeholder="qwen-plus"
                     />
                   </label>
@@ -222,7 +234,7 @@ const AIReply: React.FC = () => {
                         type={showApiKey ? 'text' : 'password'}
                         value={settings.api_key}
                         onChange={event => updateSetting('api_key', event.target.value)}
-                        className="w-full rounded-md border border-gray-300 px-3 py-2.5 pr-10 text-sm"
+                        className="ios-input w-full rounded-md px-3 py-2.5 pr-10 text-sm"
                         placeholder={settings.api_key_configured ? '输入新密钥以替换' : '请输入 API Key'}
                         autoComplete="new-password"
                       />
@@ -239,9 +251,13 @@ const AIReply: React.FC = () => {
                 </div>
               </section>
 
-              <section>
-                <h2 className="mb-3 text-base font-bold text-gray-900">回复策略</h2>
-                <div className="grid gap-4 rounded-md border border-gray-200 bg-white p-5 sm:grid-cols-3">
+              <section className="section-panel">
+                <SectionHeader
+                  title="回复策略"
+                  description="约束议价空间，并补充账号专属的语气、承诺和售后规则。"
+                  icon={MessageSquareText}
+                />
+                <div className="grid gap-4 p-5 sm:grid-cols-3">
                   <label>
                     <span className="mb-1.5 block text-sm font-semibold text-gray-700">最大折扣比例</span>
                     <input
@@ -250,7 +266,7 @@ const AIReply: React.FC = () => {
                       max={100}
                       value={settings.max_discount_percent}
                       onChange={event => updateSetting('max_discount_percent', Number(event.target.value))}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
                     />
                   </label>
                   <label>
@@ -260,7 +276,7 @@ const AIReply: React.FC = () => {
                       min={0}
                       value={settings.max_discount_amount ?? 0}
                       onChange={event => updateSetting('max_discount_amount', Number(event.target.value))}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
                     />
                   </label>
                   <label>
@@ -271,7 +287,7 @@ const AIReply: React.FC = () => {
                       max={10}
                       value={settings.max_bargain_rounds}
                       onChange={event => updateSetting('max_bargain_rounds', Number(event.target.value))}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
                     />
                   </label>
                   <label className="sm:col-span-3">
@@ -279,16 +295,20 @@ const AIReply: React.FC = () => {
                     <textarea
                       value={settings.custom_prompts}
                       onChange={event => updateSetting('custom_prompts', event.target.value)}
-                      className="min-h-36 w-full resize-y rounded-md border border-gray-300 px-3 py-2.5 text-sm leading-6"
+                      className="ios-input min-h-36 w-full resize-y rounded-md px-3 py-2.5 text-sm leading-6"
                       placeholder="例如：语气简洁，不承诺未确认的库存；涉及售后时引导买家说明订单号。"
                     />
                   </label>
                 </div>
               </section>
 
-              <section>
-                <h2 className="mb-3 text-base font-bold text-gray-900">上下文对话</h2>
-                <div className="grid gap-4 rounded-md border border-gray-200 bg-white p-5 sm:grid-cols-2">
+              <section className="section-panel">
+                <SectionHeader
+                  title="上下文对话"
+                  description="控制单个买家会话中可用于连续回复的近期消息范围。"
+                  icon={ShieldCheck}
+                />
+                <div className="grid gap-4 p-5 sm:grid-cols-2">
                   <label className="flex items-center justify-between gap-4 sm:col-span-2">
                     <span>
                       <span className="block text-sm font-semibold text-gray-700">记住近期对话</span>
@@ -312,7 +332,7 @@ const AIReply: React.FC = () => {
                       disabled={!settings.context_enabled}
                       value={settings.context_message_limit}
                       onChange={event => updateSetting('context_message_limit', Number(event.target.value))}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm disabled:bg-gray-100"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm disabled:bg-gray-100"
                     />
                   </label>
                   <label>
@@ -324,7 +344,7 @@ const AIReply: React.FC = () => {
                       disabled={!settings.context_enabled}
                       value={settings.context_expire_minutes}
                       onChange={event => updateSetting('context_expire_minutes', Number(event.target.value))}
-                      className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm disabled:bg-gray-100"
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm disabled:bg-gray-100"
                     />
                   </label>
                   <p className="text-xs leading-5 text-gray-500 sm:col-span-2">
@@ -335,34 +355,36 @@ const AIReply: React.FC = () => {
             </div>
 
             <aside className="space-y-5">
-              <section className="rounded-md border border-gray-200 bg-white p-5">
-                <h2 className="flex items-center gap-2 text-base font-bold text-gray-900">
-                  <Play className="h-4 w-4" />
-                  回复测试
-                </h2>
-                <p className="mt-1 text-xs leading-5 text-gray-500">只调用模型生成文本，不会发送到闲鱼会话。</p>
-                <textarea
-                  value={testMessage}
-                  onChange={event => setTestMessage(event.target.value)}
-                  className="mt-4 min-h-24 w-full resize-y rounded-md border border-gray-300 px-3 py-2.5 text-sm"
+              <section className="section-panel">
+                <SectionHeader
+                  title="回复测试"
+                  description="只生成文本，不会发送到闲鱼会话。"
+                  icon={Play}
                 />
-                <button
-                  type="button"
-                  onClick={handleTest}
-                  disabled={testing || !settings.ai_enabled}
-                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-gray-900 bg-gray-900 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                  {testing ? '生成中' : '测试回复'}
-                </button>
-                {testReply && (
-                  <div className="mt-4 border-l-4 border-yellow-400 bg-yellow-50 px-4 py-3 text-sm leading-6 text-gray-800">
-                    {testReply}
-                  </div>
-                )}
+                <div className="p-5">
+                  <textarea
+                    value={testMessage}
+                    onChange={event => setTestMessage(event.target.value)}
+                    className="ios-input min-h-24 w-full resize-y rounded-md px-3 py-2.5 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTest}
+                    disabled={testing || !settings.ai_enabled}
+                    className="ios-btn-primary mt-3 flex w-full items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
+                  >
+                    {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    {testing ? '生成中' : '测试回复'}
+                  </button>
+                  {testReply && (
+                    <div className="mt-4 border-l-4 border-yellow-400 bg-yellow-50 px-4 py-3 text-sm leading-6 text-gray-800">
+                      {testReply}
+                    </div>
+                  )}
+                </div>
               </section>
 
-              <section className="rounded-md border border-gray-200 bg-white p-5">
+              <section className="section-panel p-5">
                 <div className="flex items-start gap-3">
                   <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
                   <div>
@@ -376,17 +398,6 @@ const AIReply: React.FC = () => {
             </aside>
           </div>
 
-          <div className="sticky bottom-4 flex justify-end">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center gap-2 rounded-md bg-[#FFE815] px-5 py-3 text-sm font-extrabold text-black shadow-lg disabled:opacity-60"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? '保存中' : '保存配置'}
-            </button>
-          </div>
         </>
       )}
     </div>

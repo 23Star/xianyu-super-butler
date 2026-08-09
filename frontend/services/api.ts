@@ -2,7 +2,8 @@ import { get, post, put, del } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
   AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
-  Item, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
+  Item, ItemDeliveryConfig, ItemDeliveryConfigSummary,
+  ProductVariantBinding, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
   MessageFilter, MessageFilterType, AutoReplyLog
@@ -294,6 +295,44 @@ export const updateItemMultiSpec = async (cookieId: string, itemId: string, enab
 
 export const updateItemMultiQuantity = async (cookieId: string, itemId: string, enabled: boolean): Promise<any> => {
     return put(`/items/${cookieId}/${itemId}/multi-quantity-delivery`, { multi_quantity_delivery: enabled });
+}
+
+export const getItemDeliveryConfigs = async (): Promise<ItemDeliveryConfigSummary[]> => {
+  const response = await get<{ configs?: ItemDeliveryConfigSummary[] }>('/item-delivery-configs');
+  return response.configs || [];
+}
+
+export const getItemDeliveryConfig = async (
+  cookieId: string,
+  itemId: string,
+): Promise<ItemDeliveryConfig> => {
+  return get(`/items/${encodeURIComponent(cookieId)}/${encodeURIComponent(itemId)}/delivery-config`);
+}
+
+export const saveItemDeliveryConfig = async (
+  cookieId: string,
+  itemId: string,
+  config: {
+    enabled: boolean;
+    is_multi_spec: boolean;
+    variants: Array<Pick<
+      ProductVariantBinding,
+      | 'display_name'
+      | 'spec_text'
+      | 'spec_payload'
+      | 'platform_sku_id'
+      | 'card_id'
+      | 'delivery_count'
+      | 'enabled'
+      | 'binding_enabled'
+      | 'source'
+    >>;
+  },
+): Promise<{ success: boolean; message: string; config: ItemDeliveryConfig }> => {
+  return put(
+    `/items/${encodeURIComponent(cookieId)}/${encodeURIComponent(itemId)}/delivery-config`,
+    config,
+  );
 }
 
 // Product Automation

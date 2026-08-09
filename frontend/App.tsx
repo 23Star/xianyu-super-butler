@@ -17,14 +17,29 @@ const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 
 const PageLoader = () => (
-  <div className="py-24 flex justify-center">
-    <Loader2 className="w-8 h-8 text-yellow-500 animate-spin" />
+  <div className="page-loading">
+    <Loader2 className="h-5 w-5 animate-spin" />
+    <span>正在加载页面</span>
   </div>
 );
 
+const pageLabels: Record<string, string> = {
+  dashboard: '总览',
+  accounts: '账号管理',
+  items: '商品与发货',
+  orders: '订单管理',
+  cards: '卡密库存',
+  messages: '消息中心',
+  'auto-reply': '自动回复',
+  'ai-reply': 'AI 回复',
+  'product-automation': '商品自动化',
+  notifications: '通知与日志',
+  settings: '系统设置',
+};
+
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('active_page') || 'dashboard');
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -57,6 +72,10 @@ const App: React.FC = () => {
       return () => window.removeEventListener('auth:logout', handleLogout);
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem('active_page', activeTab);
+  }, [activeTab]);
+
   const handleLogin = async (e: React.FormEvent) => {
       e.preventDefault();
       setLoginLoading(true);
@@ -80,8 +99,11 @@ const App: React.FC = () => {
 
   if (checkingAuth) {
       return (
-          <div className="min-h-screen flex items-center justify-center bg-[#f5f5f7]">
-              <Loader2 className="w-8 h-8 text-[#FFE815] animate-spin" />
+          <div className="min-h-screen flex items-center justify-center bg-[#f5f6f7]">
+              <div className="flex items-center gap-3 text-sm font-semibold text-gray-600">
+                <Loader2 className="h-5 w-5 animate-spin text-[#b29c00]" />
+                正在验证登录状态
+              </div>
           </div>
       );
   }
@@ -89,67 +111,95 @@ const App: React.FC = () => {
   // Login Screen Component
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#F4F5F7] p-4 font-sans">
-        <div className="bg-white p-7 md:p-10 rounded-lg shadow-sm w-full max-w-md border border-gray-200 animate-fade-in">
-          
-          {/* Header with Logo */}
-          <div className="text-center mb-10">
-             <div className="w-16 h-16 bg-[#FFE815] rounded-lg flex items-center justify-center mx-auto mb-5">
-                <span className="text-black font-extrabold text-3xl">闲</span>
-             </div>
-             <h1 className="text-2xl font-extrabold text-gray-900 mb-2">闲鱼智控</h1>
-             <p className="text-gray-500">登录后管理账号、订单与自动发货</p>
-          </div>
-          
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div className="space-y-4">
-                <div className="relative group">
-                    <User className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-black transition-colors" />
-                    <input 
-                        type="text" 
-                        placeholder="管理员账号" 
-                        value={username}
-                        onChange={e => setUsername(e.target.value)}
-                        autoComplete="username"
-                        required
-                        className="w-full ios-input pl-14 pr-5 py-4 rounded-lg text-base h-14"
-                    />
+      <div className="min-h-screen bg-[#f5f6f7] p-4 font-sans sm:p-6">
+        <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-5xl items-center justify-center sm:min-h-[calc(100vh-3rem)]">
+          <div className="grid w-full overflow-hidden rounded-md border border-[#dfe2e5] bg-white shadow-sm lg:grid-cols-[1.05fr_0.95fr]">
+            <div className="hidden min-h-[560px] flex-col justify-between border-r border-[#dfe2e5] bg-[#f0f1f2] p-10 lg:flex">
+              <div>
+                <div className="flex h-11 w-11 items-center justify-center rounded-md border border-[#e4cf00] bg-[#ffe100]">
+                  <span className="text-xl font-black text-[#1f2328]">闲</span>
                 </div>
-                <div className="relative group">
-                    <Lock className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-black transition-colors" />
-                    <input 
-                        type="password" 
-                        placeholder="密码" 
-                        value={password}
-                        onChange={e => setPassword(e.target.value)}
-                        autoComplete="current-password"
-                        required
-                        className="w-full ios-input pl-14 pr-5 py-4 rounded-lg text-base h-14"
-                    />
-                </div>
+                <p className="mt-6 text-xs font-bold text-[#8c7900]">Xianyu Super Butler</p>
+                <h1 className="mt-2 max-w-md text-2xl font-extrabold leading-tight text-[#1f2328]">
+                  闲鱼经营与自动化工作台
+                </h1>
+                <p className="mt-4 max-w-md text-sm leading-7 text-[#5f666e]">
+                  统一处理账号、商品、订单、消息、回复和自动发货。
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-[#d7dade] bg-[#d7dade]">
+                {['账号与商品同步', '订单与发货处理', '消息与自动回复', '通知与运行日志'].map(item => (
+                  <div key={item} className="bg-white px-4 py-3 text-xs font-bold text-[#4f565e]">
+                    {item}
+                  </div>
+                ))}
+              </div>
             </div>
-            
-            {loginError && (
-                <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-600 text-sm text-center font-semibold flex items-center justify-center gap-2">
-                    <ShieldCheck className="w-4 h-4" /> {loginError}
-                </div>
-            )}
 
-            <button 
-              type="submit" 
-              disabled={loginLoading}
-              className="w-full ios-btn-primary h-14 rounded-lg text-base mt-2 flex items-center justify-center gap-2 group disabled:opacity-70"
-            >
-              {loginLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>立即登录 <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>}
-            </button>
-          </form>
-          
-          <div className="mt-7 pt-5 border-t border-gray-100">
-             <div className="text-center">
-                 <span className="text-xs text-gray-400 font-medium tracking-widest uppercase">
-                    Xianyu Auto-Dispatch Pro v2.5
-                 </span>
-             </div>
+            <div className="flex min-h-[500px] items-center p-7 sm:p-10">
+              <div className="mx-auto w-full max-w-sm animate-fade-in">
+                <div className="mb-8">
+                  <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-md border border-[#e4cf00] bg-[#ffe100] lg:hidden">
+                    <span className="text-xl font-black text-[#1f2328]">闲</span>
+                  </div>
+                  <h2 className="text-2xl font-extrabold text-gray-900">登录管理后台</h2>
+                  <p className="mt-2 text-sm text-gray-500">使用管理员账号进入工作台</p>
+                </div>
+
+                <form onSubmit={handleLogin} className="space-y-5">
+                  <div className="space-y-4">
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">管理员账号</span>
+                          <div className="relative group">
+                            <User className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                            <input
+                                type="text"
+                                placeholder="请输入账号"
+                                value={username}
+                                onChange={e => setUsername(e.target.value)}
+                                autoComplete="username"
+                                required
+                                className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                            />
+                          </div>
+                      </label>
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">密码</span>
+                          <div className="relative group">
+                            <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                            <input
+                                type="password"
+                                placeholder="请输入密码"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                autoComplete="current-password"
+                                required
+                                className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                            />
+                          </div>
+                      </label>
+                  </div>
+
+                  {loginError && (
+                      <div role="alert" className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                          <ShieldCheck className="h-4 w-4 shrink-0" /> {loginError}
+                      </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loginLoading}
+                    className="ios-btn-primary flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm disabled:opacity-70"
+                  >
+                    {loginLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>登录 <ArrowRight className="h-4 w-4" /></>}
+                  </button>
+                </form>
+
+                <p className="mt-7 border-t border-gray-100 pt-5 text-xs font-medium text-gray-400">
+                  闲鱼智控 · Management Console
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -157,7 +207,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen bg-[#F4F5F7] text-[#111]">
+    <div className="flex min-h-screen bg-[#f5f6f7] text-[#1f2328]">
       <GlobalFeedback />
       <Sidebar 
         activeTab={activeTab} 
@@ -174,8 +224,8 @@ const App: React.FC = () => {
         }} 
       />
       
-      <main className="flex-1 lg:ml-64 min-w-0 overflow-y-auto min-h-screen">
-        <header className="lg:hidden sticky top-0 z-20 h-14 bg-white border-b border-gray-200 flex items-center gap-3 px-4">
+      <main className="min-h-screen min-w-0 flex-1 overflow-y-auto lg:ml-[248px]">
+        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-[#e4e6e8] bg-white px-4 lg:hidden">
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
@@ -185,12 +235,15 @@ const App: React.FC = () => {
           >
             <Menu className="w-5 h-5" />
           </button>
-          <span className="font-bold">闲鱼智控</span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold">{pageLabels[activeTab] || '闲鱼智控'}</p>
+            <p className="text-[11px] text-gray-400">闲鱼智控</p>
+          </div>
         </header>
         <div className={
           activeTab === 'messages'
             ? 'h-[calc(100vh-3.5rem)] lg:h-screen overflow-hidden'
-            : 'max-w-[1400px] mx-auto p-4 sm:p-6 lg:p-8 pb-10'
+            : 'mx-auto max-w-[1320px] p-4 pb-10 sm:p-6 lg:p-8'
         }>
           <section hidden={activeTab !== 'dashboard'}>
             <Suspense fallback={activeTab === 'dashboard' ? <PageLoader /> : null}><Dashboard /></Suspense>

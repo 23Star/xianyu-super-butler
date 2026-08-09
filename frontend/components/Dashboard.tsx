@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { AdminStats, OrderAnalytics, Order, OrderStatus, Item } from '../types';
 import { getAdminStats, getOrderAnalytics, getValidOrders, getItems } from '../services/api';
 import { TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, ArrowUpRight, Calendar, X, BarChart3, PackageCheck, ExternalLink, Eye, Edit, RefreshCw } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, Legend } from 'recharts';
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, Legend } from 'recharts';
+import { EmptyState, PageHeader, PageLoading, PageTabs, SectionHeader } from './ui';
 
 // 状态徽章组件
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
@@ -25,27 +26,24 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   };
 
   return (
-    <span className={`px-3 py-1.5 rounded-lg text-xs font-bold ${styles[status] || styles.cancelled}`}>
+    <span className={`status-badge ${styles[status] || styles.cancelled}`}>
       {labels[status] || status}
     </span>
   );
 };
 
 const StatCard: React.FC<{ title: string; value: string | number; icon: React.ElementType; colorClass: string; trend?: string }> = ({ title, value, icon: Icon, colorClass, trend }) => (
-  <div className="ios-card p-6 rounded-[2rem] flex flex-col justify-between hover:translate-y-[-4px] transition-all duration-300 h-full relative overflow-hidden group border-0">
-    <div className={`absolute -right-6 -top-6 w-32 h-32 ${colorClass} opacity-10 rounded-full group-hover:scale-125 transition-transform duration-500 blur-2xl`}></div>
-    <div className="flex justify-between items-start mb-6">
-      <div className={`p-4 rounded-2xl ${colorClass} bg-opacity-10 backdrop-blur-sm`}>
-        <Icon className={`w-6 h-6 ${colorClass.replace('bg-', 'text-')}`} />
-      </div>
-      {trend && <span className="text-xs font-bold text-black bg-[#FFE815] px-3 py-1.5 rounded-full flex items-center gap-1 shadow-sm">
+  <div className="metric-card">
+    <div className="flex items-start justify-between gap-3">
+      <span className={`flex h-9 w-9 items-center justify-center rounded-md ${colorClass}`}>
+        <Icon className="h-4 w-4 text-white" />
+      </span>
+      {trend && <span className="status-badge status-badge-success flex items-center gap-1">
         <TrendingUp className="w-3 h-3" /> {trend}
       </span>}
     </div>
-    <div className="relative z-10">
-      <h3 className="text-3xl font-extrabold text-gray-900 tracking-tight font-feature-settings-tnum">{value}</h3>
-      <p className="text-gray-500 text-sm font-medium mt-1">{title}</p>
-    </div>
+    <p className="metric-card__value">{value}</p>
+    <p className="metric-card__label mt-1">{title}</p>
   </div>
 );
 
@@ -335,13 +333,13 @@ const Dashboard: React.FC = () => {
   };
 
   if (dashboardLoading) {
-    return <div className="p-8 flex justify-center text-gray-400"><Activity className="w-8 h-8 animate-spin text-[#FFE815]" /></div>;
+    return <PageLoading label="正在汇总经营数据" />;
   }
 
   if (dashboardError || !stats || !analytics) {
     return (
-      <div className="p-8">
-        <div className="max-w-xl mx-auto border border-red-200 bg-red-50 p-6 rounded-lg">
+      <div className="p-4 sm:p-8">
+        <div className="section-panel mx-auto max-w-xl border-red-200 bg-red-50 p-5">
           <div className="flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
             <div className="flex-1">
@@ -350,7 +348,7 @@ const Dashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setReloadToken(value => value + 1)}
-                className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-semibold hover:bg-black"
+                className="ios-btn-secondary mt-4 inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm"
               >
                 <RefreshCw className="w-4 h-4" />
                 重试
@@ -431,62 +429,54 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-8 animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
-        <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">运营概览</h2>
-          <p className="text-gray-500 mt-2 text-base">欢迎回来，以下是闲鱼店铺的实时经营数据。</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="text-sm font-bold text-gray-700 bg-white px-5 py-2.5 rounded-full shadow-sm border border-gray-100 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></span>
-            系统正常运行
-          </div>
-        </div>
-      </div>
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="运营概览"
+        description="汇总账号、订单、营收和库存数据，快速判断当前经营状态。"
+        icon={BarChart3}
+        badge={(
+          <span className="status-badge status-badge-success flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-green-600" />
+            系统运行中
+          </span>
+        )}
+      />
 
       {/* Time Range Selector */}
-      <div className="flex flex-wrap gap-2 p-2 bg-gray-100/50 rounded-2xl">
-        {timeRangeOptions.map((option) => (
-          <button
-            key={option.key}
-            onClick={() => setTimeRange(option.key)}
-            className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
-              timeRange === option.key
-                ? 'bg-[#FFE815] text-black shadow-md'
-                : 'bg-white text-gray-600 hover:text-black hover:bg-gray-50'
-            }`}
-          >
-            {option.label}
-          </button>
-        ))}
+      <div className="toolbar">
+        <PageTabs
+          value={timeRange}
+          onChange={setTimeRange}
+          items={timeRangeOptions.map(option => ({ id: option.key, label: option.label }))}
+          ariaLabel="统计时间范围"
+        />
         {timeRange === 'custom' && (
-          <>
+          <div className="toolbar__group">
             <input
               type="date"
               value={customStartDate}
               onChange={(e) => setCustomStartDate(e.target.value)}
-              className="px-3 py-2 rounded-xl text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#FFE815]"
+              className="ios-input rounded-md px-3 py-2 text-sm"
             />
             <span className="self-center text-gray-400">-</span>
             <input
               type="date"
               value={customEndDate}
               onChange={(e) => setCustomEndDate(e.target.value)}
-              className="px-3 py-2 rounded-xl text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#FFE815]"
+              className="ios-input rounded-md px-3 py-2 text-sm"
             />
             <button
               onClick={() => setReloadToken(value => value + 1)}
-              className="px-4 py-2 rounded-xl text-sm font-bold bg-black text-white hover:bg-gray-800 transition-colors"
+              className="ios-btn-secondary rounded-md px-4 py-2 text-sm"
             >
               应用
             </button>
-          </>
+          </div>
         )}
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="metric-grid">
         <StatCard
           title="累计营收 (CNY)"
           value={`¥${analytics.revenue_stats.total_amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
@@ -515,44 +505,36 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Main Chart Section */}
-      <div className="ios-card p-8 rounded-[2rem]">
-        <div className="mb-10">
-          <h3 className="text-xl font-bold text-gray-900">营收趋势分析</h3>
-          <p className="text-sm text-gray-400 mt-1">最近7天的销售额走势</p>
-        </div>
-        <div className="h-[350px] w-full">
+      <div className="section-panel">
+        <SectionHeader title="营收趋势" description="所选时间范围内的销售额变化。" icon={TrendingUp} />
+        <div className="h-[340px] w-full p-4 sm:p-5">
           {chartData.length === 0 || analytics.revenue_stats.total_amount === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-gray-400">
-              <ShoppingCart className="w-16 h-16 mb-4 opacity-20" />
-              <p className="text-lg font-medium">暂无营收数据</p>
-              <p className="text-sm mt-2">所选时间范围内暂无订单记录</p>
-            </div>
+            <EmptyState compact title="暂无营收数据" description="所选时间范围内暂无订单记录。" icon={ShoppingCart} />
           ) : chartData.length <= 2 ? (
-            // 数据点少于等于2个时使用美化柱状图
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 30, right: 20, left: -20, bottom: 30 }} barCategoryGap={30}>
+              <BarChart data={chartData} margin={{ top: 18, right: 16, left: -20, bottom: 18 }} barCategoryGap={30}>
                 <XAxis
                   dataKey="name"
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#374151', fontSize: 14, fontWeight: 600}}
+                  tick={{fill: '#6d747c', fontSize: 12, fontWeight: 600}}
                   dy={10}
                 />
                 <YAxis
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#9CA3AF', fontSize: 13, fontWeight: 500}}
+                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
                   tickFormatter={(value) => `¥${value}`}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#1F2937',
-                    borderRadius: '16px',
-                    border: 'none',
-                    boxShadow: '0 20px 40px rgba(0, 0, 0, 0.3)',
-                    padding: '12px 16px'
+                    backgroundColor: '#ffffff',
+                    borderRadius: '6px',
+                    border: '1px solid #e4e6e8',
+                    boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)',
+                    padding: '10px 12px'
                   }}
-                  itemStyle={{ color: '#FFE815', fontWeight: 600 }}
+                  itemStyle={{ color: '#1f2328', fontWeight: 600 }}
                   formatter={(value) => {
                     const num = Number(value);
                     return `营收: ¥${num.toFixed(2)}`;
@@ -560,61 +542,54 @@ const Dashboard: React.FC = () => {
                 />
                 <Bar
                   dataKey="amount"
-                  fill="#FFE815"
-                  radius={[12, 12, 0, 0]}
-                  stroke="#000000"
+                  fill="#d6bc00"
+                  radius={[3, 3, 0, 0]}
                   strokeWidth={0}
-                >
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={['#FFE815', '#FCD34D', '#FBBF24'][index % 3]} />
-                  ))}
-                </Bar>
+                />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            // 数据点多于2个时使用折线图
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorAmount" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#FFE815" stopOpacity={0.5}/>
-                    <stop offset="95%" stopColor="#FFE815" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
+              <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <XAxis
                   dataKey="name"
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#9CA3AF', fontSize: 13, fontWeight: 500}}
+                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
                   dy={15}
                 />
                 <YAxis
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#9CA3AF', fontSize: 13, fontWeight: 500}}
+                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
                 />
-                <CartesianGrid vertical={false} stroke="#F3F4F6" strokeDasharray="3 3" />
+                <CartesianGrid vertical={false} stroke="#eef0f2" strokeDasharray="3 3" />
                 <Tooltip
-                  contentStyle={{ background: '#1A1A1A', borderRadius: '16px', border: 'none', boxShadow: '0 10px 40px rgba(0,0,0,0.2)' }}
-                  itemStyle={{ color: '#FFE815', fontWeight: 600 }}
-                  labelStyle={{ color: '#888' }}
-                  cursor={{ stroke: '#FFE815', strokeWidth: 2, strokeDasharray: '4 4' }}
+                  contentStyle={{
+                    background: '#ffffff',
+                    borderRadius: '6px',
+                    border: '1px solid #e4e6e8',
+                    boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)',
+                  }}
+                  itemStyle={{ color: '#1f2328', fontWeight: 600 }}
+                  labelStyle={{ color: '#6d747c' }}
+                  cursor={{ stroke: '#d6bc00', strokeWidth: 1, strokeDasharray: '4 4' }}
                 />
-                <Area type="monotone" dataKey="amount" stroke="#FACC15" strokeWidth={4} fillOpacity={1} fill="url(#colorAmount)" activeDot={{ r: 8, fill: '#1A1A1A', stroke: "#FFE815", strokeWidth: 2 }} />
-              </AreaChart>
+                <Line type="monotone" dataKey="amount" stroke="#c7ad00" strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+              </LineChart>
             </ResponsiveContainer>
           )}
         </div>
       </div>
 
       {/* 商品销量排行和订单来源分布 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* 商品销量排行 */}
-        <div className="ios-card p-6 rounded-[2rem]">
-          <h3 className="font-bold text-lg text-gray-900 mb-6">商品销量排行</h3>
+        <div className="section-panel p-4 sm:p-5">
+          <h3 className="section-title mb-5">商品销量排行</h3>
           <div className="h-[280px]">
             {productSalesData.length === 0 ? (
-              <div className="flex items-center justify-center h-full text-gray-400">暂无数据</div>
+              <EmptyState compact title="暂无商品销售数据" description="当前时间范围内没有可统计的商品订单。" icon={Package} />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={productSalesData} layout="vertical">
@@ -637,11 +612,11 @@ const Dashboard: React.FC = () => {
                     contentStyle={{
                       backgroundColor: '#fff',
                       border: '1px solid #e5e7eb',
-                      borderRadius: '12px',
-                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                      borderRadius: '6px',
+                      boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)'
                     }}
                   />
-                  <Bar dataKey="sales" fill="#000000" radius={[0, 8, 8, 0]} />
+                  <Bar dataKey="sales" fill="#c7ad00" radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -649,11 +624,11 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* 商品下单占比 */}
-        <div className="ios-card p-6 rounded-[2rem]">
-          <h3 className="font-bold text-lg text-gray-900 mb-6">商品下单占比</h3>
+        <div className="section-panel p-4 sm:p-5">
+          <h3 className="section-title mb-5">商品下单占比</h3>
           <div className="h-[280px]">
             {sourceDataData.length === 0 ? (
-              <div className="flex items-center justify-center h-full text-gray-400">暂无数据</div>
+              <EmptyState compact title="暂无订单状态数据" description="当前时间范围内没有可统计的订单。" icon={ShoppingCart} />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -686,17 +661,17 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 收支明细和品类营收 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* 参与统计的订单列表 */}
-        <div className="lg:col-span-2 ios-card p-0 rounded-[2rem] border-0 bg-white overflow-hidden flex flex-col">
-          <div className="p-6 border-b border-gray-50 flex justify-between items-center bg-[#FAFAFA]">
-            <h3 className="font-bold text-lg text-gray-900">参与统计的订单</h3>
+        <div className="section-panel flex flex-col lg:col-span-2">
+          <div className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50 px-4 py-3">
+            <h3 className="section-title">参与统计的订单</h3>
             <div className="relative">
               <input
                 placeholder="搜索订单号/商品/买家..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-4 pr-4 py-2 rounded-xl bg-white border border-gray-100 text-sm focus:border-yellow-400 outline-none w-48"
+                className="ios-input w-48 rounded-md px-3 py-2 text-sm"
                 type="text"
               />
             </div>
@@ -716,17 +691,17 @@ const Dashboard: React.FC = () => {
                 暂无订单数据
               </div>
             ) : (
-              <table className="w-full text-left border-collapse">
+              <table className="data-table min-w-[760px]">
                 <thead>
-                  <tr className="bg-white text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-50">
-                    <th className="px-6 py-4">订单信息</th>
-                    <th className="px-6 py-4">买家信息</th>
-                    <th className="px-6 py-4">金额</th>
-                    <th className="px-6 py-4">状态</th>
-                    <th className="px-6 py-4 text-right">操作</th>
+                  <tr>
+                    <th>订单信息</th>
+                    <th>买家信息</th>
+                    <th>金额</th>
+                    <th>状态</th>
+                    <th className="text-right">操作</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody>
                   {validOrders
                     .filter((order) =>
                       order.order_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -734,10 +709,10 @@ const Dashboard: React.FC = () => {
                       order.buyer_id?.toLowerCase().includes(searchTerm.toLowerCase())
                     )
                     .map((order) => (
-                      <tr key={order.order_id} className="hover:bg-[#FFFDE7]/50 transition-colors group">
-                        <td className="px-6 py-4">
+                      <tr key={order.order_id}>
+                        <td>
                           <div className="flex items-center gap-3">
-                            <div className="w-12 h-12 rounded-xl bg-gray-100 overflow-hidden shadow-sm border border-gray-100 flex-shrink-0">
+                            <div className="h-11 w-11 flex-shrink-0 overflow-hidden rounded-md border border-gray-100 bg-gray-100">
                               <PackageCheck className="w-full h-full text-gray-300 p-2" />
                             </div>
                             <div className="min-w-0">
@@ -749,24 +724,24 @@ const Dashboard: React.FC = () => {
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td>
                           <div className="text-sm font-bold text-gray-800">{order.buyer_id}</div>
                           {order.created_at && (
                             <div className="text-xs text-gray-400 mt-1">{order.created_at}</div>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-base font-extrabold text-gray-900 font-feature-settings-tnum">
+                        <td className="text-sm font-extrabold text-gray-900 font-feature-settings-tnum">
                           ¥{order.amount || '0.00'}
                         </td>
-                        <td className="px-6 py-4">
+                        <td>
                           <StatusBadge status={order.status || order.order_status || 'unknown'} />
                         </td>
-                        <td className="px-6 py-4 text-right">
+                        <td className="text-right">
                           <a
                             href={`https://www.goofish.com/order-detail?orderId=${order.order_id}&role=seller`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex text-gray-400 hover:text-amber-600 p-2 rounded-xl hover:bg-amber-50 transition-colors"
+                            className="inline-flex rounded-md p-2 text-gray-400 hover:bg-amber-50 hover:text-amber-600"
                             title="查看闲鱼详情"
                           >
                             <ExternalLink className="w-4 h-4" />
@@ -781,10 +756,10 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* 商品金额分析 */}
-        <div className="ios-card p-6 rounded-[2rem] bg-white">
-          <h3 className="font-bold text-lg text-gray-900 mb-6">商品金额分析 (TOP5)</h3>
+        <div className="section-panel p-4 sm:p-5">
+          <h3 className="section-title mb-5">商品金额分析（TOP 5）</h3>
           {categoryDataData.length === 0 ? (
-            <div className="flex items-center justify-center h-[300px] text-gray-400">暂无数据</div>
+            <EmptyState compact title="暂无商品占比数据" description="当前时间范围内没有可统计的商品销售记录。" icon={Package} />
           ) : (
             <>
               <div className="h-[300px] relative">
@@ -808,8 +783,8 @@ const Dashboard: React.FC = () => {
                       contentStyle={{
                         backgroundColor: '#fff',
                         border: '1px solid #e5e7eb',
-                        borderRadius: '12px',
-                        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                        borderRadius: '6px',
+                        boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)'
                       }}
                       formatter={(value: number) => `¥${value.toLocaleString()}`}
                     />

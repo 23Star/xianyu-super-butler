@@ -15,33 +15,58 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { AccountDetail, Card, Item, ShippingRule } from '../types';
+import {
+  AccountDetail,
+  Card,
+  Item,
+  ItemDeliveryConfigSummary,
+  ShippingRule,
+} from '../types';
 import {
   createManualItem,
   deleteItem,
   deleteShippingRule,
   getAccountDetails,
   getCards,
+  getItemDeliveryConfig,
+  getItemDeliveryConfigs,
   getItems,
   getShippingRules,
+  saveItemDeliveryConfig,
   syncItemsFromAccount,
   updateItemDetail,
   updateItemMultiQuantity,
-  updateItemMultiSpec,
   updateShippingRule,
 } from '../services/api';
 import { confirmAction } from '../services/feedback';
 import DeliveryProtection from './DeliveryProtection';
 import GeneralDeliveryRules from './GeneralDeliveryRules';
+import {
+  EmptyState,
+  NoticeBanner,
+  PageHeader,
+  PageLoading,
+  PageTabs,
+  SectionHeader,
+} from './ui';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
 type ItemSection = 'products' | 'rules' | 'protection';
 
-interface DeliveryForm {
+interface DeliveryVariantForm {
+  clientId: string;
+  displayName: string;
+  specText: string;
+  platformSkuId: string;
   cardId: string;
   deliveryCount: number;
-  description: string;
   enabled: boolean;
+}
+
+interface DeliveryForm {
+  enabled: boolean;
+  isMultiSpec: boolean;
+  variants: DeliveryVariantForm[];
 }
 
 interface ManualItemForm {
@@ -64,6 +89,16 @@ const emptyManualItem: ManualItemForm = {
   detail: '',
 };
 
+const createEmptyVariant = (index = 0): DeliveryVariantForm => ({
+  clientId: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+  displayName: '',
+  specText: '',
+  platformSkuId: '',
+  cardId: '',
+  deliveryCount: 1,
+  enabled: true,
+});
+
 const itemKey = (item: Pick<Item, 'cookie_id' | 'item_id'>) =>
   `${item.cookie_id}:${item.item_id}`;
 
@@ -76,6 +111,23 @@ const normalizeImageUrl = (url?: string) => {
   const value = url?.trim();
   if (!value) return '';
   return value.startsWith('//') ? `https:${value}` : value;
+};
+
+const cardTypeLabels: Record<Card['type'], string> = {
+  api: 'API 动态内容',
+  text: '固定文本',
+  data: '批量库存',
+  image: '图片内容',
+};
+
+const getCardStockLabel = (card?: Card) => {
+  if (!card) return '尚未选择发货库存';
+  if (!card.enabled) return '该库存已停用';
+  if (card.type === 'data') {
+    const count = (card.data_content || '').split(/\r?\n/).filter(line => line.trim()).length;
+    return `当前可用 ${count} 条`;
+  }
+  return cardTypeLabels[card.type];
 };
 
 const ItemImage: React.FC<{ item: Item }> = ({ item }) => {
@@ -134,6 +186,7 @@ const ItemList: React.FC = () => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const [shippingRules, setShippingRules] = useState<ShippingRule[]>([]);
+  const [deliveryConfigs, setDeliveryConfigs] = useState<ItemDeliveryConfigSummary[]>([]);
   const [activeSection, setActiveSection] = useState<ItemSection>('products');
   const [selectedAccount, setSelectedAccount] = useState('');
   const [loading, setLoading] = useState(true);
@@ -144,11 +197,11 @@ const ItemList: React.FC = () => {
   const [detailItem, setDetailItem] = useState<Item | null>(null);
   const [itemDetail, setItemDetail] = useState('');
   const [deliveryItem, setDeliveryItem] = useState<Item | null>(null);
+  const [deliveryLoading, setDeliveryLoading] = useState(false);
   const [deliveryForm, setDeliveryForm] = useState<DeliveryForm>({
-    cardId: '',
-    deliveryCount: 1,
-    description: '',
     enabled: true,
+    isMultiSpec: false,
+    variants: [createEmptyVariant()],
   });
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualForm, setManualForm] = useState<ManualItemForm>(emptyManualItem);
@@ -176,19 +229,41 @@ const ItemList: React.FC = () => {
     [shippingRules],
   );
 
+  const deliveryConfigMap = useMemo(
+    () => new Map(deliveryConfigs.map(config => [
+      `${config.cookie_id}:${config.item_id}`,
+      config,
+    ])),
+    [deliveryConfigs],
+  );
+
+  const configuredItemCount = useMemo(() => {
+    const configuredKeys = new Set(
+      deliveryConfigs.map(config => `${config.cookie_id}:${config.item_id}`),
+    );
+    shippingRules.forEach(rule => {
+      if (rule.cookie_id && rule.item_id) {
+        configuredKeys.add(`${rule.cookie_id}:${rule.item_id}`);
+      }
+    });
+    return configuredKeys.size;
+  }, [deliveryConfigs, shippingRules]);
+
   const loadData = async () => {
     setLoading(true);
     try {
-      const [accountData, itemData, cardData, ruleData] = await Promise.all([
+      const [accountData, itemData, cardData, ruleData, configData] = await Promise.all([
         getAccountDetails(),
         getItems(),
         getCards(),
         getShippingRules(),
+        getItemDeliveryConfigs(),
       ]);
       setAccounts(accountData);
       setItems(itemData);
       setCards(cardData);
       setShippingRules(ruleData);
+      setDeliveryConfigs(configData);
       setSelectedAccount(current => current || accountData[0]?.id || '');
     } catch (error) {
       setNotice({
@@ -203,6 +278,10 @@ const ItemList: React.FC = () => {
   const reloadRules = async () => {
     const rules = await getShippingRules();
     setShippingRules(rules);
+  };
+
+  const reloadDeliveryConfigs = async () => {
+    setDeliveryConfigs(await getItemDeliveryConfigs());
   };
 
   useEffect(() => {
@@ -284,39 +363,134 @@ const ItemList: React.FC = () => {
     }
   };
 
-  const openDelivery = (item: Item) => {
-    const rule = ruleMap.get(itemKey(item));
+  const openDelivery = async (item: Item) => {
+    const legacyRule = ruleMap.get(itemKey(item));
     setDeliveryItem(item);
-    setDeliveryForm({
-      cardId: rule?.card_group_id ? String(rule.card_group_id) : '',
-      deliveryCount: Math.max(1, rule?.priority || 1),
-      description: rule?.name || '',
-      enabled: rule?.enabled ?? true,
+    setDeliveryLoading(true);
+    try {
+      const config = await getItemDeliveryConfig(item.cookie_id, item.item_id);
+      if (config.configured && config.variants.length > 0) {
+        setDeliveryForm({
+          enabled: config.enabled,
+          isMultiSpec: config.is_multi_spec,
+          variants: config.variants.map((variant, index) => ({
+            clientId: String(variant.id || createEmptyVariant(index).clientId),
+            displayName: variant.display_name || '',
+            specText: variant.spec_text || '',
+            platformSkuId: variant.platform_sku_id || '',
+            cardId: variant.card_id ? String(variant.card_id) : '',
+            deliveryCount: Math.max(1, variant.delivery_count || 1),
+            enabled: variant.enabled && variant.binding_enabled,
+          })),
+        });
+      } else {
+        setDeliveryForm({
+          enabled: legacyRule?.enabled ?? true,
+          isMultiSpec: false,
+          variants: [{
+            ...createEmptyVariant(),
+            displayName: '默认规格',
+            cardId: legacyRule?.card_group_id ? String(legacyRule.card_group_id) : '',
+            deliveryCount: Math.max(1, legacyRule?.priority || 1),
+          }],
+        });
+      }
+    } catch (error) {
+      setDeliveryItem(null);
+      setNotice({
+        type: 'error',
+        message: error instanceof Error ? error.message : '发货配置加载失败',
+      });
+    } finally {
+      setDeliveryLoading(false);
+    }
+  };
+
+  const updateDeliveryVariant = (
+    clientId: string,
+    patch: Partial<DeliveryVariantForm>,
+  ) => {
+    setDeliveryForm(current => ({
+      ...current,
+      variants: current.variants.map(variant =>
+        variant.clientId === clientId ? { ...variant, ...patch } : variant,
+      ),
+    }));
+  };
+
+  const addDeliveryVariant = () => {
+    setDeliveryForm(current => ({
+      ...current,
+      variants: [...current.variants, createEmptyVariant(current.variants.length)],
+    }));
+  };
+
+  const removeDeliveryVariant = (clientId: string) => {
+    setDeliveryForm(current => {
+      if (current.variants.length <= 1) return current;
+      return {
+        ...current,
+        variants: current.variants.filter(variant => variant.clientId !== clientId),
+      };
     });
   };
 
   const handleSaveDelivery = async () => {
     if (!deliveryItem) return;
-    if (!deliveryForm.cardId) {
-      setNotice({ type: 'error', message: '请选择自动发货使用的卡密或内容' });
+    const variantsToSave = deliveryForm.isMultiSpec
+      ? deliveryForm.variants
+      : deliveryForm.variants.slice(0, 1);
+    if (variantsToSave.length === 0) {
+      setNotice({ type: 'error', message: '至少需要保留一个商品规格' });
+      return;
+    }
+    const invalidIndex = variantsToSave.findIndex(variant =>
+      !variant.cardId || (
+        deliveryForm.isMultiSpec
+        && (!variant.displayName.trim() || !variant.specText.trim())
+      ),
+    );
+    if (invalidIndex >= 0) {
+      setNotice({
+        type: 'error',
+        message: deliveryForm.isMultiSpec
+          ? `请完整填写第 ${invalidIndex + 1} 个规格名称、规格组合和发货库存`
+          : '请选择自动发货使用的卡密或内容',
+      });
       return;
     }
 
     const key = itemKey(deliveryItem);
-    const existing = ruleMap.get(key);
+    const legacyRule = ruleMap.get(key);
     setSavingKey(key);
     try {
-      await updateShippingRule({
-        id: existing?.id,
-        item_keyword: '',
-        cookie_id: deliveryItem.cookie_id,
-        item_id: deliveryItem.item_id,
-        card_group_id: Number(deliveryForm.cardId),
-        priority: Math.max(1, Math.floor(deliveryForm.deliveryCount || 1)),
-        name: deliveryForm.description.trim() || `${deliveryItem.item_title || deliveryItem.item_id} 自动发货`,
+      await saveItemDeliveryConfig(deliveryItem.cookie_id, deliveryItem.item_id, {
         enabled: deliveryForm.enabled,
+        is_multi_spec: deliveryForm.isMultiSpec,
+        variants: variantsToSave.map(variant => ({
+          display_name: deliveryForm.isMultiSpec
+            ? variant.displayName.trim()
+            : '默认规格',
+          spec_text: deliveryForm.isMultiSpec ? variant.specText.trim() : '',
+          spec_payload: undefined,
+          platform_sku_id: deliveryForm.isMultiSpec ? variant.platformSkuId.trim() : '',
+          card_id: Number(variant.cardId),
+          delivery_count: Math.max(1, Math.floor(variant.deliveryCount || 1)),
+          enabled: variant.enabled,
+          binding_enabled: variant.enabled,
+          source: 'manual',
+        })),
       });
-      await reloadRules();
+      if (legacyRule) {
+        await deleteShippingRule(legacyRule.id);
+        setShippingRules(current => current.filter(rule => rule.id !== legacyRule.id));
+      }
+      setItems(current => current.map(item =>
+        itemKey(item) === key
+          ? { ...item, is_multi_spec: deliveryForm.isMultiSpec }
+          : item,
+      ));
+      await reloadDeliveryConfigs();
       setDeliveryItem(null);
       setNotice({ type: 'success', message: '商品自动发货配置已保存' });
     } catch (error) {
@@ -328,18 +502,41 @@ const ItemList: React.FC = () => {
 
   const handleToggleDelivery = async (item: Item) => {
     const key = itemKey(item);
-    const rule = ruleMap.get(key);
-    if (!rule) {
-      openDelivery(item);
+    const configSummary = deliveryConfigMap.get(key);
+    const legacyRule = ruleMap.get(key);
+    if (!configSummary && !legacyRule) {
+      void openDelivery(item);
       return;
     }
 
     setSavingKey(key);
     try {
-      await updateShippingRule({ ...rule, enabled: !rule.enabled });
-      setShippingRules(current => current.map(currentRule =>
-        currentRule.id === rule.id ? { ...currentRule, enabled: !rule.enabled } : currentRule,
-      ));
+      if (configSummary) {
+        const config = await getItemDeliveryConfig(item.cookie_id, item.item_id);
+        await saveItemDeliveryConfig(item.cookie_id, item.item_id, {
+          enabled: !config.enabled,
+          is_multi_spec: config.is_multi_spec,
+          variants: config.variants.map(variant => ({
+            display_name: variant.display_name,
+            spec_text: variant.spec_text,
+            spec_payload: variant.spec_payload,
+            platform_sku_id: variant.platform_sku_id,
+            card_id: variant.card_id,
+            delivery_count: variant.delivery_count,
+            enabled: variant.enabled,
+            binding_enabled: variant.binding_enabled,
+            source: variant.source || 'manual',
+          })),
+        });
+        await reloadDeliveryConfigs();
+      } else if (legacyRule) {
+        await updateShippingRule({ ...legacyRule, enabled: !legacyRule.enabled });
+        setShippingRules(current => current.map(currentRule =>
+          currentRule.id === legacyRule.id
+            ? { ...currentRule, enabled: !legacyRule.enabled }
+            : currentRule,
+        ));
+      }
     } catch (error) {
       setNotice({ type: 'error', message: error instanceof Error ? error.message : '状态更新失败' });
     } finally {
@@ -357,6 +554,9 @@ const ItemList: React.FC = () => {
       await deleteItem(item.cookie_id, item.item_id);
       setItems(current => current.filter(currentItem => itemKey(currentItem) !== key));
       setShippingRules(current => current.filter(currentRule => currentRule.id !== rule?.id));
+      setDeliveryConfigs(current => current.filter(config =>
+        `${config.cookie_id}:${config.item_id}` !== key,
+      ));
       setNotice({ type: 'success', message: '商品及其专属发货配置已删除' });
     } catch (error) {
       setNotice({ type: 'error', message: error instanceof Error ? error.message : '删除失败' });
@@ -367,17 +567,13 @@ const ItemList: React.FC = () => {
 
   const toggleSetting = async (
     item: Item,
-    field: 'is_multi_spec' | 'multi_quantity_delivery',
+    field: 'multi_quantity_delivery',
   ) => {
     const key = itemKey(item);
     const enabled = !Boolean(item[field]);
     setSavingKey(key);
     try {
-      if (field === 'is_multi_spec') {
-        await updateItemMultiSpec(item.cookie_id, item.item_id, enabled);
-      } else {
-        await updateItemMultiQuantity(item.cookie_id, item.item_id, enabled);
-      }
+      await updateItemMultiQuantity(item.cookie_id, item.item_id, enabled);
       setItems(current => current.map(currentItem =>
         itemKey(currentItem) === key ? { ...currentItem, [field]: enabled } : currentItem,
       ));
@@ -389,229 +585,258 @@ const ItemList: React.FC = () => {
   };
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-yellow-500" />
-      </div>
-    );
+    return <PageLoading label="正在加载商品与发货配置" />;
   }
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div>
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">商品与发货</h2>
-          <p className="mt-1 text-sm text-gray-500">
-            管理商品、专属与通用发货策略，以及发货前风险拦截。
-          </p>
-        </div>
-      </div>
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="商品与发货"
+        description="同步闲鱼商品，在同一处维护本地详情、专属发货、通用兜底规则和发货保护。"
+        icon={Box}
+        badge={<span className="status-badge status-badge-info">{items.length} 件商品</span>}
+      />
 
-      <div>
-        <div className="grid w-full grid-cols-3 rounded-lg bg-gray-200/70 p-1 sm:inline-flex sm:w-auto">
-          {([
-            { id: 'products', label: '商品与专属发货', icon: ShoppingBag },
-            { id: 'rules', label: '通用发货规则', icon: ListChecks },
-            { id: 'protection', label: '发货保护与黑名单', icon: ShieldAlert },
-          ] as const).map(section => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.id}
-                type="button"
-                onClick={() => setActiveSection(section.id)}
-                className={`relative flex min-h-[68px] min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1.5 py-2 text-center text-xs font-bold leading-4 transition-colors sm:min-h-0 sm:flex-row sm:gap-2 sm:px-4 sm:text-sm ${
-                  activeSection === section.id
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span className="whitespace-normal sm:whitespace-nowrap">{section.label}</span>
-                {section.id === 'products' && (
-                  <span className="absolute right-1.5 top-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-none sm:static sm:px-2 sm:text-xs sm:leading-normal">
-                    {items.length}
-                  </span>
-                )}
-                {section.id === 'rules' && (
-                  <span className="absolute right-1.5 top-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-none sm:static sm:px-2 sm:text-xs sm:leading-normal">
-                    {genericRules.length}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <PageTabs
+        value={activeSection}
+        onChange={setActiveSection}
+        items={[
+          { id: 'products', label: '商品与专属发货', icon: ShoppingBag, count: items.length },
+          { id: 'rules', label: '通用发货规则', icon: ListChecks, count: genericRules.length },
+          { id: 'protection', label: '发货保护与黑名单', icon: ShieldAlert },
+        ]}
+        ariaLabel="商品与发货功能"
+      />
 
       {notice && (
-        <div
-          role="status"
-          className={`flex items-center justify-between gap-4 rounded-md border px-4 py-3 text-sm ${
-            notice.type === 'success'
-              ? 'border-green-200 bg-green-50 text-green-800'
-              : 'border-red-200 bg-red-50 text-red-700'
-          }`}
-        >
-          <span>{notice.message}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label="关闭提示">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+        <NoticeBanner
+          type={notice.type}
+          message={notice.message}
+          onClose={() => setNotice(null)}
+        />
       )}
 
-      <section hidden={activeSection !== 'products'} className="space-y-5">
-        <div className="flex flex-col justify-end gap-2 sm:flex-row">
-          <select
-            className="ios-input min-w-56 rounded-md px-3 py-2.5 text-sm"
-            value={selectedAccount}
-            onChange={event => setSelectedAccount(event.target.value)}
-            aria-label="选择同步账号"
-          >
-            <option value="">选择需要同步的账号</option>
-            {accounts.map(account => (
-              <option key={account.id} value={account.id}>{accountNames.get(account.id)}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={openManualModal}
-            className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 font-bold"
-          >
-            <Plus className="h-4 w-4" />
-            手动添加
-          </button>
-          <button
-            type="button"
-            onClick={handleSync}
-            disabled={syncing || !selectedAccount}
-            className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-5 py-2.5 font-bold disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? '同步中' : '同步商品'}
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {items.map(item => {
-          const key = itemKey(item);
-          const busy = savingKey === key;
-          const rule = ruleMap.get(key);
-          return (
-            <article key={key} className="ios-card rounded-lg border border-gray-200 p-4">
-              <div className="flex gap-4">
-                <div className="h-24 w-24 flex-none overflow-hidden rounded-md bg-gray-100">
-                  <ItemImage item={item} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="min-h-10 line-clamp-2 text-sm font-bold text-gray-900">
-                    {item.item_title || '未命名商品'}
-                  </h3>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <span className="font-bold text-red-600">{formatPrice(item.item_price)}</span>
-                    <span className="truncate text-xs text-gray-400">ID {item.item_id}</span>
-                  </div>
-                  <div className="mt-2 text-xs leading-5 text-gray-500">
-                    <p className="break-words font-medium text-gray-600">
-                      {accountNames.get(item.cookie_id) || '未命名账号'}
-                    </p>
-                    <p className="break-all font-mono text-gray-400">账号 {item.cookie_id}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <PackageCheck className={`h-4 w-4 ${rule?.enabled ? 'text-green-600' : 'text-gray-400'}`} />
-                      <span className="text-sm font-bold text-gray-800">自动发货</span>
-                    </div>
-                    <p className="mt-1 truncate text-xs text-gray-500">
-                      {rule
-                        ? `${rule.card_group_name || `卡密 ${rule.card_group_id}`} · 每单 ${rule.priority} 份`
-                        : '未配置发货内容'}
-                    </p>
-                  </div>
-                  <Toggle
-                    checked={Boolean(rule?.enabled)}
-                    disabled={busy}
-                    label={`${item.item_title || item.item_id} 自动发货`}
-                    onChange={() => handleToggleDelivery(item)}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => openDelivery(item)}
-                  disabled={busy}
-                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
+      <section hidden={activeSection !== 'products'} className="space-y-4">
+        <div className="section-panel">
+          <SectionHeader
+            title="商品同步"
+            description="选择闲鱼账号后同步在售商品；未同步到的商品可手动添加并配置发货。"
+            icon={RefreshCw}
+          />
+          <div className="toolbar border-0 shadow-none">
+            <div className="toolbar__group">
+              <label className="min-w-0 sm:min-w-64">
+                <span className="field-label">同步账号</span>
+                <select
+                  className="ios-input w-full rounded-md px-3 py-2 text-sm"
+                  value={selectedAccount}
+                  onChange={event => setSelectedAccount(event.target.value)}
+                  aria-label="选择同步账号"
                 >
-                  <Settings2 className="h-4 w-4" />
-                  {rule ? '配置发货策略' : '设置自动发货'}
-                </button>
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => toggleSetting(item, 'is_multi_spec')}
-                  className={`rounded-md border px-3 py-2 text-xs font-semibold ${
-                    item.is_multi_spec
-                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  多规格 {item.is_multi_spec ? '已开启' : '已关闭'}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => toggleSetting(item, 'multi_quantity_delivery')}
-                  className={`rounded-md border px-3 py-2 text-xs font-semibold ${
-                    item.multi_quantity_delivery
-                      ? 'border-green-200 bg-green-50 text-green-700'
-                      : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  多数量 {item.multi_quantity_delivery ? '已开启' : '已关闭'}
-                </button>
-              </div>
-
-              <div className="mt-3 flex justify-end gap-1 border-t border-gray-100 pt-3">
-                <button
-                  type="button"
-                  onClick={() => openDetail(item)}
-                  disabled={busy}
-                  className="rounded-md p-2 text-gray-600 hover:bg-gray-100"
-                  title="编辑本地详情"
-                  aria-label="编辑本地详情"
-                >
-                  <Edit className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(item)}
-                  disabled={busy}
-                  className="rounded-md p-2 text-red-500 hover:bg-red-50"
-                  title="删除本地记录"
-                  aria-label="删除本地记录"
-                >
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                </button>
-              </div>
-            </article>
-          );
-        })}
-
-        {items.length === 0 && (
-          <div className="col-span-full rounded-lg border border-dashed border-gray-300 bg-white py-20 text-center text-gray-400">
-            <ShoppingBag className="mx-auto mb-3 h-10 w-10 opacity-40" />
-            <p className="font-medium">暂无商品数据</p>
-            <p className="mt-1 text-sm">同步闲鱼商品，或手动添加一件商品。</p>
+                  <option value="">请选择闲鱼账号</option>
+                  {accounts.map(account => (
+                    <option key={account.id} value={account.id}>{accountNames.get(account.id)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="toolbar__group self-end">
+              <button
+                type="button"
+                onClick={openManualModal}
+                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+              >
+                <Plus className="h-4 w-4" />
+                手动添加
+              </button>
+              <button
+                type="button"
+                onClick={handleSync}
+                disabled={syncing || !selectedAccount}
+                className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+              >
+                <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? '正在同步' : '同步商品'}
+              </button>
+            </div>
           </div>
-        )}
         </div>
+
+        <section className="section-panel">
+          <SectionHeader
+            title="商品列表"
+            description={`已配置专属发货 ${configuredItemCount} 件，覆盖 ${new Set(items.map(item => item.cookie_id)).size} 个账号。`}
+            icon={ShoppingBag}
+          />
+
+          {items.length > 0 ? (
+            <>
+              <div className="hidden grid-cols-[minmax(300px,1.55fr)_minmax(220px,1.1fr)_minmax(170px,.8fr)_96px] gap-5 border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-bold text-gray-500 xl:grid">
+                <span>商品信息</span>
+                <span>专属自动发货</span>
+                <span>商品能力</span>
+                <span className="text-right">操作</span>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {items.map(item => {
+                  const key = itemKey(item);
+                  const busy = savingKey === key;
+                  const rule = ruleMap.get(key);
+                  const configSummary = deliveryConfigMap.get(key);
+                  const deliveryConfigured = Boolean(configSummary || rule);
+                  const deliveryEnabled = configSummary?.enabled ?? Boolean(rule?.enabled);
+                  const deliveryIncomplete = Boolean(configSummary && !configSummary.complete);
+                  const statusClass = deliveryEnabled
+                    ? (deliveryIncomplete ? 'status-badge-warning' : 'status-badge-success')
+                    : (deliveryConfigured ? 'status-badge-warning' : 'status-badge-info');
+                  const statusText = deliveryEnabled
+                    ? (deliveryIncomplete ? '待完善' : '发货中')
+                    : (deliveryConfigured ? '已暂停' : '未配置');
+                  const deliveryTitle = configSummary
+                    ? (
+                      configSummary.is_multi_spec
+                        ? `${configSummary.configured_count}/${configSummary.variant_count} 个规格已绑定`
+                        : '普通商品发货'
+                    )
+                    : (
+                      rule?.card_group_name
+                      || (rule ? `卡密 ${rule.card_group_id}` : '尚未绑定发货内容')
+                    );
+                  const deliveryDescription = configSummary
+                    ? (
+                      configSummary.complete
+                        ? `累计发货 ${configSummary.delivery_times} 次`
+                        : '存在未启用或不可用的规格库存'
+                    )
+                    : (rule ? `每单发货 ${rule.priority} 份` : '配置后可按订单自动发货');
+                  return (
+                    <article
+                      key={key}
+                      className="grid gap-4 px-4 py-4 transition-colors hover:bg-[#fffdf0] xl:grid-cols-[minmax(300px,1.55fr)_minmax(220px,1.1fr)_minmax(170px,.8fr)_96px] xl:items-center xl:gap-5"
+                    >
+                      <div className="flex min-w-0 gap-3">
+                        <div className="h-20 w-20 flex-none overflow-hidden rounded-md border border-gray-200 bg-gray-100">
+                          <ItemImage item={item} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 flex-wrap items-start gap-2">
+                            <h3 className="min-w-0 flex-1 text-sm font-bold leading-5 text-gray-900">
+                              {item.item_title || '未命名商品'}
+                            </h3>
+                            <span className={`status-badge shrink-0 ${statusClass}`}>
+                              {statusText}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-lg font-bold text-[#d92d20]">{formatPrice(item.item_price)}</p>
+                          <p className="mt-1 truncate text-xs text-gray-500">
+                            {accountNames.get(item.cookie_id) || '未命名账号'}
+                            <span className="mx-1.5 text-gray-300">·</span>
+                            <span className="font-mono">{item.cookie_id}</span>
+                          </p>
+                          <p className="mt-0.5 truncate font-mono text-xs text-gray-400">商品 ID {item.item_id}</p>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-gray-100 pt-3 xl:border-0 xl:pt-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <PackageCheck className={`h-4 w-4 shrink-0 ${deliveryEnabled ? 'text-green-600' : 'text-gray-400'}`} />
+                              <span className="text-sm font-bold text-gray-800">
+                                {deliveryTitle}
+                              </span>
+                            </div>
+                            <p className="mt-1 truncate text-xs text-gray-500">
+                              {deliveryDescription}
+                            </p>
+                          </div>
+                          <Toggle
+                            checked={deliveryEnabled}
+                            disabled={busy}
+                            label={`${item.item_title || item.item_id} 自动发货`}
+                            onChange={() => handleToggleDelivery(item)}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openDelivery(item)}
+                          disabled={busy}
+                          className="ios-btn-secondary mt-3 flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-xs"
+                        >
+                          <Settings2 className="h-4 w-4" />
+                          {deliveryConfigured ? '编辑发货策略' : '配置自动发货'}
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 border-t border-gray-100 pt-3 xl:grid-cols-1 xl:border-0 xl:pt-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs font-semibold text-gray-600">规格模式</span>
+                          <span className="text-xs font-bold text-gray-800">
+                            {configSummary
+                              ? (
+                                configSummary.is_multi_spec
+                                  ? `${configSummary.variant_count} 个规格`
+                                  : '普通商品'
+                              )
+                              : (item.is_multi_spec ? '旧版多规格' : '普通商品')}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs font-semibold text-gray-600">多数量</span>
+                          <Toggle
+                            checked={Boolean(item.multi_quantity_delivery)}
+                            disabled={busy}
+                            label={`${item.item_title || item.item_id} 多数量发货`}
+                            onChange={() => toggleSetting(item, 'multi_quantity_delivery')}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3 xl:flex-col xl:items-end xl:border-0 xl:pt-0">
+                        <span className="text-xs text-gray-400 xl:text-right">
+                          {item.item_detail ? '详情已维护' : '暂无详情'}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openDetail(item)}
+                            disabled={busy}
+                            className="rounded-md p-2 text-gray-600 hover:bg-gray-100"
+                            title="编辑本地详情"
+                            aria-label="编辑本地详情"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(item)}
+                            disabled={busy}
+                            className="rounded-md p-2 text-red-500 hover:bg-red-50"
+                            title="删除本地记录"
+                            aria-label="删除本地记录"
+                          >
+                            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <EmptyState
+              title="暂无商品数据"
+              description="先选择闲鱼账号同步在售商品，也可以手动添加商品并直接配置自动发货。"
+              icon={ShoppingBag}
+              action={(
+                <button type="button" onClick={openManualModal} className="ios-btn-secondary rounded-md px-4 py-2 text-sm">
+                  手动添加商品
+                </button>
+              )}
+            />
+          )}
+        </section>
       </section>
 
       <section hidden={activeSection !== 'rules'}>
@@ -624,22 +849,20 @@ const ItemList: React.FC = () => {
       </section>
 
       <section hidden={activeSection !== 'protection'}>
-        <div className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5">
-          <DeliveryProtection
-            accounts={accounts}
-            items={items}
-            selectedAccount={selectedAccount}
-            onSelectedAccountChange={setSelectedAccount}
-          />
-        </div>
+        <DeliveryProtection
+          accounts={accounts}
+          items={items}
+          selectedAccount={selectedAccount}
+          onSelectedAccountChange={setSelectedAccount}
+        />
       </section>
 
       {deliveryItem && createPortal(
         <div className="modal-overlay">
-          <div className="modal-container">
+          <div className="modal-container modal-container-lg">
             <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-xl font-bold text-gray-900">商品自动发货</h3>
+                <h3 className="text-lg font-bold text-gray-900">商品自动发货</h3>
                 <p className="mt-1 line-clamp-1 text-sm text-gray-500">
                   {deliveryItem.item_title || deliveryItem.item_id}
                 </p>
@@ -649,64 +872,208 @@ const ItemList: React.FC = () => {
               </button>
             </div>
             <div className="modal-body space-y-5">
-              <div>
-                <label className="mb-2 block text-sm font-bold text-gray-700" htmlFor="delivery-card">
-                  发货卡密或内容
-                </label>
-                <select
-                  id="delivery-card"
-                  value={deliveryForm.cardId}
-                  onChange={event => setDeliveryForm(current => ({ ...current, cardId: event.target.value }))}
-                  className="ios-input w-full rounded-md px-3 py-2.5"
-                >
-                  <option value="">请选择卡密</option>
-                  {cards.map(card => (
-                    <option key={card.id} value={card.id} disabled={!card.enabled}>
-                      {card.name || `卡密 ${card.id}`}{card.enabled ? '' : '（已停用）'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-bold text-gray-700" htmlFor="delivery-count">
-                  每单发货数量
-                </label>
-                <input
-                  id="delivery-count"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={deliveryForm.deliveryCount}
-                  onChange={event => setDeliveryForm(current => ({
-                    ...current,
-                    deliveryCount: Math.max(1, Number(event.target.value) || 1),
-                  }))}
-                  className="ios-input w-full rounded-md px-3 py-2.5"
-                />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-bold text-gray-700" htmlFor="delivery-description">
-                  策略备注
-                </label>
-                <input
-                  id="delivery-description"
-                  value={deliveryForm.description}
-                  onChange={event => setDeliveryForm(current => ({ ...current, description: event.target.value }))}
-                  className="ios-input w-full rounded-md px-3 py-2.5"
-                  placeholder="例如：Kimi 周卡自动发货"
-                />
-              </div>
-              <div className="flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 p-4">
-                <div>
-                  <p className="text-sm font-bold text-gray-800">启用自动发货</p>
-                  <p className="mt-1 text-xs text-gray-500">关闭后保留策略，但不会触发发货。</p>
-                </div>
-                <Toggle
-                  checked={deliveryForm.enabled}
-                  label="启用商品自动发货"
-                  onChange={() => setDeliveryForm(current => ({ ...current, enabled: !current.enabled }))}
-                />
-              </div>
+              {deliveryLoading ? (
+                <PageLoading label="正在加载商品发货配置" />
+              ) : (
+                <>
+                  <div className="grid gap-3 rounded-md border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-gray-500">所属账号</p>
+                      <p className="mt-1 truncate text-sm font-bold text-gray-900">
+                        {accountNames.get(deliveryItem.cookie_id) || deliveryItem.cookie_id}
+                      </p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-gray-500">商品 ID</p>
+                      <p className="mt-1 truncate font-mono text-sm text-gray-900">{deliveryItem.item_id}</p>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 sm:justify-end">
+                      <div className="sm:text-right">
+                        <p className="text-sm font-bold text-gray-900">自动发货</p>
+                        <p className="mt-1 text-xs text-gray-500">关闭后保留全部绑定</p>
+                      </div>
+                      <Toggle
+                        checked={deliveryForm.enabled}
+                        label="启用商品自动发货"
+                        onChange={() => setDeliveryForm(current => ({ ...current, enabled: !current.enabled }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-sm font-bold text-gray-800">商品规格模式</p>
+                    <div className="grid grid-cols-2 rounded-md border border-gray-200 bg-gray-100 p-1" role="radiogroup" aria-label="商品规格模式">
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={!deliveryForm.isMultiSpec}
+                        onClick={() => setDeliveryForm(current => ({ ...current, isMultiSpec: false }))}
+                        className={`rounded px-3 py-2 text-sm font-semibold ${
+                          !deliveryForm.isMultiSpec
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-800'
+                        }`}
+                      >
+                        普通商品
+                      </button>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={deliveryForm.isMultiSpec}
+                        onClick={() => setDeliveryForm(current => ({ ...current, isMultiSpec: true }))}
+                        className={`rounded px-3 py-2 text-sm font-semibold ${
+                          deliveryForm.isMultiSpec
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-800'
+                        }`}
+                      >
+                        多规格商品
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-gray-500">
+                      {deliveryForm.isMultiSpec
+                        ? '订单规格必须与下方某一规格组合精确匹配，否则系统会阻止发货，不会使用其他规格库存兜底。'
+                        : '所有订单使用同一个发货库存；如商品有套餐、周期或版本差异，请切换为多规格商品。'}
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {(deliveryForm.isMultiSpec
+                      ? deliveryForm.variants
+                      : deliveryForm.variants.slice(0, 1)
+                    ).map((variant, index) => {
+                      const selectedCard = cards.find(card => String(card.id) === variant.cardId);
+                      return (
+                        <article key={variant.clientId} className="rounded-md border border-gray-200 bg-white">
+                          <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+                            <div className="min-w-0">
+                              <h4 className="truncate text-sm font-bold text-gray-900">
+                                {deliveryForm.isMultiSpec
+                                  ? (variant.displayName.trim() || `规格 ${index + 1}`)
+                                  : '默认发货配置'}
+                              </h4>
+                              <p className="mt-0.5 truncate text-xs text-gray-500">
+                                {deliveryForm.isMultiSpec
+                                  ? (variant.specText.trim() || '等待填写规格组合')
+                                  : '适用于该商品的全部订单'}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Toggle
+                                checked={variant.enabled}
+                                label={`${variant.displayName || `规格 ${index + 1}`} 启用状态`}
+                                onChange={() => updateDeliveryVariant(variant.clientId, { enabled: !variant.enabled })}
+                              />
+                              {deliveryForm.isMultiSpec && deliveryForm.variants.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeDeliveryVariant(variant.clientId)}
+                                  className="rounded-md p-2 text-red-500 hover:bg-red-50"
+                                  title="删除规格"
+                                  aria-label={`删除规格 ${index + 1}`}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid gap-4 p-4 sm:grid-cols-2">
+                            {deliveryForm.isMultiSpec && (
+                              <>
+                                <div>
+                                  <label className="field-label" htmlFor={`variant-name-${variant.clientId}`}>规格显示名称</label>
+                                  <input
+                                    id={`variant-name-${variant.clientId}`}
+                                    value={variant.displayName}
+                                    onChange={event => updateDeliveryVariant(variant.clientId, { displayName: event.target.value })}
+                                    className="ios-input w-full rounded-md px-3 py-2.5"
+                                    placeholder="例如：周卡 / 独享"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="field-label" htmlFor={`variant-spec-${variant.clientId}`}>规格组合</label>
+                                  <input
+                                    id={`variant-spec-${variant.clientId}`}
+                                    value={variant.specText}
+                                    onChange={event => updateDeliveryVariant(variant.clientId, { specText: event.target.value })}
+                                    className="ios-input w-full rounded-md px-3 py-2.5"
+                                    placeholder="周期=周卡 | 版本=独享"
+                                  />
+                                </div>
+                                <div className="sm:col-span-2">
+                                  <label className="field-label" htmlFor={`variant-sku-${variant.clientId}`}>
+                                    闲鱼 SKU ID <span className="font-normal text-gray-400">（可选，填写后优先匹配）</span>
+                                  </label>
+                                  <input
+                                    id={`variant-sku-${variant.clientId}`}
+                                    value={variant.platformSkuId}
+                                    onChange={event => updateDeliveryVariant(variant.clientId, { platformSkuId: event.target.value })}
+                                    className="ios-input w-full rounded-md px-3 py-2.5 font-mono"
+                                    placeholder="从订单或商品接口获取的平台规格 ID"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            <div>
+                              <label className="field-label" htmlFor={`variant-card-${variant.clientId}`}>绑定发货库存</label>
+                              <select
+                                id={`variant-card-${variant.clientId}`}
+                                value={variant.cardId}
+                                onChange={event => updateDeliveryVariant(variant.clientId, { cardId: event.target.value })}
+                                className="ios-input w-full rounded-md px-3 py-2.5"
+                              >
+                                <option value="">请选择卡密或内容</option>
+                                {cards.map(card => (
+                                  <option key={card.id} value={card.id} disabled={!card.enabled}>
+                                    {card.name || `卡密 ${card.id}`} · {cardTypeLabels[card.type]}
+                                    {card.enabled ? '' : '（已停用）'}
+                                  </option>
+                                ))}
+                              </select>
+                              <p className={`mt-1.5 text-xs ${selectedCard?.enabled === false ? 'text-red-600' : 'text-gray-500'}`}>
+                                {getCardStockLabel(selectedCard)}
+                              </p>
+                            </div>
+
+                            <div>
+                              <label className="field-label" htmlFor={`variant-count-${variant.clientId}`}>每购买 1 件发货份数</label>
+                              <input
+                                id={`variant-count-${variant.clientId}`}
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={variant.deliveryCount}
+                                onChange={event => updateDeliveryVariant(variant.clientId, {
+                                  deliveryCount: Math.max(1, Math.floor(Number(event.target.value) || 1)),
+                                })}
+                                className="ios-input w-full rounded-md px-3 py-2.5"
+                              />
+                              <p className="mt-1.5 text-xs text-gray-500">
+                                {deliveryItem.multi_quantity_delivery
+                                  ? '已开启多数量：会再乘以订单购买数量。'
+                                  : '当前按单件计算；可在商品列表开启多数量。'}
+                              </p>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  {deliveryForm.isMultiSpec && (
+                    <button
+                      type="button"
+                      onClick={addDeliveryVariant}
+                      className="ios-btn-secondary flex w-full items-center justify-center gap-2 rounded-md border-dashed px-4 py-2.5 text-sm"
+                    >
+                      <Plus className="h-4 w-4" />
+                      添加商品规格
+                    </button>
+                  )}
+                </>
+              )}
             </div>
             <div className="modal-footer flex justify-end gap-2">
               <button type="button" onClick={() => setDeliveryItem(null)} className="ios-btn-secondary rounded-md px-4 py-2.5">
@@ -715,7 +1082,7 @@ const ItemList: React.FC = () => {
               <button
                 type="button"
                 onClick={handleSaveDelivery}
-                disabled={Boolean(savingKey)}
+                disabled={Boolean(savingKey) || deliveryLoading}
                 className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5"
               >
                 {savingKey ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -732,7 +1099,7 @@ const ItemList: React.FC = () => {
           <div className="modal-container">
             <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-xl font-bold text-gray-900">编辑商品详情</h3>
+                <h3 className="text-lg font-bold text-gray-900">编辑商品详情</h3>
                 <p className="mt-1 line-clamp-1 text-sm text-gray-500">{detailItem.item_title || detailItem.item_id}</p>
               </div>
               <button type="button" onClick={() => setDetailItem(null)} className="rounded-md p-2 hover:bg-gray-100" aria-label="关闭">
@@ -771,7 +1138,7 @@ const ItemList: React.FC = () => {
           <div className="modal-container">
             <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-xl font-bold text-gray-900">手动添加商品</h3>
+                <h3 className="text-lg font-bold text-gray-900">手动添加商品</h3>
                 <p className="mt-1 text-sm text-gray-500">适用于暂未同步到列表、但需要配置自动发货的商品。</p>
               </div>
               <button type="button" onClick={() => setShowManualModal(false)} className="rounded-md p-2 hover:bg-gray-100" aria-label="关闭">

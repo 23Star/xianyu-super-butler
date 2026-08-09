@@ -108,10 +108,6 @@ export interface Card {
   image_url?: string;
   // 通用配置
   delay_seconds?: number;
-  // 多规格配置
-  is_multi_spec?: boolean;
-  spec_name?: string;
-  spec_value?: string;
   created_at: string;
   updated_at: string;
 }
@@ -131,6 +127,42 @@ export interface Item {
   multi_quantity_delivery?: number | boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface ProductVariantBinding {
+  id?: number;
+  binding_id?: number;
+  display_name: string;
+  spec_text: string;
+  spec_payload?: Record<string, string>;
+  canonical_spec_key?: string;
+  platform_sku_id: string;
+  card_id: number;
+  card_name?: string;
+  card_type?: Card['type'];
+  card_enabled?: boolean;
+  stock_count?: number | null;
+  delivery_count: number;
+  delivery_times?: number;
+  enabled: boolean;
+  binding_enabled: boolean;
+  source?: string;
+}
+
+export interface ItemDeliveryConfigSummary {
+  cookie_id: string;
+  item_id: string;
+  enabled: boolean;
+  is_multi_spec: boolean;
+  variant_count: number;
+  configured_count: number;
+  complete: boolean;
+  delivery_times: number;
+}
+
+export interface ItemDeliveryConfig extends ItemDeliveryConfigSummary {
+  configured: boolean;
+  variants: ProductVariantBinding[];
 }
 
 export type ProductPublishStatus = 'draft' | 'published' | 'failed' | string;

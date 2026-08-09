@@ -4905,6 +4905,20 @@ def delete_card(card_id: int, current_user: Dict[str, Any] = Depends(get_current
     """删除卡券"""
     try:
         from app.db_manager import db_manager
+        references = db_manager.get_card_variant_references(
+            card_id,
+            current_user['user_id'],
+        )
+        if references:
+            reference = references[0]
+            item_name = reference.get("item_title") or reference["item_id"]
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"该卡密正被商品“{item_name}”的规格"
+                    f"“{reference['variant_name']}”使用，请先解除绑定"
+                ),
+            )
         success = db_manager.delete_card(card_id, current_user['user_id'])
         if success:
             return {"message": "卡券删除成功"}
@@ -5343,6 +5357,108 @@ def create_manual_item(
     except Exception as e:
         logger.exception("手动添加商品失败")
         raise HTTPException(status_code=500, detail=f"手动添加商品失败: {str(e)}")
+
+
+class ProductVariantBindingIn(BaseModel):
+    display_name: str = ""
+    spec_text: str = ""
+    spec_payload: Optional[Dict[str, Any]] = None
+    platform_sku_id: str = ""
+    card_id: int
+    delivery_count: int = Field(default=1, ge=1)
+    enabled: bool = True
+    binding_enabled: bool = True
+    source: str = "manual"
+
+
+class ItemDeliveryConfigIn(BaseModel):
+    enabled: bool = True
+    is_multi_spec: bool = False
+    variants: List[ProductVariantBindingIn]
+
+
+@app.get("/item-delivery-configs")
+def get_item_delivery_config_summaries(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """获取商品变体发货配置摘要，供商品列表一次性展示。"""
+    return {
+        "configs": db_manager.get_item_delivery_config_summaries(current_user["user_id"])
+    }
+
+
+@app.get("/items/{cookie_id}/{item_id}/delivery-config")
+def get_item_delivery_config(
+    cookie_id: str,
+    item_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """获取一个商品的完整变体发货配置。"""
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    if not db_manager.get_item_info(cookie_id, item_id):
+        raise HTTPException(status_code=404, detail="商品不存在，请先同步或手动添加")
+
+    config = db_manager.get_item_delivery_config(
+        cookie_id,
+        item_id,
+        current_user["user_id"],
+    )
+    if config:
+        return {"configured": True, **config}
+    return {
+        "configured": False,
+        "cookie_id": cookie_id,
+        "item_id": item_id,
+        "enabled": False,
+        "is_multi_spec": False,
+        "variant_count": 0,
+        "configured_count": 0,
+        "complete": False,
+        "variants": [],
+    }
+
+
+@app.put("/items/{cookie_id}/{item_id}/delivery-config")
+def save_item_delivery_config(
+    cookie_id: str,
+    item_id: str,
+    config_data: ItemDeliveryConfigIn,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """整体保存商品规格与逐规格发货库存绑定。"""
+    user_id = current_user["user_id"]
+    if cookie_id not in db_manager.get_all_cookies(user_id):
+        raise HTTPException(status_code=403, detail="无权操作该闲鱼账号")
+    try:
+        config = db_manager.save_item_delivery_config(
+            user_id=user_id,
+            cookie_id=cookie_id,
+            item_id=item_id,
+            enabled=config_data.enabled,
+            is_multi_spec=config_data.is_multi_spec,
+            variants=[
+                variant.model_dump()
+                if hasattr(variant, "model_dump")
+                else variant.dict()
+                for variant in config_data.variants
+            ],
+        )
+        return {
+            "success": True,
+            "message": "商品自动发货配置已保存",
+            "config": config,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except sqlite3.IntegrityError as e:
+        logger.warning(f"保存商品变体配置冲突: {cookie_id}/{item_id} - {e}")
+        raise HTTPException(status_code=409, detail="规格组合或平台 SKU ID 重复")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"保存商品变体配置失败: {cookie_id}/{item_id}")
+        raise HTTPException(status_code=500, detail=f"保存商品发货配置失败: {str(e)}")
 
 
 # ==================== 商品搜索 API ====================
@@ -7937,23 +8053,53 @@ async def manual_ship_orders(
 
                     # 检查多数量发货
                     quantity_to_send = 1
+                    order_detail = None
                     multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(cookie_id, item_id)
                     if multi_quantity_delivery:
                         try:
                             order_detail = await live_instance.fetch_order_detail_info(order_id, item_id, buyer_id)
                             if order_detail and isinstance(order_detail, dict):
-                                qty = order_detail.get('quantity', 1)
-                                if isinstance(qty, int) and qty > 1:
+                                qty = int(order_detail.get('quantity') or 1)
+                                if qty > 1:
                                     quantity_to_send = qty
                         except Exception as e:
                             log_with_user('warning', f"获取订单数量失败，使用默认数量1: {str(e)}", current_user)
 
                     # 获取卡券内容；确认发货必须在消息全部发送成功后执行。
                     delivery_contents = []
-                    for i in range(quantity_to_send):
+                    delivery_context = {}
+                    try:
+                        first_content = await live_instance._auto_delivery(
+                            item_id,
+                            '',
+                            order_id,
+                            buyer_id,
+                            order_detail=order_detail,
+                            delivery_context=delivery_context,
+                            requested_item_quantity=quantity_to_send,
+                        )
+                    except Exception as e:
+                        log_with_user('error', f"获取第1个卡券失败: {str(e)}", current_user)
+                        first_content = None
+
+                    if first_content:
+                        delivery_contents.append(first_content)
+                        quantity_to_send *= max(
+                            1,
+                            int(delivery_context.get("delivery_count") or 1),
+                        )
+
+                    for i in range(1, quantity_to_send):
+                        if not delivery_contents:
+                            break
                         try:
                             delivery_content = await live_instance._auto_delivery(
-                                item_id, '', order_id, buyer_id
+                                item_id,
+                                '',
+                                order_id,
+                                buyer_id,
+                                order_detail=order_detail,
+                                delivery_context=delivery_context,
                             )
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
@@ -8242,6 +8388,7 @@ API_ROOTS = {
     'cards', 'change-admin-password', 'change-password', 'cookie', 'cookies',
     'blacklist', 'debug', 'default-replies', 'delivery-block-rules', 'delivery-rules', 'face-verification',
     'generate-captcha', 'geetest', 'health', 'item-reply', 'itemReplays', 'items',
+    'item-delivery-configs',
     'keywords', 'keywords-export', 'keywords-import', 'keywords-with-item-id',
     'keywords-with-type', 'login', 'login-info-settings', 'login-info-status',
     'logout', 'logs', 'message-notifications', 'notification-channels',

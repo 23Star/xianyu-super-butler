@@ -14,6 +14,27 @@ import re
 import json
 from threading import Lock
 from collections import defaultdict
+from app.specification import (
+    canonicalize_specification,
+    combine_legacy_specification,
+    specification_text,
+)
+
+
+def _cached_specification_fields(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild structured specification fields from legacy order columns."""
+    spec_text = combine_legacy_specification(
+        order.get("spec_name"),
+        order.get("spec_value"),
+    )
+    canonical_key, payload = canonicalize_specification(spec_text)
+    return {
+        "spec_text": specification_text(payload) if payload else spec_text,
+        "spec_raw_text": spec_text,
+        "spec_payload": payload,
+        "canonical_spec_key": canonical_key,
+        "platform_sku_id": "",
+    }
 
 # 修复Docker环境中的asyncio事件循环策略问题
 if sys.platform.startswith('linux') or os.getenv('DOCKER_ENV'):
@@ -242,6 +263,7 @@ class OrderDetailFetcher:
                     if amount_valid:
                         logger.info(f"[CLIPBOARD] 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
                         print(f"[OK] 订单 {order_id} 使用缓存数据，跳过浏览器获取")
+                        cached_spec = _cached_specification_fields(existing_order)
 
                         # 构建返回格式，与浏览器获取的格式保持一致
                         result = {
@@ -257,9 +279,11 @@ class OrderDetailFetcher:
                                 'receiver_name': receiver_name,
                                 'receiver_phone': receiver_phone,
                                 'receiver_address': receiver_address,
+                                **cached_spec,
                             },
                             'spec_name': existing_order.get('spec_name', ''),
                             'spec_value': existing_order.get('spec_value', ''),
+                            **cached_spec,
                             'quantity': existing_order.get('quantity', ''),
                             'amount': existing_order.get('amount', ''),
                             'order_time': existing_order.get('created_at', ''),
@@ -363,6 +387,11 @@ class OrderDetailFetcher:
                     'sku_info': sku_info,  # 包含解析后的规格信息
                     'spec_name': sku_info.get('spec_name', '') if sku_info else '',
                     'spec_value': sku_info.get('spec_value', '') if sku_info else '',
+                    'spec_text': sku_info.get('spec_text', '') if sku_info else '',
+                    'spec_raw_text': sku_info.get('spec_raw_text', '') if sku_info else '',
+                    'spec_payload': sku_info.get('spec_payload', {}) if sku_info else {},
+                    'canonical_spec_key': sku_info.get('canonical_spec_key', '') if sku_info else '',
+                    'platform_sku_id': sku_info.get('platform_sku_id', '') if sku_info else '',
                     'quantity': sku_info.get('quantity', '') if sku_info else '',  # 数量
                     'amount': sku_info.get('amount', '') if sku_info else '',      # 金额
                     'order_time': sku_info.get('order_time', '') if sku_info else '',  # 订单时间
@@ -389,7 +418,7 @@ class OrderDetailFetcher:
 
     def _parse_sku_content(self, sku_content: str) -> Dict[str, str]:
         """
-        解析SKU内容，根据冒号分割规格名称和规格值
+        解析单维或多维 SKU 内容，并保留规范化规格组合。
 
         Args:
             sku_content: 原始SKU内容字符串
@@ -398,30 +427,25 @@ class OrderDetailFetcher:
             包含规格名称和规格值的字典，如果解析失败则返回空字典
         """
         try:
-            if not sku_content or ':' not in sku_content:
-                logger.warning(f"SKU内容格式无效或不包含冒号: {sku_content}")
+            canonical_key, payload = canonicalize_specification(sku_content)
+            if not canonical_key or not payload:
+                logger.warning(f"SKU内容格式无效: {sku_content}")
                 return {}
 
-            # 根据冒号分割
-            parts = sku_content.split(':', 1)  # 只分割第一个冒号
-
-            if len(parts) == 2:
-                spec_name = parts[0].strip()
-                spec_value = parts[1].strip()
-
-                if spec_name and spec_value:
-                    result = {
-                        'spec_name': spec_name,
-                        'spec_value': spec_value
-                    }
-                    logger.info(f"SKU解析成功 - 规格名称: {spec_name}, 规格值: {spec_value}")
-                    return result
-                else:
-                    logger.warning(f"SKU解析失败，规格名称或值为空: 名称='{spec_name}', 值='{spec_value}'")
-                    return {}
-            else:
-                logger.warning(f"SKU内容分割失败: {sku_content}")
-                return {}
+            spec_name, spec_value = next(iter(payload.items()))
+            result = {
+                'spec_name': spec_name,
+                'spec_value': spec_value,
+                'spec_text': specification_text(payload),
+                'spec_raw_text': sku_content.strip(),
+                'spec_payload': payload,
+                'canonical_spec_key': canonical_key,
+            }
+            logger.info(
+                f"SKU解析成功 - 规格组合: {result['spec_text']}, "
+                f"规范键: {canonical_key}"
+            )
+            return result
 
         except Exception as e:
             logger.error(f"解析SKU内容异常: {e}")
@@ -1041,6 +1065,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
             if amount_valid:
                 logger.info(f"[CLIPBOARD] 订单 {order_id} 已存在于数据库中且金额有效({amount})，直接返回缓存数据")
                 print(f"[OK] 订单 {order_id} 使用缓存数据（金额:{amount}）")
+                cached_spec = _cached_specification_fields(existing_order)
 
                 # 构建返回格式（包含收货人信息）
                 result = {
@@ -1051,10 +1076,12 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
                         'spec_name': existing_order.get('spec_name', ''),
                         'spec_value': existing_order.get('spec_value', ''),
                         'quantity': existing_order.get('quantity', ''),
-                        'amount': existing_order.get('amount', '')
+                        'amount': existing_order.get('amount', ''),
+                        **cached_spec,
                     },
                     'spec_name': existing_order.get('spec_name', ''),
                     'spec_value': existing_order.get('spec_value', ''),
+                    **cached_spec,
                     'quantity': existing_order.get('quantity', ''),
                     'amount': existing_order.get('amount', ''),
                     'order_status': existing_order.get('order_status', 'unknown'),

@@ -14,6 +14,7 @@ import {
   Search,
   ShieldCheck,
   Trash2,
+  Workflow,
   X,
 } from 'lucide-react';
 
@@ -44,6 +45,14 @@ import {
   updateProductMaterial,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
+import {
+  EmptyState,
+  NoticeBanner,
+  PageHeader,
+  PageLoading,
+  PageTabs,
+  SectionHeader,
+} from './ui';
 
 type TabKey = 'materials' | 'filters' | 'delete' | 'repairs';
 
@@ -376,76 +385,70 @@ const ProductAutomation: React.FC = () => {
   };
 
   if (loading) {
-    return (
-      <div className="flex justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-yellow-500" />
-      </div>
-    );
+    return <PageLoading label="正在加载商品自动化配置" />;
   }
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="flex flex-col gap-4 border-b border-gray-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">商品自动化</h2>
-          <div className="mt-4 flex flex-wrap gap-1 rounded-md bg-gray-100 p-1">
-            {tabs.map((tab) => {
-              const Icon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 rounded px-3 py-2 text-sm font-bold transition-colors ${
-                    activeTab === tab.id ? 'bg-white text-gray-950 shadow-sm' : 'text-gray-500 hover:text-gray-900'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => void loadAll(false)}
-          className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
-        >
-          <RefreshCw className="h-4 w-4" />
-          刷新
-        </button>
-      </div>
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="商品自动化"
+        description="管理商品素材、筛选入库、下架预演和历史数据补偿任务。"
+        icon={Workflow}
+        actions={(
+          <button
+            type="button"
+            onClick={() => void loadAll(false)}
+            className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新数据
+          </button>
+        )}
+      />
+
+      <PageTabs
+        value={activeTab}
+        onChange={setActiveTab}
+        items={tabs}
+        ariaLabel="商品自动化功能"
+      />
 
       {activeTab === 'materials' && (
         <section className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <select
-              value={accountFilter}
-              onChange={(event) => setAccountFilter(event.target.value)}
-              className="ios-input rounded-md px-3 py-2.5 text-sm sm:w-64"
-            >
-              <option value="">全部账号</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>{accountNames.get(account.id)}</option>
-              ))}
-            </select>
-            <label className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-              <input
-                value={materialQuery}
-                onChange={(event) => setMaterialQuery(event.target.value)}
-                placeholder="搜索标题、商品 ID 或分类"
-                className="ios-input w-full rounded-md py-2.5 pl-10 pr-3 text-sm"
-              />
-            </label>
-            <span className="self-center text-sm font-medium text-gray-500">{visibleMaterials.length} 条素材</span>
+          <div className="toolbar">
+            <div className="toolbar__group flex-1">
+              <select
+                value={accountFilter}
+                onChange={(event) => setAccountFilter(event.target.value)}
+                className="ios-input rounded-md px-3 py-2.5 text-sm sm:w-64"
+              >
+                <option value="">全部账号</option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>{accountNames.get(account.id)}</option>
+                ))}
+              </select>
+              <label className="relative min-w-0 flex-1">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={materialQuery}
+                  onChange={(event) => setMaterialQuery(event.target.value)}
+                  placeholder="搜索标题、商品 ID 或分类"
+                  className="ios-input w-full rounded-md py-2.5 pl-10 pr-3 text-sm"
+                />
+              </label>
+            </div>
+            <span className="text-sm font-medium text-gray-500">{visibleMaterials.length} 条素材</span>
           </div>
 
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+          <div className="section-panel">
+            <SectionHeader
+              title="本地素材库"
+              description="筛选任务写入的商品素材，可继续补充详情、发货内容与发布信息。"
+              icon={Archive}
+            />
             <div className="overflow-x-auto">
-              <table className="min-w-[980px] w-full text-left text-sm">
-                <thead className="bg-gray-50 text-xs font-bold text-gray-500">
+              <table className="data-table min-w-[980px] text-sm">
+                <thead>
                   <tr>
                     <th className="px-4 py-3">素材</th>
                     <th className="px-4 py-3">账号</th>
@@ -455,7 +458,7 @@ const ProductAutomation: React.FC = () => {
                     <th className="px-4 py-3 text-right">操作</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody>
                   {visibleMaterials.map((material) => (
                     <tr key={material.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3">
@@ -535,17 +538,21 @@ const ProductAutomation: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            {visibleMaterials.length === 0 && (
-              <div className="py-16 text-center text-sm text-gray-500">暂无素材</div>
-            )}
+            {visibleMaterials.length === 0 && <EmptyState compact title="暂无素材" description="运行筛选规则后，符合条件的商品会进入本地素材库。" icon={Archive} />}
           </div>
         </section>
       )}
 
       {activeTab === 'filters' && (
         <section className="space-y-5">
-          <div className="rounded-lg border border-gray-200 bg-white p-4">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="section-panel">
+            <SectionHeader
+              title={filterForm.id ? '编辑筛选规则' : '新建筛选规则'}
+              description="按账号、关键词、价格和分类筛选商品，并限制每日写入数量。"
+              icon={Search}
+            />
+            <div className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="text-xs font-bold text-gray-600">
                 账号
                 <select
@@ -625,45 +632,52 @@ const ProductAutomation: React.FC = () => {
                 />
               </label>
             </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={filterForm.enabled}
-                onClick={() => setFilterForm({ ...filterForm, enabled: !filterForm.enabled })}
-                className="flex items-center gap-2 text-sm font-bold text-gray-700"
-              >
-                <span className={`relative h-6 w-11 rounded-full ${filterForm.enabled ? 'bg-yellow-400' : 'bg-gray-300'}`}>
-                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${filterForm.enabled ? 'translate-x-5' : ''}`} />
-                </span>
-                启用规则
-              </button>
-              <div className="flex gap-2">
-                {filterForm.id && (
-                  <button
-                    type="button"
-                    onClick={() => setFilterForm({ ...emptyFilterForm, cookie_id: filterForm.cookie_id })}
-                    className="ios-btn-secondary rounded-md px-4 py-2.5 text-sm"
-                  >
-                    取消编辑
-                  </button>
-                )}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
                 <button
                   type="button"
-                  onClick={() => void saveFilterRule()}
-                  disabled={busyKey === 'filter-save'}
-                  className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+                  role="switch"
+                  aria-checked={filterForm.enabled}
+                  onClick={() => setFilterForm({ ...filterForm, enabled: !filterForm.enabled })}
+                  className="flex items-center gap-2 text-sm font-bold text-gray-700"
                 >
-                  {busyKey === 'filter-save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  保存规则
+                  <span className={`relative h-6 w-11 rounded-full ${filterForm.enabled ? 'bg-yellow-400' : 'bg-gray-300'}`}>
+                    <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${filterForm.enabled ? 'translate-x-5' : ''}`} />
+                  </span>
+                  启用规则
                 </button>
+                <div className="flex gap-2">
+                  {filterForm.id && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterForm({ ...emptyFilterForm, cookie_id: filterForm.cookie_id })}
+                      className="ios-btn-secondary rounded-md px-4 py-2.5 text-sm"
+                    >
+                      取消编辑
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void saveFilterRule()}
+                    disabled={busyKey === 'filter-save'}
+                    className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+                  >
+                    {busyKey === 'filter-save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    保存规则
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-200 bg-white">
-            {filterRules.map((rule) => (
-              <div key={rule.id} className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1.2fr)_minmax(260px,1.5fr)_180px_auto] lg:items-center">
+          <div className="section-panel">
+            <SectionHeader
+              title="已保存规则"
+              description="启用的规则可以立即执行，运行结果会写入素材库。"
+              actions={<span className="text-xs font-medium text-gray-500">{filterRules.length} 条</span>}
+            />
+            <div className="divide-y divide-gray-100">
+              {filterRules.map((rule) => (
+                <div key={rule.id} className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1.2fr)_minmax(260px,1.5fr)_180px_auto] lg:items-center">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className={`h-2.5 w-2.5 rounded-full ${rule.enabled ? 'bg-green-500' : 'bg-gray-300'}`} />
@@ -696,22 +710,29 @@ const ProductAutomation: React.FC = () => {
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
-              </div>
-            ))}
-            {filterRules.length === 0 && <div className="py-16 text-center text-sm text-gray-500">暂无筛选规则</div>}
+                </div>
+              ))}
+              {filterRules.length === 0 && <EmptyState compact title="暂无筛选规则" description="先创建规则，再执行商品筛选与素材入库。" icon={Search} />}
+            </div>
           </div>
         </section>
       )}
 
       {activeTab === 'delete' && (
         <section className="space-y-5">
-          <div className="flex items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            <ShieldCheck className="h-5 w-5 flex-none" />
-            当前执行模式固定为 dry-run，只生成候选记录，不会删除闲鱼商品或本地商品。
-          </div>
+          <NoticeBanner
+            type="warning"
+            message="当前执行模式固定为 dry-run，只生成候选记录，不会删除闲鱼商品或本地商品。"
+          />
 
-          <div className="rounded-lg border border-gray-200 bg-white p-4">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="section-panel">
+            <SectionHeader
+              title={deleteForm.id ? '编辑删除预演计划' : '新建删除预演计划'}
+              description="按上架时长筛选候选商品，并自动排除近期有回复或订单活动的商品。"
+              icon={Trash2}
+            />
+            <div className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <label className="text-xs font-bold text-gray-600">
                 账号
                 <select
@@ -755,8 +776,8 @@ const ProductAutomation: React.FC = () => {
                 />
               </label>
             </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
-              <div className="flex flex-wrap gap-4">
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
+                <div className="flex flex-wrap gap-4">
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
                   <input
                     type="checkbox"
@@ -776,7 +797,7 @@ const ProductAutomation: React.FC = () => {
                   排除有订单记录的商品
                 </label>
               </div>
-              <div className="flex gap-2">
+                <div className="flex gap-2">
                 {deleteForm.id && (
                   <button
                     type="button"
@@ -795,13 +816,20 @@ const ProductAutomation: React.FC = () => {
                   {busyKey === 'delete-save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   保存计划
                 </button>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-200 bg-white">
-            {deleteRules.map((rule) => (
-              <div key={rule.id} className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1fr)_1fr_180px_auto] lg:items-center">
+          <div className="section-panel">
+            <SectionHeader
+              title="删除预演计划"
+              description="所有计划均只生成候选结果，需在预演结果中人工核对。"
+              actions={<span className="text-xs font-medium text-gray-500">{deleteRules.length} 条</span>}
+            />
+            <div className="divide-y divide-gray-100">
+              {deleteRules.map((rule) => (
+                <div key={rule.id} className="grid gap-4 p-4 lg:grid-cols-[minmax(220px,1fr)_1fr_180px_auto] lg:items-center">
                 <div>
                   <div className="font-bold text-gray-900">{rule.name}</div>
                   <div className="mt-1 text-xs text-gray-500">{accountNames.get(rule.cookie_id) || rule.cookie_id}</div>
@@ -832,9 +860,10 @@ const ProductAutomation: React.FC = () => {
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
-              </div>
-            ))}
-            {deleteRules.length === 0 && <div className="py-16 text-center text-sm text-gray-500">暂无删除计划</div>}
+                </div>
+              ))}
+              {deleteRules.length === 0 && <EmptyState compact title="暂无删除计划" description="创建计划后可先预演候选商品，不会直接执行删除。" icon={Trash2} />}
+            </div>
           </div>
         </section>
       )}
@@ -867,7 +896,7 @@ const ProductAutomation: React.FC = () => {
             ].map((task) => {
               const Icon = task.icon;
               return (
-                <div key={task.key} className="rounded-lg border border-gray-200 bg-white p-4">
+                <div key={task.key} className="section-panel p-4">
                   <div className="flex items-center gap-3">
                     <div className="rounded-md bg-yellow-50 p-2 text-amber-700"><Icon className="h-5 w-5" /></div>
                     <h3 className="font-bold text-gray-900">{task.title}</h3>
@@ -886,14 +915,15 @@ const ProductAutomation: React.FC = () => {
             })}
           </div>
 
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-              <h3 className="font-bold text-gray-900">执行记录</h3>
-              <span className="text-xs text-gray-500">最近 {runs.length} 条</span>
-            </div>
+          <div className="section-panel">
+            <SectionHeader
+              title="执行记录"
+              description="记录素材筛选、删除预演和数据补偿任务的最近运行结果。"
+              actions={<span className="text-xs text-gray-500">最近 {runs.length} 条</span>}
+            />
             <div className="overflow-x-auto">
-              <table className="min-w-[820px] w-full text-left text-sm">
-                <thead className="bg-gray-50 text-xs font-bold text-gray-500">
+              <table className="data-table min-w-[820px] text-sm">
+                <thead>
                   <tr>
                     <th className="px-4 py-3">任务</th>
                     <th className="px-4 py-3">模式</th>
@@ -902,7 +932,7 @@ const ProductAutomation: React.FC = () => {
                     <th className="px-4 py-3">时间</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody>
                   {runs.map((run) => (
                     <tr key={run.id}>
                       <td className="px-4 py-3 font-bold text-gray-800">{taskNames[run.task_type] || run.task_type}</td>
@@ -917,21 +947,24 @@ const ProductAutomation: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            {runs.length === 0 && <div className="py-16 text-center text-sm text-gray-500">暂无执行记录</div>}
+            {runs.length === 0 && <EmptyState compact title="暂无执行记录" description="执行任一自动化任务后，运行结果会显示在这里。" icon={Workflow} />}
           </div>
         </section>
       )}
 
       {editingMaterial && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
-          <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-lg bg-white shadow-xl sm:max-w-3xl sm:rounded-lg">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-5 py-4">
-              <h3 className="font-bold text-gray-900">编辑素材</h3>
+        <div className="modal-overlay">
+          <div className="modal-container modal-container-lg">
+            <div className="modal-header flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">编辑素材</h3>
+                <p className="mt-1 text-xs text-gray-500">补充本地详情、发货内容和发布回写信息。</p>
+              </div>
               <button type="button" onClick={() => setEditingMaterial(null)} className="rounded p-2 text-gray-500 hover:bg-gray-100" aria-label="关闭">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="grid gap-4 p-5 md:grid-cols-2">
+            <div className="modal-body grid gap-4 md:grid-cols-2">
               <label className="text-xs font-bold text-gray-600 md:col-span-2">
                 标题
                 <input
@@ -1012,7 +1045,7 @@ const ProductAutomation: React.FC = () => {
                 />
               </label>
             </div>
-            <div className="sticky bottom-0 flex justify-end gap-2 border-t border-gray-200 bg-white px-5 py-4">
+            <div className="modal-footer flex justify-end gap-2">
               <button type="button" onClick={() => setEditingMaterial(null)} className="ios-btn-secondary rounded-md px-4 py-2.5 text-sm">取消</button>
               <button
                 type="button"
@@ -1029,18 +1062,18 @@ const ProductAutomation: React.FC = () => {
       )}
 
       {preview && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4">
-          <div className="max-h-[90vh] w-full overflow-y-auto rounded-t-lg bg-white shadow-xl sm:max-w-4xl sm:rounded-lg">
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-5 py-4">
+        <div className="modal-overlay">
+          <div className="modal-container modal-container-lg">
+            <div className="modal-header flex items-center justify-between gap-4">
               <div>
-                <h3 className="font-bold text-gray-900">删除预演结果</h3>
+                <h3 className="text-lg font-bold text-gray-900">删除预演结果</h3>
                 <p className="mt-1 text-xs text-gray-500">{preview.summary}</p>
               </div>
               <button type="button" onClick={() => setPreview(null)} className="rounded p-2 text-gray-500 hover:bg-gray-100" aria-label="关闭">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="grid gap-6 p-5 lg:grid-cols-2">
+            <div className="modal-body grid gap-6 lg:grid-cols-2">
               <div>
                 <h4 className="mb-3 text-sm font-bold text-amber-800">候选 {preview.candidates.length}</h4>
                 <div className="divide-y divide-gray-100 border-y border-gray-200">
@@ -1050,7 +1083,7 @@ const ProductAutomation: React.FC = () => {
                       <div className="mt-1 text-xs text-gray-500">ID {item.item_id} · {item.age_days || 0} 天 · {item.reason}</div>
                     </div>
                   ))}
-                  {preview.candidates.length === 0 && <div className="py-8 text-center text-sm text-gray-500">无候选商品</div>}
+                  {preview.candidates.length === 0 && <EmptyState compact title="无候选商品" />}
                 </div>
               </div>
               <div>
@@ -1062,7 +1095,7 @@ const ProductAutomation: React.FC = () => {
                       <div className="mt-1 text-xs text-gray-500">ID {item.item_id} · {item.reason}</div>
                     </div>
                   ))}
-                  {preview.skipped.length === 0 && <div className="py-8 text-center text-sm text-gray-500">无跳过记录</div>}
+                  {preview.skipped.length === 0 && <EmptyState compact title="无跳过记录" />}
                 </div>
               </div>
             </div>

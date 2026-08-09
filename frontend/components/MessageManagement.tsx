@@ -38,8 +38,10 @@ import {
   toggleMessageFilter,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
+import { EmptyState, SectionHeader } from './ui';
 
 type View = 'messages' | 'filters';
+type MobilePane = 'list' | 'chat';
 
 interface MessageManagementProps {
   isActive?: boolean;
@@ -85,6 +87,7 @@ const filterTypeLabel: Record<MessageFilterType, string> = {
 
 const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }) => {
   const [view, setView] = useState<View>('messages');
+  const [mobilePane, setMobilePane] = useState<MobilePane>('list');
   const [accounts, setAccounts] = useState<ChatAccount[]>([]);
   const [accountDetails, setAccountDetails] = useState<AccountDetail[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -230,6 +233,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   useEffect(() => {
     setActiveCid('');
     setMessages([]);
+    setMobilePane('list');
     if (isActive) void loadConversations();
   }, [isActive, activeAccountId]);
 
@@ -337,7 +341,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
   const renderMessages = () => (
     <div className="grid h-full min-h-0 overflow-hidden bg-white lg:grid-cols-[356px_minmax(0,1fr)]">
-      <aside className="flex min-h-0 flex-col border-b border-[#e9e9e9] lg:border-b-0 lg:border-r">
+      <aside className={`${mobilePane === 'chat' ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col border-b border-[#e9e9e9] lg:border-b-0 lg:border-r`}>
         <div className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[#eeeeee] px-4">
           <select
             value={activeAccountId}
@@ -397,7 +401,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               <button
                 key={conversation.cid}
                 type="button"
-                onClick={() => setActiveCid(conversation.cid)}
+                onClick={() => {
+                  setActiveCid(conversation.cid);
+                  setMobilePane('chat');
+                }}
                 className={`grid w-full grid-cols-[48px_minmax(0,1fr)_auto] gap-3 px-4 py-3 text-left ${
                   selected ? 'bg-[#f0f0f0]' : 'hover:bg-[#f7f7f7]'
                 }`}
@@ -436,17 +443,28 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         </div>
       </aside>
 
-      <section className="flex min-h-0 min-w-0 flex-col">
+      <section className={`${mobilePane === 'list' ? 'hidden lg:flex' : 'flex'} min-h-0 min-w-0 flex-col`}>
         {activeConversation ? (
           <>
             <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-[#eeeeee] px-5">
-              <div className="min-w-0">
-                <h3 className="truncate text-base font-bold text-[#222]">
-                  {activeConversation.otherUserName || `闲鱼用户 ${activeConversation.otherUserId}`}
-                </h3>
-                <p className="mt-0.5 truncate text-xs text-[#999]">
-                  {activeConversation.otherUserId}
-                </p>
+              <div className="flex min-w-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMobilePane('list')}
+                  className="-ml-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-[#f3f3f3] lg:hidden"
+                  title="返回会话列表"
+                  aria-label="返回会话列表"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </button>
+                <div className="min-w-0">
+                  <h3 className="truncate text-base font-bold text-[#222]">
+                    {activeConversation.otherUserName || `闲鱼用户 ${activeConversation.otherUserId}`}
+                  </h3>
+                  <p className="mt-0.5 truncate text-xs text-[#999]">
+                    {activeConversation.otherUserId}
+                  </p>
+                </div>
               </div>
               <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${
                 activeAccount?.connected ? 'text-emerald-600' : 'text-[#999]'
@@ -458,15 +476,15 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               </span>
             </header>
 
-            <div className="flex min-h-[92px] shrink-0 items-center gap-4 border-b border-[#eeeeee] px-5 py-3">
+            <div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b border-[#eeeeee] px-4 py-3 sm:min-h-[92px] sm:gap-4 sm:px-5">
               {normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image) ? (
                 <img
                   src={normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image)}
                   alt=""
-                  className="h-16 w-16 shrink-0 rounded-md object-cover"
+                  className="h-14 w-14 shrink-0 rounded-md object-cover sm:h-16 sm:w-16"
                 />
               ) : (
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-md bg-[#f2f2f2] text-[#aaa]">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-[#f2f2f2] text-[#aaa] sm:h-16 sm:w-16">
                   <Package className="h-5 w-5" />
                 </div>
               )}
@@ -547,7 +565,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               )}
             </div>
 
-            <footer className="shrink-0 border-t border-[#eeeeee] bg-white px-5 py-3">
+            <footer className="shrink-0 border-t border-[#eeeeee] bg-white px-4 py-3 sm:px-5">
               <div className="mb-2 flex items-center gap-4 text-[#555]">
                 <button type="button" title="表情（暂未开放）" className="hover:text-[#111]">
                   <Smile className="h-5 w-5" />
@@ -556,7 +574,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   <Image className="h-5 w-5" />
                 </button>
               </div>
-              <div className="flex items-end gap-3">
+              <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
@@ -566,16 +584,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                       void sendMessage();
                     }
                   }}
-                  rows={3}
+                  rows={2}
                   placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
                   disabled={!activeAccount?.connected}
-                  className="min-h-[72px] min-w-0 flex-1 resize-none border-0 px-0 py-1 text-sm leading-6 outline-none placeholder:text-[#aaa] disabled:bg-white"
+                  className="min-h-[56px] min-w-0 flex-1 resize-none border-0 px-0 py-1 text-sm leading-6 outline-none placeholder:text-[#aaa] disabled:bg-white sm:min-h-[72px]"
                 />
                 <button
                   type="button"
                   onClick={() => void sendMessage()}
                   disabled={!draft.trim() || sending || !activeAccount?.connected}
-                  className="flex h-9 items-center gap-2 rounded-md bg-[#ffe100] px-5 text-sm font-bold text-[#222] hover:bg-[#f4d900] disabled:cursor-not-allowed disabled:bg-[#f2f2f2] disabled:text-[#aaa]"
+                  className="flex h-9 shrink-0 items-center gap-2 rounded-md bg-[#ffe100] px-4 text-sm font-bold text-[#222] hover:bg-[#f4d900] disabled:cursor-not-allowed disabled:bg-[#f2f2f2] disabled:text-[#aaa] sm:px-5"
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   发送
@@ -595,29 +613,34 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   );
 
   const renderFilters = () => (
-    <div className="h-full overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6 lg:p-8">
-      <section className="mx-auto max-w-[1400px] overflow-hidden border border-[#e5e5e5] bg-white">
-        <header className="flex min-h-14 items-center justify-between gap-3 bg-[#ffe100] px-5 py-3">
+    <div className="h-full overflow-y-auto bg-[#f5f6f7] p-4 sm:p-6 lg:p-8">
+      <div className="page-stack mx-auto max-w-[1320px]">
+        <header className="page-header">
           <div>
-            <h3 className="text-base font-extrabold text-[#222]">消息过滤规则</h3>
-            <p className="mt-0.5 text-xs text-[#665b00]">命中关键词后跳过自动回复或外部通知</p>
+            <h1 className="page-title">消息过滤规则</h1>
+            <p className="page-description">集中管理无需自动回复或无需外部通知的消息关键词。</p>
           </div>
           <button
             type="button"
             onClick={() => setView('messages')}
-            className="flex items-center gap-2 rounded-md bg-white/80 px-4 py-2 text-xs font-bold text-[#222] hover:bg-white"
+            className="ios-btn-secondary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm"
           >
             <ArrowLeft className="h-4 w-4" />
             返回消息
           </button>
         </header>
 
-        <div className="p-4 sm:p-5">
-          <div className="grid gap-3 border-b border-[#eeeeee] pb-5 lg:grid-cols-[220px_180px_minmax(240px,1fr)_auto]">
+        <section className="section-panel">
+          <SectionHeader
+            title="批量添加规则"
+            description="每行填写一个关键词，重复内容会自动跳过。"
+            icon={Plus}
+          />
+          <div className="grid gap-3 p-4 lg:grid-cols-[220px_180px_minmax(240px,1fr)_auto]">
             <select
               value={newAccount}
               onChange={(event) => setNewAccount(event.target.value)}
-              className="rounded-md border border-[#dedede] bg-white px-3 py-2.5 text-sm"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             >
               <option value="">选择账号</option>
               {accountDetails.map((account) => (
@@ -629,7 +652,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             <select
               value={newType}
               onChange={(event) => setNewType(event.target.value as MessageFilterType)}
-              className="rounded-md border border-[#dedede] bg-white px-3 py-2.5 text-sm"
+              className="ios-input rounded-md px-3 py-2.5 text-sm"
             >
               <option value="skip_reply">跳过自动回复</option>
               <option value="skip_notify">跳过外部通知</option>
@@ -639,24 +662,32 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               onChange={(event) => setNewKeywords(event.target.value)}
               rows={2}
               placeholder={'每行一个关键词，例如：\n系统通知'}
-              className="min-h-20 resize-y rounded-md border border-[#dedede] px-3 py-2.5 text-sm"
+              className="ios-input min-h-20 resize-y rounded-md px-3 py-2.5 text-sm"
             />
             <button
               type="button"
               onClick={() => void createFilters()}
               disabled={savingFilters}
-              className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-[#222] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+              className="ios-btn-primary flex min-h-11 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
             >
               {savingFilters ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               批量添加
             </button>
           </div>
+        </section>
 
-          <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center">
+        <section className="section-panel">
+          <SectionHeader
+            title="现有规则"
+            description={`当前筛选共 ${filters.length} 条`}
+            icon={Settings2}
+          />
+          <div className="toolbar rounded-none border-x-0 border-t-0 shadow-none">
+            <div className="toolbar__group">
             <select
               value={filterAccount}
               onChange={(event) => setFilterAccount(event.target.value)}
-              className="rounded-md border border-[#dedede] bg-white px-3 py-2.5 text-sm sm:min-w-52"
+              className="ios-input rounded-md px-3 py-2.5 text-sm sm:min-w-52"
             >
               <option value="">全部账号</option>
               {accountDetails.map((account) => (
@@ -668,7 +699,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             <select
               value={filterType}
               onChange={(event) => setFilterType(event.target.value as MessageFilterType | '')}
-              className="rounded-md border border-[#dedede] bg-white px-3 py-2.5 text-sm sm:min-w-44"
+              className="ios-input rounded-md px-3 py-2.5 text-sm sm:min-w-44"
             >
               <option value="">全部用途</option>
               <option value="skip_reply">跳过自动回复</option>
@@ -677,16 +708,17 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             <button
               type="button"
               onClick={() => void loadFilters()}
-              className="flex items-center justify-center gap-2 rounded-md bg-[#f1f1f1] px-4 py-2.5 text-sm font-bold text-[#444]"
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
             >
               <RefreshCw className={`h-4 w-4 ${filtersLoading ? 'animate-spin' : ''}`} />
               查询
             </button>
+            </div>
             {selectedFilterIds.length > 0 && (
               <button
                 type="button"
                 onClick={() => void removeSelectedFilters()}
-                className="flex items-center justify-center gap-2 rounded-md bg-red-50 px-4 py-2.5 text-sm font-bold text-red-600"
+                className="ios-btn-danger flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
               >
                 <Trash2 className="h-4 w-4" />
                 删除所选
@@ -694,7 +726,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             )}
           </div>
 
-          <div className="divide-y divide-[#eeeeee] border-y border-[#eeeeee]">
+          <div className="divide-y divide-[#eeeeee] px-4">
             {filters.length > 0 && (
               <label className="flex items-center gap-3 py-3 text-xs font-bold text-[#777]">
                 <input
@@ -760,11 +792,11 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               </div>
             ))}
             {!filtersLoading && filters.length === 0 && (
-              <p className="py-12 text-center text-sm text-[#888]">暂无消息过滤规则</p>
+              <EmptyState compact title="暂无消息过滤规则" description="添加规则后可跳过指定消息的自动回复或外部通知。" icon={Settings2} />
             )}
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 

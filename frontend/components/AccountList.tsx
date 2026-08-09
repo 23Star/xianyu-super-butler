@@ -23,6 +23,7 @@ import {
   MessageSquare, RefreshCw, Save, User, Clock, MessageCircle,
   Key, Eye, EyeOff, Bot, Settings, MapPin, Users
 } from 'lucide-react';
+import { EmptyState, PageHeader, PageLoading } from './ui';
 
 type ModalType = 'edit' | 'ai-settings' | null;
 
@@ -337,43 +338,45 @@ const AccountList: React.FC = () => {
     return { label: '已启用 / 未运行', className: 'bg-amber-100 text-amber-800' };
   };
 
-  if (loading) return <div className="p-20 flex justify-center"><Loader2 className="w-8 h-8 text-[#FFE815] animate-spin"/></div>;
+  if (loading) return <PageLoading label="正在加载账号和运行状态" />;
 
   return (
-    <div className="space-y-6 animate-fade-in relative">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">账号管理</h2>
-          <p className="text-gray-500 mt-2 font-medium">管理您的闲鱼授权账号及设置。</p>
-        </div>
-        <button
+    <div className="page-stack animate-fade-in relative">
+      <PageHeader
+        title="账号管理"
+        description="管理闲鱼账号授权、监听状态、基础资料和账号级回复策略。"
+        icon={Users}
+        badge={<span className="status-badge status-badge-info">{accounts.length} 个账号</span>}
+        actions={(
+          <button
             onClick={startQRLogin}
-            className="ios-btn-primary flex w-full items-center justify-center gap-2 rounded-lg px-5 py-3 font-bold sm:w-auto"
-        >
-          <QrCode className="w-5 h-5" />
-          扫码添加新账号
-        </button>
-      </div>
+            className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+          >
+            <QrCode className="h-4 w-4" />
+            扫码添加账号
+          </button>
+        )}
+      />
 
       {/* Account Grid */}
-      <div className="grid grid-cols-1 gap-4">
+      <div className="grid grid-cols-1 gap-3">
         {accounts.map((account) => {
           const runtimeBadge = getRuntimeBadge(account);
           const isListening = account.enabled && account.runtime_state === 'running';
           return (
-          <div key={account.id} className="ios-card flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <article key={account.id} className="ios-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-start gap-4 sm:items-center">
               <div className="relative">
                 {account.avatar_url && !failedAvatars.has(account.id) ? (
                   <img
                     src={account.avatar_url.startsWith('//') ? `https:${account.avatar_url}` : account.avatar_url}
                     alt=""
-                    className="h-14 w-14 rounded-lg object-cover"
+                    className="h-14 w-14 rounded-md object-cover"
                     referrerPolicy="no-referrer"
                     onError={() => setFailedAvatars(previous => new Set(previous).add(account.id))}
                   />
                 ) : (
-                  <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-yellow-100 text-lg font-bold text-yellow-800">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-md bg-yellow-100 text-lg font-bold text-yellow-800">
                     {account.nickname?.trim().charAt(0) || account.remark?.trim().charAt(0) || '闲'}
                   </div>
                 )}
@@ -384,11 +387,11 @@ const AccountList: React.FC = () => {
               <div className="min-w-0">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                     <h3 className="break-words text-lg font-bold text-gray-900">{account.nickname || account.remark || '未命名账号'}</h3>
-                    <span className={`px-2.5 py-0.5 rounded-lg text-xs font-bold ${runtimeBadge.className}`}>
+                    <span className={`status-badge ${runtimeBadge.className}`}>
                       {runtimeBadge.label}
                     </span>
                     {account.ai_enabled && (
-                        <span className="px-2.5 py-0.5 rounded-lg bg-purple-100 text-purple-700 text-xs font-bold flex items-center gap-1">
+                        <span className="status-badge status-badge-warning flex items-center gap-1">
                           <Bot className="w-3 h-3" /> AI
                         </span>
                     )}
@@ -417,8 +420,8 @@ const AccountList: React.FC = () => {
                   <p className="mt-1 text-xs font-medium text-gray-400">备注：{account.remark}</p>
                 )}
                 <div className="flex flex-wrap gap-2">
-                   {account.auto_confirm && <span className="text-xs bg-yellow-50 text-yellow-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动回复</span>}
-                   {account.pause_duration > 0 && <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停{account.pause_duration}分钟</span>}
+                   {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认</span>}
+                   {account.pause_duration > 0 && <span className="status-badge status-badge-info flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停 {account.pause_duration} 分钟</span>}
                 </div>
               </div>
             </div>
@@ -426,7 +429,7 @@ const AccountList: React.FC = () => {
                 <button
                     onClick={() => handleRefreshProfile(account.id)}
                     disabled={refreshingProfileId === account.id}
-                    className="p-3 rounded-xl hover:bg-amber-50 transition-colors text-amber-700 disabled:cursor-wait disabled:opacity-50"
+                    className="rounded-md p-2.5 text-amber-700 hover:bg-amber-50 disabled:cursor-wait disabled:opacity-50"
                     title="刷新闲鱼资料"
                     aria-label="刷新闲鱼资料"
                 >
@@ -434,21 +437,21 @@ const AccountList: React.FC = () => {
                 </button>
                 <button
                     onClick={() => openEditModal(account)}
-                    className="p-3 rounded-xl hover:bg-gray-100 transition-colors text-gray-600"
+                    className="rounded-md p-2.5 text-gray-600 hover:bg-gray-100"
                     title="编辑账号"
                 >
                     <Edit2 className="w-5 h-5" />
                 </button>
                 <button
                     onClick={() => openAIModal(account)}
-                    className="p-3 rounded-xl hover:bg-purple-100 transition-colors text-purple-600"
+                    className="rounded-md p-2.5 text-amber-700 hover:bg-amber-50"
                     title="AI设置"
                 >
                     <Bot className="w-5 h-5" />
                 </button>
                 <button
                     onClick={() => handleToggle(account.id, account.enabled)}
-                    className={`p-3 rounded-xl transition-colors ${account.enabled ? 'text-green-600 hover:bg-green-50' : 'text-gray-400 hover:bg-gray-100'}`}
+                    className={`rounded-md p-2.5 ${account.enabled ? 'text-green-600 hover:bg-green-50' : 'text-gray-400 hover:bg-gray-100'}`}
                     title={account.enabled ? '暂停账号' : '启用账号'}
                     aria-label={account.enabled ? '暂停账号' : '启用账号'}
                 >
@@ -456,79 +459,94 @@ const AccountList: React.FC = () => {
                 </button>
                 <button
                     onClick={() => handleDelete(account.id)}
-                    className="p-3 rounded-xl hover:bg-red-100 transition-colors text-red-500"
+                    className="rounded-md p-2.5 text-red-500 hover:bg-red-100"
                     title="删除账号"
                     aria-label="删除账号"
                 >
                     <Trash2 className="w-5 h-5" />
                 </button>
             </div>
-          </div>
+          </article>
           );
         })}
 
         {accounts.length === 0 && (
-            <div className="ios-card p-12 text-center">
-                <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <User className="w-10 h-10 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-bold text-gray-900">暂无账号</h3>
-                <p className="text-gray-500 mt-1">请点击右上角扫码添加您的闲鱼账号</p>
-            </div>
+            <EmptyState
+              title="暂无闲鱼账号"
+              description="扫码登录后，系统会保存授权并开始获取账号资料、商品、消息和订单状态。"
+              icon={User}
+              action={(
+                <button type="button" onClick={startQRLogin} className="ios-btn-primary rounded-md px-4 py-2 text-sm">
+                  扫码添加账号
+                </button>
+              )}
+            />
         )}
       </div>
 
       {/* QR Code Modal */}
       {showQRModal && createPortal(
-          <div className="modal-overlay-centered">
+          <div className="modal-overlay">
               <div className="modal-container" style={{maxWidth: '24rem'}}>
-                  <button
-                    onClick={closeQRModal}
-                    className="self-end p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors mb-6"
-                  >
-                    <X className="w-5 h-5 text-gray-600" />
-                  </button>
+                  <div className="modal-header flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900">扫码登录</h3>
+                      <p className="mt-1 text-xs text-gray-500">使用闲鱼 App 扫码并在手机端确认。</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeQRModal}
+                      className="rounded-md p-2 hover:bg-gray-100"
+                      aria-label="关闭扫码登录"
+                    >
+                      <X className="h-5 w-5 text-gray-600" />
+                    </button>
+                  </div>
 
-                  <div className="modal-body">
+                  <div className="modal-body py-5">
                       <div className="text-center">
-                          <h3 className="text-2xl font-extrabold text-gray-900 mb-2">扫码登录</h3>
-                          <p className="text-gray-500 mb-8 font-medium">请打开闲鱼APP扫描下方二维码</p>
-
-                          <div className="w-64 h-64 bg-[#F7F8FA] rounded-[2rem] mx-auto flex items-center justify-center overflow-hidden border-4 border-white shadow-inner mb-8 relative">
-                              {qrStatus === 'loading' && <Loader2 className="w-10 h-10 text-[#FFE815] animate-spin" />}
+                          <div className="relative mx-auto flex h-60 w-60 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50">
+                              {qrStatus === 'loading' && <Loader2 className="h-9 w-9 animate-spin text-amber-500" />}
                               {(qrStatus === 'waiting' || qrStatus === 'scanned') && (
-                                  <img src={qrCodeUrl} alt="QR Code" className="w-full h-full p-2" />
+                                  <img src={qrCodeUrl} alt="闲鱼登录二维码" className="h-full w-full p-2" />
                               )}
                               {qrStatus === 'scanned' && (
-                                  <div className="absolute inset-x-3 bottom-3 bg-white/95 border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-800">
+                                  <div className="absolute inset-x-3 bottom-3 border border-gray-200 bg-white/95 px-3 py-2 text-sm font-semibold text-gray-800">
                                       已扫码，请在手机确认
                                   </div>
                               )}
                               {qrStatus === 'processing' && (
-                                  <div className="absolute inset-0 bg-white/95 flex flex-col items-center justify-center text-gray-800">
-                                      <Loader2 className="w-10 h-10 text-amber-500 animate-spin mb-4" />
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 text-gray-800">
+                                      <Loader2 className="mb-4 h-9 w-9 animate-spin text-amber-500" />
                                       <span className="font-bold">正在准备账号</span>
-                                      <span className="text-xs text-gray-500 mt-2">无需重复扫码</span>
+                                      <span className="mt-2 text-xs text-gray-500">无需重复扫码</span>
                                   </div>
                               )}
                               {qrStatus === 'success' && (
-                                  <div className="absolute inset-0 bg-white/95 flex flex-col items-center justify-center text-green-600 animate-fade-in">
-                                      <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-                                         <Check className="w-8 h-8" />
+                                  <div className="absolute inset-0 flex animate-fade-in flex-col items-center justify-center bg-white/95 text-green-700">
+                                      <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-md bg-green-50">
+                                         <Check className="h-7 w-7" />
                                       </div>
-                                      <span className="font-bold text-lg">登录成功</span>
+                                      <span className="text-base font-bold">登录成功</span>
                                   </div>
                               )}
                               {qrStatus === 'error' && (
                                   <div className="flex flex-col items-center px-4 text-center">
-                                      <span className="text-red-500 font-bold mb-2">账号未登录完成</span>
-                                      {qrMessage && <span className="text-xs text-gray-500 mb-3">{qrMessage}</span>}
-                                      <button onClick={startQRLogin} className="text-xs bg-gray-200 px-3 py-1 rounded-full flex items-center gap-1 hover:bg-gray-300"><RefreshCw className="w-3 h-3"/> 重试</button>
+                                      <span className="mb-2 font-bold text-red-600">账号未登录完成</span>
+                                      {qrMessage && <span className="mb-3 text-xs text-gray-500">{qrMessage}</span>}
+                                      <button
+                                        type="button"
+                                        onClick={startQRLogin}
+                                        className="ios-btn-secondary flex items-center gap-1.5 rounded-md px-3 py-2 text-xs"
+                                      >
+                                        <RefreshCw className="h-3.5 w-3.5" />
+                                        重新生成
+                                      </button>
                                   </div>
                               )}
                           </div>
 
-                          <p className="text-xs text-gray-400 font-medium bg-gray-50 py-2 rounded-xl">
+                          <p className="mt-4 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-500">
                             {qrMessage || '二维码有效期为5分钟，请尽快扫码。'}
                           </p>
                       </div>
@@ -540,22 +558,24 @@ const AccountList: React.FC = () => {
 
       {/* 编辑账号弹窗 */}
       {activeModal === 'edit' && editingAccount && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container" style={{maxWidth: '600px'}}>
-            <div className="modal-header">
+            <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-2xl font-extrabold text-gray-900">编辑账号</h3>
-                <p className="text-sm text-gray-500 mt-1">{editingAccount.nickname || editingAccount.remark || editingAccount.id}</p>
+                <h3 className="text-lg font-bold text-gray-900">编辑账号</h3>
+                <p className="mt-1 text-xs text-gray-500">{editingAccount.nickname || editingAccount.remark || editingAccount.id}</p>
               </div>
               <button
+                type="button"
                 onClick={() => setActiveModal(null)}
-                className="p-2 rounded-xl hover:bg-gray-100 transition-colors flex-shrink-0"
+                className="shrink-0 rounded-md p-2 hover:bg-gray-100"
+                aria-label="关闭编辑账号"
               >
                 <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
 
-            <div className="modal-body space-y-6">
+            <div className="modal-body space-y-5">
               {/* 账号ID */}
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-2">账号ID</label>
@@ -563,7 +583,7 @@ const AccountList: React.FC = () => {
                   type="text"
                   value={editingAccount.id}
                   disabled
-                  className="w-full ios-input px-4 py-3 rounded-xl bg-gray-50 text-gray-500"
+                  className="ios-input w-full rounded-md bg-gray-50 px-3 py-2.5 text-gray-500"
                 />
               </div>
 
@@ -575,7 +595,7 @@ const AccountList: React.FC = () => {
                   value={editForm.remark}
                   onChange={(e) => setEditForm({ ...editForm, remark: e.target.value })}
                   placeholder="为账号添加备注"
-                  className="w-full ios-input px-4 py-3 rounded-xl"
+                  className="ios-input w-full rounded-md px-3 py-2.5"
                 />
               </div>
 
@@ -586,13 +606,13 @@ const AccountList: React.FC = () => {
                   value={editForm.cookie}
                   onChange={(e) => setEditForm({ ...editForm, cookie: e.target.value })}
                   placeholder="更新账号Cookie"
-                  className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none font-mono text-xs"
+                  className="ios-input h-28 w-full resize-y rounded-md px-3 py-2.5 font-mono text-xs"
                 />
                 <p className="text-xs text-gray-500 mt-1">当前Cookie长度: {editForm.cookie.length} 字符</p>
               </div>
 
               {/* 自动确认收货 */}
-              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+              <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                 <div>
                   <div className="font-bold text-gray-900 flex items-center gap-2">
                     <Check className="w-4 h-4 text-green-500" />
@@ -603,13 +623,13 @@ const AccountList: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setEditForm({ ...editForm, auto_confirm: !editForm.auto_confirm })}
-                  className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
                     editForm.auto_confirm ? 'bg-[#FFE815]' : 'bg-gray-300'
                   }`}
                 >
                   <span
-                    className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${
-                      editForm.auto_confirm ? 'translate-x-7' : 'translate-x-1'
+                    className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                      editForm.auto_confirm ? 'translate-x-5' : ''
                     }`}
                   />
                 </button>
@@ -628,13 +648,13 @@ const AccountList: React.FC = () => {
                   placeholder="0"
                   min="0"
                   max="1440"
-                  className="w-full ios-input px-4 py-3 rounded-xl"
+                  className="ios-input w-full rounded-md px-3 py-2.5"
                 />
                 <p className="text-xs text-gray-500 mt-1">设置后会暂停处理该账号的订单，到时间后自动恢复</p>
               </div>
 
               {/* 登录信息 */}
-              <div className="border-t border-gray-200 pt-6">
+              <div className="border-t border-gray-200 pt-5">
                 <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
                   <Key className="w-5 h-5 text-amber-500" />
                   登录信息
@@ -647,7 +667,7 @@ const AccountList: React.FC = () => {
                       value={editForm.username}
                       onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
                       placeholder="闲鱼账号/手机号"
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                     />
                   </div>
                   <div>
@@ -658,7 +678,7 @@ const AccountList: React.FC = () => {
                         value={editForm.login_password}
                         onChange={(e) => setEditForm({ ...editForm, login_password: e.target.value })}
                         placeholder="用于自动登录"
-                        className="w-full ios-input px-4 py-3 rounded-xl pr-12"
+                        className="ios-input w-full rounded-md px-3 py-2.5 pr-11"
                       />
                       <button
                         type="button"
@@ -677,13 +697,13 @@ const AccountList: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setEditForm({ ...editForm, show_browser: !editForm.show_browser })}
-                      className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
                         editForm.show_browser ? 'bg-[#FFE815]' : 'bg-gray-300'
                       }`}
                     >
                       <span
-                        className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${
-                          editForm.show_browser ? 'translate-x-7' : 'translate-x-1'
+                        className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                          editForm.show_browser ? 'translate-x-5' : ''
                         }`}
                       />
                     </button>
@@ -693,17 +713,19 @@ const AccountList: React.FC = () => {
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setActiveModal(null)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                   disabled={saving}
                 >
                   取消
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveEdit}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                   disabled={saving}
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
@@ -718,19 +740,21 @@ const AccountList: React.FC = () => {
 
       {/* AI设置弹窗 */}
       {activeModal === 'ai-settings' && editingAccount && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container" style={{maxWidth: '600px'}}>
-            <div className="modal-header">
+            <div className="modal-header flex items-start justify-between gap-4">
               <div>
-                <h3 className="text-2xl font-extrabold text-gray-900 flex items-center gap-2">
-                  <Bot className="w-6 h-6 text-purple-500" />
-                  AI助手设置
+                <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900">
+                  <Bot className="h-5 w-5 text-amber-600" />
+                  AI 助手设置
                 </h3>
-                <p className="text-sm text-gray-500 mt-1">{editingAccount.nickname || editingAccount.remark || editingAccount.id}</p>
+                <p className="mt-1 text-xs text-gray-500">{editingAccount.nickname || editingAccount.remark || editingAccount.id}</p>
               </div>
               <button
+                type="button"
                 onClick={() => setActiveModal(null)}
-                className="p-2 rounded-xl hover:bg-gray-100 transition-colors flex-shrink-0"
+                className="shrink-0 rounded-md p-2 hover:bg-gray-100"
+                aria-label="关闭 AI 助手设置"
               >
                 <X className="w-5 h-5 text-gray-500" />
               </button>
@@ -738,24 +762,24 @@ const AccountList: React.FC = () => {
 
             <div className="modal-body space-y-6">
               {/* 启用AI */}
-              <div className="flex items-center justify-between p-4 bg-purple-50 rounded-xl">
+              <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                 <div>
                   <div className="font-bold text-gray-900 flex items-center gap-2">
-                    <Bot className="w-4 h-4 text-purple-500" />
-                    启用AI自动回复
+                    <Bot className="h-4 w-4 text-amber-600" />
+                    启用 AI 自动回复
                   </div>
                   <div className="text-xs text-gray-500">AI将自动处理买家的砍价消息</div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setAiSettings({ ...aiSettings, ai_enabled: !aiSettings.ai_enabled })}
-                  className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
                     aiSettings.ai_enabled ? 'bg-[#FFE815]' : 'bg-gray-300'
                   }`}
                 >
                   <span
-                    className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${
-                      aiSettings.ai_enabled ? 'translate-x-7' : 'translate-x-1'
+                    className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                      aiSettings.ai_enabled ? 'translate-x-5' : ''
                     }`}
                   />
                 </button>
@@ -764,14 +788,14 @@ const AccountList: React.FC = () => {
               {/* 砍价策略 */}
               <div className="border-t border-gray-200 pt-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-4">砍价策略</h3>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid gap-4 sm:grid-cols-3">
                   <div>
                     <label className="block text-sm font-bold text-gray-700 mb-2">最大折扣比例 (%)</label>
                     <input
                       type="number"
                       value={aiSettings.max_discount_percent}
                       onChange={(e) => setAiSettings({ ...aiSettings, max_discount_percent: parseInt(e.target.value) || 0 })}
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                       min="0"
                       max="100"
                     />
@@ -783,7 +807,7 @@ const AccountList: React.FC = () => {
                       type="number"
                       value={aiSettings.max_discount_amount}
                       onChange={(e) => setAiSettings({ ...aiSettings, max_discount_amount: parseInt(e.target.value) || 0 })}
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                       min="0"
                     />
                     <p className="text-xs text-gray-500 mt-1">例如：100表示最多降价100元</p>
@@ -794,7 +818,7 @@ const AccountList: React.FC = () => {
                       type="number"
                       value={aiSettings.max_bargain_rounds}
                       onChange={(e) => setAiSettings({ ...aiSettings, max_bargain_rounds: parseInt(e.target.value) || 1 })}
-                      className="w-full ios-input px-4 py-3 rounded-xl"
+                      className="ios-input w-full rounded-md px-3 py-2.5"
                       min="1"
                       max="10"
                     />
@@ -810,13 +834,13 @@ const AccountList: React.FC = () => {
                   value={aiSettings.custom_prompts}
                   onChange={(e) => setAiSettings({ ...aiSettings, custom_prompts: e.target.value })}
                   placeholder="输入自定义的AI回复规则或风格指引...&#10;&#10;例如：回复时保持礼貌专业、使用简洁的语言、强调产品质量等"
-                  className="w-full ios-input px-4 py-3 rounded-xl h-40 resize-none"
+                  className="ios-input h-36 w-full resize-y rounded-md px-3 py-2.5"
                 />
               </div>
 
               {/* AI如何工作 */}
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-4">
+                <h4 className="mb-2 flex items-center gap-2 font-bold text-blue-900">
                   <Settings className="w-4 h-4" />
                   AI如何工作
                 </h4>
@@ -830,17 +854,19 @@ const AccountList: React.FC = () => {
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setActiveModal(null)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                   disabled={saving}
                 >
                   取消
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveAISettings}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                   disabled={saving}
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

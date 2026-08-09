@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item } from '../types';
 import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Search, MoreHorizontal, Truck, RefreshCw, Copy, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, User as UserIcon, Phone, MapPin, Upload, ExternalLink, Trash2 } from 'lucide-react';
+import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList } from 'lucide-react';
+import { EmptyState, PageHeader, PageTabs } from './ui';
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const styles = {
@@ -25,7 +26,7 @@ const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   };
 
   return (
-    <span className={`px-3 py-1.5 rounded-lg text-xs font-bold ${styles[status] || styles.cancelled}`}>
+    <span className={`inline-flex rounded px-2 py-1 text-xs font-bold ${styles[status] || styles.cancelled}`}>
       {labels[status] || status}
     </span>
   );
@@ -46,24 +47,11 @@ const OrderList: React.FC = () => {
   const [showImportModal, setShowImportModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState<Partial<Order> | null>(null);
-  const [editForm, setEditForm] = useState<Partial<Order>>({});
   const [importText, setImportText] = useState('');
   const [showShipModal, setShowShipModal] = useState(false);
   const [shipOrderId, setShipOrderId] = useState<string>('');
   const [shipLoading, setShipLoading] = useState(false);
   const [shipResult, setShipResult] = useState<{success: boolean; message: string} | null>(null);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importFormData, setImportFormData] = useState({
-    order_id: '',
-    item_id: '',
-    buyer_id: '',
-    receiver_name: '',
-    receiver_phone: '',
-    receiver_address: '',
-    status: 'pending_ship' as OrderStatus,
-    quantity: 1,
-    amount: ''
-  });
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
 
@@ -156,9 +144,9 @@ const OrderList: React.FC = () => {
   };
 
   // 从商品列表构建商品ID到商品名的映射
-  const buildItemNamesMap = () => {
+  const buildItemNamesMap = (sourceItems: Item[]) => {
       const namesMap: Record<string, string> = {};
-      items.forEach(item => {
+      sourceItems.forEach(item => {
           // 使用 item_id 作为键，商品标题作为值
           if (item.item_id) {
               namesMap[item.item_id] = item.item_title || item.item_id;
@@ -172,7 +160,7 @@ const OrderList: React.FC = () => {
     // 加载商品列表
     getItems().then((itemsList) => {
       setItems(itemsList);
-      buildItemNamesMap();
+      buildItemNamesMap(itemsList);
     }).catch((e) => {
       console.error('加载商品列表失败:', e);
     });
@@ -305,17 +293,21 @@ const OrderList: React.FC = () => {
     }
   };
 
+  const pendingCount = allOrders.filter(order => order.status === 'pending_ship').length;
+  const shippedCount = allOrders.filter(order => order.status === 'shipped').length;
+  const exceptionCount = allOrders.filter(order => ['cancelled', 'refunding'].includes(order.status)).length;
+
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">订单中心</h2>
-          <p className="mt-1 text-sm text-gray-500">查看所有闲鱼交易记录与状态。</p>
-        </div>
-        <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
+    <div className="page-stack animate-fade-in">
+      <PageHeader
+        title="订单管理"
+        description="同步闲鱼交易状态，核对买家与商品信息，并处理人工或完整自动发货。"
+        icon={ClipboardList}
+        actions={(
+          <>
             <button
               onClick={loadOrders}
-              className="rounded-lg border border-gray-200 bg-white p-2.5 text-gray-600 shadow-sm transition-colors hover:bg-gray-50 hover:text-black"
+              className="ios-btn-secondary flex items-center justify-center rounded-md p-2.5 text-gray-600"
               title="刷新订单"
               aria-label="刷新订单"
             >
@@ -323,38 +315,57 @@ const OrderList: React.FC = () => {
             </button>
             <button
               onClick={() => setShowImportModal(true)}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-gray-800 sm:flex-none"
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
             >
               <Plus className="w-4 h-4" />
               插入订单
             </button>
-            <button onClick={handleSync} className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold sm:flex-none">
-                <Truck className="w-5 h-5" />
-                一键同步订单
+            <button onClick={handleSync} className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm">
+                <Truck className="h-4 w-4" />
+                同步订单
             </button>
+          </>
+        )}
+      />
+
+      <div className="metric-grid">
+        <div className="metric-card">
+          <p className="metric-card__label">当前结果</p>
+          <p className="metric-card__value">{allOrders.length}</p>
+          <p className="metric-card__meta">第 {page} 页加载的数据</p>
+        </div>
+        <div className="metric-card">
+          <p className="metric-card__label">待发货</p>
+          <p className="metric-card__value">{pendingCount}</p>
+          <p className="metric-card__meta">需要优先处理</p>
+        </div>
+        <div className="metric-card">
+          <p className="metric-card__label">已发货</p>
+          <p className="metric-card__value">{shippedCount}</p>
+          <p className="metric-card__meta">等待确认或完成</p>
+        </div>
+        <div className="metric-card">
+          <p className="metric-card__label">异常订单</p>
+          <p className="metric-card__value">{exceptionCount}</p>
+          <p className="metric-card__meta">取消或退款中</p>
         </div>
       </div>
 
-      <div className="ios-card overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
+      <section className="section-panel">
         {/* Toolbar */}
-        <div className="flex flex-col items-stretch justify-between gap-3 border-b border-gray-100 bg-[#FAFAFA] p-4 md:flex-row md:items-center">
-          <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-gray-200/50 p-1">
-             {[
-                 {k:'all', v:'全部'},
-                 {k:'shipped', v:'已发货'},
-                 {k:'pending_ship', v:'待发货'},
-                 {k:'cancelled', v:'已取消'},
-                 {k:'refunding', v:'其他'}
-             ].map(opt => (
-                 <button
-                    key={opt.k}
-                    onClick={() => { setFilter(opt.k); setPage(1); setSearchText(''); }}
-                    className={`px-5 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${filter === opt.k ? 'bg-white text-black shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                 >
-                    {opt.v}
-                 </button>
-             ))}
-          </div>
+        <div className="toolbar rounded-none border-0 border-b shadow-none">
+          <PageTabs
+            value={filter}
+            onChange={(value) => { setFilter(value); setPage(1); setSearchText(''); }}
+            ariaLabel="订单状态筛选"
+            items={[
+              { id: 'all', label: '全部' },
+              { id: 'pending_ship', label: '待发货', count: pendingCount },
+              { id: 'shipped', label: '已发货', count: shippedCount },
+              { id: 'cancelled', label: '已取消' },
+              { id: 'refunding', label: '退款中' },
+            ]}
+          />
           <div className="group relative w-full md:w-auto">
              <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#FFE815] transition-colors" />
              <input
@@ -362,29 +373,29 @@ const OrderList: React.FC = () => {
                  placeholder="搜索订单号/商品/买家..."
                  value={searchText}
                  onChange={(e) => { setSearchText(e.target.value); setPage(1); }}
-                 className="ios-input w-full rounded-lg border-none bg-white py-2.5 pl-10 pr-4 shadow-sm focus:ring-0 md:w-64"
+                 className="ios-input w-full rounded-md bg-white py-2.5 pl-10 pr-4 md:w-72"
              />
           </div>
         </div>
 
         {/* Table */}
-        <div className="overflow-x-auto min-h-[400px]">
-          <table className="w-full text-left border-collapse table-fixed">
+        <div className="min-h-0 overflow-x-auto md:min-h-[360px]">
+          <table className="data-table responsive-data-table min-w-[1040px] table-fixed">
             <thead>
-              <tr className="bg-white text-gray-400 text-xs font-bold uppercase tracking-wider border-b border-gray-50">
-                <th className="px-6 py-5" style={{width: '28%'}}>订单信息</th>
-                <th className="px-6 py-5" style={{width: '26%'}}>买家信息</th>
-                <th className="px-6 py-5" style={{width: '11%'}}>实付金额</th>
-                <th className="px-6 py-5" style={{width: '13%'}}>当前状态</th>
-                <th className="px-6 py-5 text-right" style={{width: '22%'}}>操作</th>
+              <tr>
+                <th style={{width: '28%'}}>订单信息</th>
+                <th style={{width: '25%'}}>买家信息</th>
+                <th style={{width: '10%'}}>实付金额</th>
+                <th style={{width: '11%'}}>当前状态</th>
+                <th className="text-right" style={{width: '26%'}}>操作</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
+            <tbody>
               {orders.map((order) => (
-                <tr key={order.id} className="hover:bg-[#FFFDE7]/50 transition-colors group">
-                  <td className="px-6 py-5">
-                    <div className="flex items-center gap-5">
-                      <div className="w-14 h-14 rounded-xl bg-gray-100 overflow-hidden shadow-sm border border-gray-100 flex-shrink-0">
+                <tr key={order.id} className="group">
+                  <td data-label="订单信息">
+                    <div className="flex items-center gap-3">
+                      <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded-md border border-gray-200 bg-gray-100">
                         {order.item_image ? (
                             <img src={order.item_image} alt="" className="w-full h-full object-cover" />
                         ) : (
@@ -400,39 +411,30 @@ const OrderList: React.FC = () => {
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-5">
-                      <div className="flex flex-col gap-1">
-                          <div className="text-xs text-gray-500">买家ID</div>
-                          <div className="text-sm font-bold text-gray-800">{order.buyer_id}</div>
+                  <td data-label="买家信息">
+                      <div className="flex flex-col gap-0.5">
+                          <div className="text-sm font-bold text-gray-800">{order.buyer_id || '未知买家'}</div>
                           {order.receiver_name && (
-                              <>
-                                  <div className="text-xs text-gray-500">收货人</div>
-                                  <div className="text-xs text-gray-600">{order.receiver_name}</div>
-                              </>
+                              <div className="text-xs text-gray-600">收货人：{order.receiver_name}</div>
                           )}
                           {order.receiver_phone && (
-                              <>
-                                  <div className="text-xs text-gray-500">联系电话</div>
-                                  <div className="text-xs text-gray-600 font-mono">{order.receiver_phone}</div>
-                              </>
+                              <div className="font-mono text-xs text-gray-600">{order.receiver_phone}</div>
                           )}
                           {order.receiver_address && (
-                              <>
-                                  <div className="text-xs text-gray-500">收货地址</div>
-                                  <div className="text-xs text-gray-600 line-clamp-1">{order.receiver_address}</div>
-                              </>
+                              <div className="line-clamp-1 text-xs text-gray-500">{order.receiver_address}</div>
                           )}
                       </div>
                   </td>
-                  <td className="px-6 py-5 text-base font-extrabold text-gray-900 font-feature-settings-tnum">¥{order.amount}</td>
-                  <td className="px-6 py-5">
+                  <td data-label="实付金额" className="font-feature-settings-tnum text-sm font-extrabold text-gray-900">¥{order.amount}</td>
+                  <td data-label="当前状态">
                     <StatusBadge status={order.status} />
                   </td>
-                  <td className="px-6 py-5 text-right">
+                  <td data-label="操作" className="text-right">
+                    <div className="flex items-center justify-end gap-1">
                     {order.status === 'pending_ship' && (
                         <button
                             onClick={() => handleShip(order.order_id)}
-                            className="mr-2 text-white bg-black hover:bg-gray-800 shadow-lg shadow-gray-200 text-xs font-bold px-3 py-2 rounded-xl transition-all active:scale-95"
+                            className="ios-btn-primary mr-1 rounded-md px-3 py-2 text-xs"
                         >
                             立即发货
                         </button>
@@ -441,21 +443,21 @@ const OrderList: React.FC = () => {
                       href={`https://www.goofish.com/order-detail?orderId=${order.order_id}&role=seller`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="mr-2 inline-flex text-gray-400 hover:text-amber-600 p-2 rounded-xl hover:bg-amber-50 transition-colors"
+                      className="inline-flex rounded-md p-2 text-gray-500 transition-colors hover:bg-amber-50 hover:text-amber-700"
                       title="查看闲鱼详情"
                     >
                       <ExternalLink className="w-4 h-4" />
                     </a>
                     <button
                       onClick={() => handleViewDetail(order)}
-                      className="mr-2 text-gray-400 hover:text-blue-600 p-2 rounded-xl hover:bg-blue-50 transition-colors"
+                      className="rounded-md p-2 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
                       title="查看详情"
                     >
                       <Eye className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => handleEdit(order)}
-                      className="mr-2 text-gray-400 hover:text-black p-2 rounded-xl hover:bg-gray-100 transition-colors"
+                      className="rounded-md p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-black"
                       title="编辑订单"
                     >
                       <Edit className="w-4 h-4" />
@@ -463,7 +465,7 @@ const OrderList: React.FC = () => {
                     <button
                       onClick={() => handleSyncSingle(order.order_id)}
                       disabled={syncingOrderId === order.order_id}
-                      className="mr-2 text-gray-400 hover:text-green-600 p-2 rounded-xl hover:bg-green-50 transition-colors disabled:opacity-50"
+                      className="rounded-md p-2 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-700 disabled:opacity-50"
                       title="同步订单"
                     >
                       <RefreshCw className={`w-4 h-4 ${syncingOrderId === order.order_id ? 'animate-spin' : ''}`} />
@@ -471,16 +473,27 @@ const OrderList: React.FC = () => {
                     <button
                       onClick={() => handleDelete(order.order_id)}
                       disabled={deletingOrderId === order.order_id}
-                      className="text-gray-400 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-colors disabled:opacity-50"
+                      className="rounded-md p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
                       title="删除订单"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {!loading && orders.length === 0 && (
+            <div className="p-4">
+              <EmptyState
+                compact
+                icon={PackageCheck}
+                title="没有匹配的订单"
+                description={searchText ? '请调整搜索条件，或清空搜索后查看全部订单。' : '可先同步闲鱼订单，或手动插入用于补录的订单数据。'}
+              />
+            </div>
+          )}
         </div>
 
         {/* Pagination */}
@@ -492,31 +505,36 @@ const OrderList: React.FC = () => {
                 <button
                     disabled={page <= 1}
                     onClick={() => setPage(p => p - 1)}
-                    className="p-2.5 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-gray-600 transition-colors"
+                    className="rounded-md bg-gray-50 p-2.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <ChevronLeft className="w-5 h-5" />
                 </button>
                 <button
                     disabled={page >= totalPages}
                     onClick={() => setPage(p => p + 1)}
-                    className="p-2.5 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-gray-600 transition-colors"
+                    className="rounded-md bg-gray-50 p-2.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                     <ChevronRight className="w-5 h-5" />
                 </button>
             </div>
         </div>
-      </div>
+      </section>
 
       {/* 订单详情弹窗 - 使用 Portal */}
       {showDetailModal && selectedOrder && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container">
             <div className="modal-header">
-              <div className="flex items-center justify-between w-full">
-                <h3 className="text-2xl font-extrabold text-gray-900">订单详情</h3>
+              <div className="flex w-full items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">订单详情</h3>
+                  <p className="mt-1 break-all text-xs text-gray-500">{selectedOrder.order_id}</p>
+                </div>
                 <button
+                  type="button"
                   onClick={() => setShowDetailModal(false)}
-                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭订单详情"
                 >
                   <X className="w-5 h-5 text-gray-600" />
                 </button>
@@ -527,7 +545,7 @@ const OrderList: React.FC = () => {
               {/* Order Info */}
               <div className="space-y-4">
                 <h4 className="text-lg font-bold text-gray-800">订单信息</h4>
-                <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl">
+                <div className="grid gap-4 rounded-md border border-gray-200 bg-gray-50 p-4 sm:grid-cols-2">
                   <div>
                     <div className="text-xs text-gray-500 mb-1">订单号</div>
                     <div className="font-mono text-sm font-bold text-gray-900">{selectedOrder.order_id}</div>
@@ -554,9 +572,9 @@ const OrderList: React.FC = () => {
               {/* Item Info */}
               <div className="space-y-4">
                 <h4 className="text-lg font-bold text-gray-800">商品信息</h4>
-                <div className="p-4 bg-gray-50 rounded-xl flex items-center gap-4">
+                <div className="flex items-center gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                   {selectedOrder.item_image && (
-                    <img src={selectedOrder.item_image} alt="" className="w-20 h-20 rounded-xl object-cover border border-gray-200" />
+                    <img src={selectedOrder.item_image} alt="" className="h-20 w-20 rounded-md border border-gray-200 object-cover" />
                   )}
                   <div className="flex-1">
                     <div className="font-bold text-gray-900 mb-1">
@@ -573,7 +591,7 @@ const OrderList: React.FC = () => {
               {/* Buyer Info */}
               <div className="space-y-4">
                 <h4 className="text-lg font-bold text-gray-800">买家信息</h4>
-                <div className="p-4 bg-gray-50 rounded-xl space-y-3">
+                <div className="space-y-3 rounded-md border border-gray-200 bg-gray-50 p-4">
                   <div>
                     <div className="text-xs text-gray-500 mb-1">买家ID</div>
                     <div className="font-bold text-gray-900">{selectedOrder.buyer_id}</div>
@@ -601,20 +619,22 @@ const OrderList: React.FC = () => {
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowDetailModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                 >
                   关闭
                 </button>
                 {selectedOrder.status === 'pending_ship' && (
                   <button
+                    type="button"
                     onClick={() => {
                       setShowDetailModal(false);
                       handleShip(selectedOrder.order_id);
                     }}
-                    className="flex-1 px-6 py-3 rounded-xl ios-btn-primary font-bold shadow-lg shadow-yellow-200"
+                    className="ios-btn-primary flex-1 rounded-md px-4 py-2.5 text-sm"
                   >
                     立即发货
                   </button>
@@ -628,14 +648,18 @@ const OrderList: React.FC = () => {
 
       {/* Import Modal - 使用 Portal */}
       {showImportModal && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container">
             <div className="modal-header">
               <div className="flex items-center justify-between w-full">
-                <h3 className="text-2xl font-extrabold text-gray-900">插入订单</h3>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">插入订单</h3>
+                  <p className="mt-1 text-xs text-gray-500">粘贴单条订单对象或订单数组，用于补录和测试。</p>
+                </div>
                 <button
                   onClick={() => setShowImportModal(false)}
-                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭插入订单"
                 >
                   <X className="w-5 h-5 text-gray-600" />
                 </button>
@@ -644,38 +668,30 @@ const OrderList: React.FC = () => {
 
             <div className="modal-body space-y-5">
               <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">选择Excel文件</label>
-                <input
-                  type="file"
-                  accept=".xlsx,.xls"
-                  onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-                  className="w-full ios-input px-4 py-3 rounded-xl text-sm"
+                <label className="field-label">订单 JSON</label>
+                <textarea
+                  value={importText}
+                  onChange={(event) => setImportText(event.target.value)}
+                  className="ios-input min-h-64 w-full resize-y rounded-md px-4 py-3 font-mono text-sm"
+                  placeholder={'[\n  {\n    "order_id": "订单号",\n    "item_id": "商品ID",\n    "buyer_id": "买家ID",\n    "status": "pending_ship",\n    "quantity": 1,\n    "amount": 0.01\n  }\n]'}
                 />
-                <p className="text-xs text-gray-500 mt-2">支持 .xlsx 和 .xls 格式</p>
+                <p className="mt-2 text-xs text-gray-500">状态可使用 processing、pending_ship、shipped、completed、cancelled 或 refunding。</p>
               </div>
-
-              {importFile && (
-                <div className="p-3 bg-blue-50 rounded-xl">
-                  <div className="flex items-center gap-2">
-                    <Upload className="w-4 h-4 text-blue-600" />
-                    <span className="text-sm font-medium text-blue-900">{importFile.name}</span>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowImportModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                 >
                   取消
                 </button>
                 <button
                   onClick={handleImportOrders}
-                  disabled={!importFile}
-                  className="flex-1 px-6 py-3 rounded-xl ios-btn-primary font-bold shadow-lg shadow-yellow-200 disabled:opacity-50"
+                  disabled={!importText.trim()}
+                  className="ios-btn-primary flex-1 rounded-md px-6 py-2.5 text-sm disabled:opacity-50"
                 >
                   导入订单
                 </button>
@@ -688,14 +704,19 @@ const OrderList: React.FC = () => {
 
       {/* Ship Modal - 发货方式选择 */}
       {showShipModal && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container" style={{ maxWidth: '480px' }}>
             <div className="modal-header">
-              <div className="flex items-center justify-between w-full">
-                <h3 className="text-2xl font-extrabold text-gray-900">立即发货</h3>
+              <div className="flex w-full items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">立即发货</h3>
+                  <p className="mt-1 text-xs text-gray-500">选择只更新平台状态，或执行完整卡密发货。</p>
+                </div>
                 <button
+                  type="button"
                   onClick={() => { setShowShipModal(false); setShipResult(null); }}
-                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭发货操作"
                 >
                   <X className="w-5 h-5 text-gray-600" />
                 </button>
@@ -707,12 +728,13 @@ const OrderList: React.FC = () => {
 
               {/* 选项A: 仅修改发货状态 */}
               <button
+                type="button"
                 onClick={() => executeShip('status_only')}
                 disabled={shipLoading}
-                className="w-full text-left p-4 rounded-xl border-2 border-gray-200 hover:border-gray-400 hover:bg-gray-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-md border border-gray-200 p-4 text-left transition-colors hover:border-gray-400 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-blue-100">
                     <Truck className="w-5 h-5 text-blue-600" />
                   </div>
                   <div>
@@ -727,12 +749,13 @@ const OrderList: React.FC = () => {
 
               {/* 选项B: 完整发货流程 */}
               <button
+                type="button"
                 onClick={() => executeShip('full_delivery')}
                 disabled={shipLoading}
-                className="w-full text-left p-4 rounded-xl border-2 border-gray-200 hover:border-[#FFE815] hover:bg-yellow-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-md border border-gray-200 p-4 text-left transition-colors hover:border-amber-400 hover:bg-yellow-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-yellow-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-yellow-100">
                     <PackageCheck className="w-5 h-5 text-yellow-700" />
                   </div>
                   <div>
@@ -755,16 +778,17 @@ const OrderList: React.FC = () => {
 
               {/* 结果显示 */}
               {shipResult && (
-                <div className={`p-3 rounded-xl text-sm ${shipResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-                  {shipResult.success ? '✓ ' : '✗ '}{shipResult.message}
+                <div className={`rounded-md border p-3 text-sm ${shipResult.success ? 'border-green-200 bg-green-50 text-green-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                  {shipResult.message}
                 </div>
               )}
             </div>
 
             <div className="modal-footer">
               <button
+                type="button"
                 onClick={() => { setShowShipModal(false); setShipResult(null); }}
-                className="w-full px-6 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold transition-colors"
+                className="ios-btn-secondary w-full rounded-md px-4 py-2.5 text-sm"
               >
                 {shipResult?.success ? '完成' : '取消'}
               </button>
@@ -776,14 +800,19 @@ const OrderList: React.FC = () => {
 
       {/* Edit Modal - 使用 Portal */}
       {showEditModal && editingOrder && createPortal(
-        <div className="modal-overlay-centered">
+        <div className="modal-overlay">
           <div className="modal-container">
             <div className="modal-header">
-              <div className="flex items-center justify-between w-full">
-                <h3 className="text-2xl font-extrabold text-gray-900">编辑订单</h3>
+              <div className="flex w-full items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">编辑订单</h3>
+                  <p className="mt-1 break-all text-xs text-gray-500">{editingOrder.order_id}</p>
+                </div>
                 <button
+                  type="button"
                   onClick={() => setShowEditModal(false)}
-                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭编辑订单"
                 >
                   <X className="w-5 h-5 text-gray-600" />
                 </button>
@@ -791,14 +820,14 @@ const OrderList: React.FC = () => {
             </div>
 
             <div className="modal-body space-y-5">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">订单号</label>
                   <input
                     type="text"
                     value={editingOrder.order_id}
                     disabled
-                    className="w-full ios-input px-4 py-3 rounded-xl bg-gray-50 text-gray-500"
+                    className="ios-input w-full rounded-md bg-gray-50 px-3 py-2.5 text-gray-500"
                   />
                 </div>
                 <div>
@@ -806,7 +835,7 @@ const OrderList: React.FC = () => {
                   <select
                     value={editingOrder.status}
                     onChange={(e) => setEditingOrder({ ...editingOrder, status: e.target.value as OrderStatus })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   >
                     <option value="processing">处理中</option>
                     <option value="pending_ship">待发货</option>
@@ -818,14 +847,14 @@ const OrderList: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">买家ID</label>
                   <input
                     type="text"
                     value={editingOrder.buyer_id}
                     onChange={(e) => setEditingOrder({ ...editingOrder, buyer_id: e.target.value })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   />
                 </div>
                 <div>
@@ -834,19 +863,19 @@ const OrderList: React.FC = () => {
                     type="number"
                     value={editingOrder.amount}
                     onChange={(e) => setEditingOrder({ ...editingOrder, amount: parseFloat(e.target.value) })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">收货人</label>
                   <input
                     type="text"
                     value={editingOrder.receiver_name || ''}
                     onChange={(e) => setEditingOrder({ ...editingOrder, receiver_name: e.target.value })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   />
                 </div>
                 <div>
@@ -855,7 +884,7 @@ const OrderList: React.FC = () => {
                     type="text"
                     value={editingOrder.receiver_phone || ''}
                     onChange={(e) => setEditingOrder({ ...editingOrder, receiver_phone: e.target.value })}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
+                    className="ios-input w-full rounded-md px-3 py-2.5"
                   />
                 </div>
               </div>
@@ -866,7 +895,7 @@ const OrderList: React.FC = () => {
                   value={editingOrder.receiver_address || ''}
                   onChange={(e) => setEditingOrder({ ...editingOrder, receiver_address: e.target.value })}
                   rows={2}
-                  className="w-full ios-input px-4 py-3 rounded-xl resize-none"
+                  className="ios-input w-full resize-y rounded-md px-3 py-2.5"
                 />
               </div>
 
@@ -876,22 +905,24 @@ const OrderList: React.FC = () => {
                   type="text"
                   value={editingOrder.item_title || ''}
                   onChange={(e) => setEditingOrder({ ...editingOrder, item_title: e.target.value })}
-                  className="w-full ios-input px-4 py-3 rounded-xl"
+                  className="ios-input w-full rounded-md px-3 py-2.5"
                 />
               </div>
             </div>
 
             <div className="modal-footer">
-              <div className="flex gap-3 w-full">
+              <div className="flex w-full gap-2">
                 <button
+                  type="button"
                   onClick={() => setShowEditModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
                 >
                   取消
                 </button>
                 <button
+                  type="button"
                   onClick={handleSaveEdit}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm"
                 >
                   <Save className="w-4 h-4" />
                   保存更改

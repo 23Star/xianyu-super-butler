@@ -65,7 +65,7 @@ const GlobalFeedback: React.FC = () => {
             <div
               key={toast.id}
               role={toast.type === 'error' ? 'alert' : 'status'}
-              className={`flex items-start gap-3 rounded-md border px-4 py-3 shadow-lg ${style.className}`}
+              className={`flex items-start gap-3 rounded-md border px-4 py-3 shadow-[0_4px_16px_rgba(20,24,28,0.10)] ${style.className}`}
             >
               <Icon className="mt-0.5 h-5 w-5 shrink-0" />
               <span className="min-w-0 flex-1 break-words text-sm font-medium">{toast.message}</span>
@@ -84,7 +84,7 @@ const GlobalFeedback: React.FC = () => {
 
       {confirmation && (
         <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/35 p-4"
+          className="modal-overlay"
           role="presentation"
           onMouseDown={event => {
             if (event.target === event.currentTarget) finishConfirmation(false);
@@ -95,9 +95,9 @@ const GlobalFeedback: React.FC = () => {
             aria-modal="true"
             aria-labelledby="global-confirm-title"
             aria-describedby="global-confirm-message"
-            className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-5 shadow-2xl"
+            className="modal-container max-w-md"
           >
-            <div className="flex items-start gap-3">
+            <div className="modal-body flex items-start gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-amber-50 text-amber-700">
                 <TriangleAlert className="h-5 w-5" />
               </div>
@@ -106,21 +106,17 @@ const GlobalFeedback: React.FC = () => {
                 <p id="global-confirm-message" className="mt-1 break-words text-sm leading-6 text-gray-600">{confirmation.message}</p>
               </div>
             </div>
-            <div className="mt-6 flex justify-end gap-2">
+            <div className="modal-footer flex justify-end gap-2">
               <button
                 type="button"
-                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                className="ios-btn-secondary rounded-md px-4 py-2 text-sm"
                 onClick={() => finishConfirmation(false)}
               >
                 {confirmation.cancelLabel}
               </button>
               <button
                 type="button"
-                className={`rounded-md px-4 py-2 text-sm font-bold ${
-                  confirmation.danger
-                    ? 'bg-red-600 text-white hover:bg-red-700'
-                    : 'bg-[#FFE815] text-black hover:bg-[#FFD600]'
-                }`}
+                className={`${confirmation.danger ? 'ios-btn-danger' : 'ios-btn-primary'} rounded-md px-4 py-2 text-sm`}
                 onClick={() => finishConfirmation(true)}
                 autoFocus
               >
