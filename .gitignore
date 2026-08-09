@@ -9,9 +9,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-# Python lib directories (but not static/lib)
+# Python lib directories (but not static/lib and frontend/lib)
 lib/
 !static/lib/
+!frontend/lib/
 lib64/
 parts/
 sdist/
