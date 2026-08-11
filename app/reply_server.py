@@ -16,7 +16,9 @@ import uvicorn
 import pandas as pd
 import io
 import asyncio
+import base64
 import sqlite3
+from datetime import datetime
 from collections import defaultdict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,8 +29,14 @@ from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
 from app.routers.delivery_block import create_delivery_block_router
+from app.routers.auto_rating import create_auto_rating_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
+from utils.time_utils import (
+    get_local_now,
+    local_date_to_utc_end_exclusive,
+    local_date_to_utc_start,
+)
 from utils.image_utils import image_manager
 from utils.order_status_rules import (
     get_order_status,
@@ -68,6 +76,11 @@ qr_check_tasks = {}  # 保持后台任务引用，避免扫码后的Cookie准备
 # 账号密码登录会话管理
 password_login_sessions = {}  # {session_id: {'account_id': str, 'account': str, 'password': str, 'show_browser': bool, 'status': str, 'verification_url': str, 'qr_code_url': str, 'slider_instance': object, 'task': asyncio.Task, 'timestamp': float}}
 password_login_locks = defaultdict(lambda: asyncio.Lock())
+
+# 历史订单同步任务（从 fix 项目迁移）。任务状态保存在内存，订单结果写入本地 SQLite。
+ORDER_HISTORY_SYNC_JOB_RETENTION_SECONDS = 3600
+order_history_sync_jobs: Dict[str, Dict[str, Any]] = {}
+order_history_sync_tasks: Dict[str, asyncio.Task] = {}
 
 # 不再需要单独的密码初始化，由数据库初始化时处理
 
@@ -338,6 +351,30 @@ else:
 
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
+app.include_router(create_auto_rating_router(get_current_user, db_manager))
+logger.info("已注册自动评价路由")
+
+_auto_rating_task: Optional[asyncio.Task] = None
+
+
+@app.on_event("startup")
+async def start_auto_rating_task():
+    global _auto_rating_task
+    from app.auto_rate_task import auto_rate_task_loop
+    if _auto_rating_task is None or _auto_rating_task.done():
+        _auto_rating_task = asyncio.create_task(auto_rate_task_loop())
+
+
+@app.on_event("shutdown")
+async def stop_auto_rating_task():
+    global _auto_rating_task
+    if _auto_rating_task and not _auto_rating_task.done():
+        _auto_rating_task.cancel()
+        try:
+            await _auto_rating_task
+        except asyncio.CancelledError:
+            pass
+    _auto_rating_task = None
 
 # 初始化文件日志收集器
 setup_file_logging()
@@ -7263,6 +7300,273 @@ def update_item_multi_quantity_delivery(cookie_id: str, item_id: str, delivery_d
 
 # ==================== 订单管理接口 ====================
 
+
+class OrderHistorySyncRequest(BaseModel):
+    """按本地日期范围抓取卖家中心历史订单。"""
+    cookie_id: Optional[str] = None
+    start_date: str
+    end_date: str
+    max_orders: int = 120
+    fetch_details: bool = True
+
+
+def _history_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _history_amount(value: Any) -> Optional[str]:
+    text = _history_text(value)
+    if not text:
+        return None
+    cleaned = text.replace('¥', '').replace('￥', '').replace(',', '').strip()
+    try:
+        return f'{float(cleaned):.2f}'
+    except (TypeError, ValueError):
+        return text
+
+
+def _history_job_snapshot(job: Dict[str, Any]) -> Dict[str, Any]:
+    result = {key: job.get(key) for key in (
+        'job_id', 'status', 'message', 'error', 'created_at', 'started_at', 'finished_at',
+        'request', 'current_account', 'current_order_id', 'accounts_total', 'accounts_completed',
+        'orders_discovered', 'orders_processed', 'orders_saved', 'orders_skipped',
+        'orders_failed', 'matched_orders',
+    )}
+    result['warnings'] = list(job.get('warnings') or [])
+    return result
+
+
+def _history_warning(job: Dict[str, Any], message: str) -> None:
+    warnings = job.setdefault('warnings', [])
+    if len(warnings) < 20:
+        warnings.append(str(message))
+
+
+def _cleanup_order_history_sync_jobs() -> None:
+    now = time.time()
+    expired = [job_id for job_id, job in order_history_sync_jobs.items()
+               if job.get('status') in {'completed', 'failed', 'cancelled'}
+               and job.get('finished_ts')
+               and now - job['finished_ts'] > ORDER_HISTORY_SYNC_JOB_RETENTION_SECONDS]
+    for job_id in expired:
+        order_history_sync_jobs.pop(job_id, None)
+        order_history_sync_tasks.pop(job_id, None)
+
+
+def _save_history_order_candidate(cookie_id: str, candidate: Dict[str, Any]) -> bool:
+    from utils.order_history_sync import normalize_order_history_status
+
+    order_id = _history_text(candidate.get('order_id'))
+    if not order_id:
+        return False
+    status = normalize_order_history_status(candidate.get('order_status')) or _history_text(candidate.get('order_status'))
+    return bool(db_manager.insert_or_update_order(
+        order_id=order_id,
+        item_id=_history_text(candidate.get('item_id')),
+        buyer_id=_history_text(candidate.get('buyer_id')),
+        amount=_history_amount(candidate.get('amount')),
+        order_status=status,
+        cookie_id=cookie_id,
+        created_at=_history_text(candidate.get('platform_created_at')),
+    ))
+
+
+def _save_history_order_detail(cookie_id: str, candidate: Dict[str, Any], detail: Dict[str, Any]) -> bool:
+    from utils.order_history_sync import normalize_order_history_status
+
+    order_id = _history_text(detail.get('order_id')) or _history_text(candidate.get('order_id'))
+    if not order_id:
+        return False
+    status = normalize_order_history_status(detail.get('order_status')) or _history_text(detail.get('order_status'))
+    sku = detail.get('sku_info') if isinstance(detail.get('sku_info'), dict) else {}
+    return bool(db_manager.insert_or_update_order(
+        order_id=order_id,
+        item_id=_history_text(detail.get('item_id')) or _history_text(candidate.get('item_id')),
+        buyer_id=_history_text(candidate.get('buyer_id')),
+        spec_name=_history_text(detail.get('spec_name') or sku.get('spec_name')),
+        spec_value=_history_text(detail.get('spec_value') or sku.get('spec_value')),
+        quantity=_history_text(detail.get('quantity') or sku.get('quantity')),
+        amount=_history_amount(detail.get('amount') or sku.get('amount') or candidate.get('amount')),
+        order_status=status,
+        cookie_id=cookie_id,
+        created_at=_history_text(detail.get('order_time') or sku.get('order_time') or candidate.get('platform_created_at')),
+        receiver_name=_history_text(detail.get('receiver_name') or sku.get('receiver_name')),
+        receiver_phone=_history_text(detail.get('receiver_phone') or sku.get('receiver_phone')),
+        receiver_address=_history_text(detail.get('receiver_address') or sku.get('receiver_address')),
+    ))
+
+
+async def _run_order_history_sync_job(job_id: str) -> None:
+    job = order_history_sync_jobs.get(job_id)
+    if not job:
+        return
+    from utils.order_history_sync import OrderHistoryPageFetcher, OrderHistorySyncError
+
+    try:
+        request_data = dict(job.get('request') or {})
+        utc_start = local_date_to_utc_start(request_data.get('start_date'))
+        utc_end = local_date_to_utc_end_exclusive(request_data.get('end_date'))
+        if not utc_start or not utc_end or utc_start >= utc_end:
+            raise ValueError('日期格式错误或开始日期不早于结束日期，应为 YYYY-MM-DD')
+        max_orders = min(max(int(request_data.get('max_orders') or 120), 1), 500)
+        fetch_details = bool(request_data.get('fetch_details', True))
+        cookies = db_manager.get_all_cookies(job.get('user_id'))
+        selected = _history_text(request_data.get('cookie_id'))
+        if selected:
+            if selected not in cookies:
+                raise ValueError('指定账号不存在或无权限访问')
+            cookie_ids = [selected]
+        else:
+            cookie_ids = list(cookies.keys())
+        if not cookie_ids:
+            raise ValueError('当前没有可同步的账号')
+
+        job.update({'status': 'running', 'message': '开始同步历史订单', 'error': None,
+                    'started_at': get_local_now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'accounts_total': len(cookie_ids), 'accounts_completed': 0,
+                    'orders_discovered': 0, 'orders_processed': 0, 'orders_saved': 0,
+                    'orders_skipped': 0, 'orders_failed': 0, 'matched_orders': 0, 'warnings': []})
+
+        for account_index, cookie_id in enumerate(cookie_ids, start=1):
+            if job.get('status') == 'cancelled':
+                return
+            remaining = max_orders - int(job.get('matched_orders') or 0)
+            if remaining <= 0:
+                break
+            cookie_string = cookies.get(cookie_id)
+            if not cookie_string:
+                _history_warning(job, f'账号 {cookie_id} 缺少 Cookie，已跳过')
+                job['accounts_completed'] = account_index
+                continue
+            job['current_account'] = cookie_id
+            job['message'] = f'正在抓取账号 {cookie_id} 的历史订单列表'
+            fetcher = OrderHistoryPageFetcher(cookie_string, cookie_id_for_log=cookie_id, headless=True)
+            try:
+                try:
+                    result = await fetcher.fetch_recent_orders(max_orders=remaining, utc_start=utc_start, utc_end_exclusive=utc_end)
+                except OrderHistorySyncError as exc:
+                    warning = str(exc) + (f'；处理建议：{exc.guidance}' if exc.guidance else '')
+                    _history_warning(job, warning)
+                    job['orders_failed'] += 1
+                    job['accounts_completed'] = account_index
+                    continue
+                candidates = list(result.get('orders') or [])
+                job['orders_discovered'] += int(result.get('scanned_count') or 0)
+                job['matched_orders'] += int(result.get('matched_count') or 0)
+                job['orders_skipped'] += int(result.get('out_of_range_count') or 0)
+                if not candidates:
+                    _history_warning(job, f'账号 {cookie_id} 未抓到历史订单候选')
+                    job['accounts_completed'] = account_index
+                    continue
+                for candidate in candidates:
+                    if job.get('status') == 'cancelled':
+                        return
+                    order_id = _history_text(candidate.get('order_id'))
+                    if not order_id:
+                        continue
+                    job['current_order_id'] = order_id
+                    job['orders_processed'] += 1
+                    job['message'] = f'正在同步账号 {cookie_id} 的订单 {order_id}'
+                    saved = False
+                    if fetch_details:
+                        try:
+                            detail = await fetcher.fetch_order_detail(order_id)
+                            if detail:
+                                saved = _save_history_order_detail(cookie_id, candidate, detail)
+                        except Exception as exc:
+                            logger.warning(f'历史订单详情同步失败: {cookie_id}/{order_id}: {exc}')
+                            _history_warning(job, f'订单 {order_id} 详情刷新失败: {exc}')
+                    if not saved:
+                        saved = _save_history_order_candidate(cookie_id, candidate)
+                    if saved:
+                        job['orders_saved'] += 1
+                    else:
+                        job['orders_failed'] += 1
+                        job['orders_skipped'] += 1
+                job['accounts_completed'] = account_index
+            finally:
+                await fetcher.close()
+
+        job['status'] = 'completed'
+        job['message'] = (f"历史订单同步完成，共扫描 {job.get('orders_discovered', 0)} 单，"
+                         f"命中时间范围 {job.get('matched_orders', 0)} 单，入库/更新 {job.get('orders_saved', 0)} 单")
+    except asyncio.CancelledError:
+        job['status'] = 'cancelled'
+        job['message'] = '历史订单同步已取消'
+    except Exception as exc:
+        logger.exception(f'历史订单同步任务失败: {job_id}')
+        job['status'] = 'failed'
+        job['error'] = str(exc)
+        job['message'] = f'历史订单同步失败: {exc}'
+    finally:
+        job['current_account'] = None
+        job['current_order_id'] = None
+        job['finished_at'] = get_local_now().strftime('%Y-%m-%d %H:%M:%S')
+        job['finished_ts'] = time.time()
+
+
+@app.post('/api/orders/history-sync')
+async def start_order_history_sync(request: OrderHistorySyncRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """按日期范围同步历史订单；与实时 WebSocket 监控互补。"""
+    try:
+        data = request.dict()
+        start_date, end_date = str(data.get('start_date') or '').strip(), str(data.get('end_date') or '').strip()
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail='开始日期和结束日期不能为空')
+        _cleanup_order_history_sync_jobs()
+        job_id = f"history_sync_{secrets.token_hex(8)}"
+        job = {
+            'job_id': job_id, 'status': 'pending', 'message': '历史订单同步任务已创建，等待执行',
+            'error': None, 'created_at': get_local_now().strftime('%Y-%m-%d %H:%M:%S'),
+            'started_at': None, 'finished_at': None, 'finished_ts': None,
+            'request': {'cookie_id': _history_text(data.get('cookie_id')), 'start_date': start_date,
+                        'end_date': end_date, 'max_orders': min(max(int(data.get('max_orders') or 120), 1), 500),
+                        'fetch_details': bool(data.get('fetch_details', True))},
+            'user_id': current_user['user_id'], 'current_account': None, 'current_order_id': None,
+            'accounts_total': 0, 'accounts_completed': 0, 'orders_discovered': 0,
+            'orders_processed': 0, 'orders_saved': 0, 'orders_skipped': 0, 'orders_failed': 0,
+            'matched_orders': 0, 'warnings': [],
+        }
+        order_history_sync_jobs[job_id] = job
+        task = asyncio.create_task(_run_order_history_sync_job(job_id))
+        order_history_sync_tasks[job_id] = task
+        task.add_done_callback(lambda _: order_history_sync_tasks.pop(job_id, None))
+        return {'success': True, 'data': _history_job_snapshot(job)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'创建历史订单同步任务失败: {exc}')
+
+
+@app.get('/api/orders/history-sync/{job_id}')
+def get_order_history_sync_status(job_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    _cleanup_order_history_sync_jobs()
+    job = order_history_sync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='历史订单同步任务不存在或已过期')
+    if job.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=403, detail='无权访问该历史订单同步任务')
+    return {'success': True, 'data': _history_job_snapshot(job)}
+
+
+@app.post('/api/orders/history-sync/{job_id}/cancel')
+def cancel_order_history_sync(job_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    job = order_history_sync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='历史订单同步任务不存在或已过期')
+    if job.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=403, detail='无权取消该历史订单同步任务')
+    if job.get('status') not in {'completed', 'failed', 'cancelled'}:
+        job['status'] = 'cancelled'
+        job['message'] = '历史订单同步已取消'
+        task = order_history_sync_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+    return {'success': True, 'data': _history_job_snapshot(job)}
+
 @app.get('/api/orders')
 def get_user_orders(
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -7301,8 +7605,15 @@ def get_user_orders(
                 order['cookie_id'] = cid
                 # 添加 item_title 字段
                 order['item_title'] = item_titles.get(order.get('item_id'), '')
+                # 订单详情页在权限不足/字段缺失时会返回 unknown，不能覆盖本地已有的待发货状态。
+                # 将 fix 项目的部分发货状态映射为 Butler 前端可处理的待发货状态。
+                raw_status = str(order.get('order_status') or '').strip()
+                if raw_status in {'partial_pending_finalize', 'partial_success'}:
+                    order['status'] = 'pending_ship'
+                else:
+                    order['status'] = get_order_status(order)
                 # 状态筛选
-                if status and get_order_status(order) != status:
+                if status and order.get('status') != status:
                     continue
                 all_orders.append(order)
 
@@ -7447,6 +7758,9 @@ async def refresh_single_order(
             result.get('order_status'),
             result.get('status_text') or result.get('dom_status') or result.get('api_status'),
         )
+        # 刷新接口返回 unknown 时保留本地状态，避免一次刷新把可发货订单变成 unknown。
+        if order_status == 'unknown' and str(order.get('order_status') or '').strip() not in {'', 'unknown'}:
+            order_status = order.get('order_status')
 
         # 更新数据库
         db_manager.insert_or_update_order(
@@ -7669,6 +7983,7 @@ async def refresh_orders_status(
     try:
         from app.db_manager import db_manager
         from utils.order_fetcher_optimized import process_orders_batch
+        from app.xianyu_im import parse_conversation
 
         user_id = current_user['user_id']
         log_with_user('info', f"开始智能刷新订单状态（优化版：并发处理） (cookie_id={cookie_id}, status={status})", current_user)
@@ -7681,6 +7996,180 @@ async def refresh_orders_status(
             if cookie_id not in user_cookies:
                 raise HTTPException(status_code=404, detail="Cookie不存在或无权访问")
             user_cookies = {cookie_id: user_cookies[cookie_id]}
+
+        # The merchant sold-order endpoint is unavailable to many personal
+        # sellers.  Discover trades from recent IM conversations first; the IM
+        # trade header contains the real order id and status and is the same
+        # source used by the normal Goofish message page.
+        discovered_count = 0
+        discovery_errors = []
+        for cid in user_cookies.keys():
+            try:
+                async def discover_from_im(instance):
+                    body = await instance.get_im_conversations(None, 30)
+                    raw_conversations = body.get('userConvs', []) if isinstance(body, dict) else []
+                    semaphore = asyncio.Semaphore(3)
+
+                    async def inspect_conversation(wrapper):
+                        raw = wrapper.get('singleChatUserConversation', wrapper) if isinstance(wrapper, dict) else {}
+                        parsed = parse_conversation(raw, str(getattr(instance, 'myid', '') or ''))
+                        if not parsed or not parsed.get('cid') or not parsed.get('itemId'):
+                            return None
+                        async with semaphore:
+                            # Personal sellers have no PC "sold orders" page.
+                            # The transaction cards in normal IM history are
+                            # the authoritative fallback and include orderId.
+                            head = {}
+                            message_page = await instance.get_im_messages(parsed['cid'], None, 80)
+                            models = message_page.get('userMessageModels', []) if isinstance(message_page, dict) else []
+                            candidate_order_id = ''
+                            candidate_created_at = None
+                            history_text = ''
+                            for model in models:
+                                raw_text = json.dumps(model, ensure_ascii=False, separators=(',', ':'))
+                                encoded_values = []
+                                def collect_encoded(value):
+                                    if isinstance(value, dict):
+                                        for child in value.values():
+                                            collect_encoded(child)
+                                    elif isinstance(value, list):
+                                        for child in value:
+                                            collect_encoded(child)
+                                    elif isinstance(value, str) and len(value) >= 24:
+                                        encoded_values.append(value)
+                                collect_encoded(model)
+                                for encoded in encoded_values:
+                                    try:
+                                        decoded = base64.b64decode(encoded + '=' * (-len(encoded) % 4)).decode('utf-8')
+                                        if decoded:
+                                            raw_text += '\n' + decoded
+                                    except Exception:
+                                        pass
+                                history_text += '\n' + raw_text
+                                order_match = None
+                                for pattern in (
+                                    r'orderId(?:%3D|[=:\\"\s]+)(\d{10,})',
+                                    r'bizOrderId(?:%3D|[=:\\"\s]+)(\d{10,})',
+                                    r'order_detail(?:%3F|\?)(?:id|orderId)(?:%3D|=)(\d{10,})',
+                                ):
+                                    order_match = re.search(pattern, raw_text, re.IGNORECASE)
+                                    if order_match:
+                                        break
+                                if order_match and not candidate_order_id:
+                                    candidate_order_id = order_match.group(1)
+                                    message_obj = model.get('message', {}) if isinstance(model, dict) else {}
+                                    extension_obj = message_obj.get('extension', {}) if isinstance(message_obj, dict) else {}
+                                    timestamp_value = next(
+                                        (
+                                            value for value in (
+                                                model.get('createTime') if isinstance(model, dict) else None,
+                                                model.get('gmtCreate') if isinstance(model, dict) else None,
+                                                message_obj.get('createAt') if isinstance(message_obj, dict) else None,
+                                                message_obj.get('createTime') if isinstance(message_obj, dict) else None,
+                                                message_obj.get('time') if isinstance(message_obj, dict) else None,
+                                                extension_obj.get('createTime') if isinstance(extension_obj, dict) else None,
+                                            )
+                                            if value not in (None, '', 0, '0')
+                                        ),
+                                        None,
+                                    )
+                                    try:
+                                        timestamp_number = int(float(timestamp_value))
+                                        if timestamp_number < 10**11:
+                                            timestamp_number *= 1000
+                                        candidate_created_at = datetime.fromtimestamp(
+                                            timestamp_number / 1000,
+                                            tz=get_local_now().tzinfo,
+                                        ).strftime('%Y-%m-%d %H:%M:%S')
+                                    except (TypeError, ValueError, OSError, OverflowError):
+                                        candidate_created_at = None
+                            if candidate_order_id:
+                                # Prefer the most final event found anywhere
+                                # in this conversation, not merely in the card
+                                # that happened to contain the orderId URL.
+                                status_name = next(
+                                    (label for label in (
+                                        '退款成功', '交易关闭', '交易成功', '你已发货',
+                                        '买家已付款', '我已付款，等待你发货', '已付款，待发货', '待付款',
+                                    ) if label in history_text),
+                                    '',
+                                )
+                                head = {
+                                    'orderId': candidate_order_id,
+                                    'utArgs': {'orderStatusName': status_name},
+                                }
+                        order_id = str((head or {}).get('orderId') or '').strip()
+                        if not order_id:
+                            return None
+
+                        common_data = (head or {}).get('commonData') or {}
+                        item_pre_info = common_data.get('itemPreInfo') if isinstance(common_data, dict) else {}
+                        if isinstance(item_pre_info, str):
+                            try:
+                                item_pre_info = json.loads(item_pre_info)
+                            except Exception:
+                                item_pre_info = {}
+                        if not isinstance(item_pre_info, dict):
+                            item_pre_info = {}
+
+                        ut_args = (head or {}).get('utArgs') or {}
+                        middle = (((head or {}).get('middle') or {}).get('data') or {})
+                        status_text = ut_args.get('orderStatusName') if isinstance(ut_args, dict) else None
+                        incoming_status = {
+                            '我已付款，等待你发货': 'pending_ship',
+                            '待付款': 'pending_payment',
+                        }.get(str(status_text or '').strip()) or normalize_order_status(None, status_text)
+                        existing = db_manager.get_order_by_id(order_id) or {}
+                        existing_status = get_order_status(existing) if existing else None
+                        if incoming_status == 'unknown' and existing_status:
+                            incoming_status = existing_status
+                        if existing_status and is_stable_order_status(existing_status) and not is_stable_order_status(incoming_status):
+                            incoming_status = existing_status
+
+                        amount = middle.get('price') or item_pre_info.get('soldPrice')
+                        if amount is not None:
+                            amount_match = re.search(r'\d+(?:\.\d+)?', str(amount).replace(',', ''))
+                            amount = amount_match.group(0) if amount_match else None
+
+                        item_id_value = str(parsed.get('itemId') or '').strip()
+                        title = item_pre_info.get('title') or parsed.get('itemTitle')
+                        if item_id_value and title:
+                            db_manager.save_item_basic_info(cid, item_id_value, str(title))
+
+                        saved = db_manager.insert_or_update_order(
+                            order_id=order_id,
+                            item_id=item_id_value or None,
+                            buyer_id=str(parsed.get('otherUserId') or '').strip() or None,
+                            amount=amount,
+                            order_status=incoming_status,
+                            cookie_id=cid,
+                            created_at=candidate_created_at,
+                            chat_id=str(parsed.get('cid') or '').strip() or None,
+                        )
+                        return {
+                            'order_id': order_id,
+                            'is_new': not bool(existing),
+                            'saved': bool(saved),
+                            'status': incoming_status,
+                        }
+
+                    results = await asyncio.gather(
+                        *(inspect_conversation(item) for item in raw_conversations),
+                        return_exceptions=True,
+                    )
+                    return [result for result in results if isinstance(result, dict) and result.get('saved')]
+
+                found = await _run_on_account_loop(cid, discover_from_im)
+                new_found = sum(1 for entry in found if entry.get('is_new'))
+                discovered_count += new_found
+                log_with_user(
+                    'info',
+                    f'账号 {cid} IM订单发现完成: matched={len(found)}, new={new_found}',
+                    current_user,
+                )
+            except Exception as discovery_error:
+                discovery_errors.append(f'{cid}: {discovery_error}')
+                log_with_user('warning', f'账号 {cid} IM订单发现失败: {discovery_error}', current_user)
 
         # 获取需要刷新的订单
         orders_to_refresh = []
@@ -7710,12 +8199,18 @@ async def refresh_orders_status(
         if not orders_to_refresh:
             return JSONResponse({
                 "success": True,
-                "message": "没有需要刷新的订单",
+                "message": (
+                    f"已从最近会话补录 {discovered_count} 个订单，没有需要刷新状态的订单"
+                    if discovered_count else
+                    "没有发现新订单，也没有需要刷新状态的订单"
+                ),
                 "summary": {
                     "total": 0,
                     "updated": 0,
                     "no_change": 0,
-                    "failed": 0
+                    "failed": 0,
+                    "discovered": discovered_count,
+                    "discovery_errors": discovery_errors,
                 },
                 "results": []
             })
@@ -7774,6 +8269,8 @@ async def refresh_orders_status(
                         result.get('order_status'),
                         result.get('status_text') or dom_status or api_status,
                     )
+                    if order_status == 'unknown' and str(current_status or '').strip() not in {'', 'unknown'}:
+                        order_status = current_status
 
                     # 更新数据库
                     success = db_manager.insert_or_update_order(
@@ -7824,12 +8321,14 @@ async def refresh_orders_status(
 
         return JSONResponse({
             "success": True,
-            "message": f"刷新完成: 更新{updated_count}个, 无变化{no_change_count}个, 失败{failed_count}个",
+            "message": f"同步完成: 新发现{discovered_count}个, 更新{updated_count}个, 无变化{no_change_count}个, 失败{failed_count}个",
             "summary": {
                 "total": len(orders_to_refresh),
                 "updated": updated_count,
                 "no_change": no_change_count,
-                "failed": failed_count
+                "failed": failed_count,
+                "discovered": discovered_count,
+                "discovery_errors": discovery_errors,
             },
             "updated_orders": refresh_results
         })

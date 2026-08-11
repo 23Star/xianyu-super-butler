@@ -257,6 +257,37 @@ class DBManager:
             )
             ''')
 
+            # 自动评价模板与执行日志。默认关闭，只有账号明确开启后才会运行。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS comment_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                is_active INTEGER DEFAULT 0,
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_rate_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                cookie_id TEXT NOT NULL,
+                order_id TEXT,
+                item_id TEXT,
+                buyer_id TEXT,
+                comment TEXT,
+                status TEXT NOT NULL,
+                message TEXT,
+                raw_response TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS delivery_block_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -735,6 +766,23 @@ class DBManager:
                 logger.info("添加cookies表的pause_duration列...")
                 cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 10")
                 logger.info("数据库迁移完成：添加pause_duration列")
+
+            if 'auto_comment' not in cookie_columns:
+                cursor.execute("ALTER TABLE cookies ADD COLUMN auto_comment INTEGER DEFAULT 0")
+                logger.info("数据库迁移完成：添加cookies.auto_comment列")
+
+            cursor.execute("PRAGMA table_info(orders)")
+            order_columns = {column[1] for column in cursor.fetchall()}
+            for column_name, column_type in {
+                'is_rated': 'INTEGER DEFAULT 0',
+                'rated_at': 'TIMESTAMP',
+                'rate_error': 'TEXT',
+            }.items():
+                if column_name not in order_columns:
+                    cursor.execute(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}")
+                    logger.info(f"数据库迁移完成：添加orders.{column_name}列")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_auto_comment ON orders(cookie_id, order_status, is_rated, updated_at)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_rate_logs_cookie_time ON scheduled_rate_logs(cookie_id, created_at DESC)")
 
             profile_columns = {
                 'nickname': "TEXT DEFAULT ''",
@@ -6094,7 +6142,8 @@ class DBManager:
                 # 先尝试查询包含version的订单
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id,
+                       is_rated, rated_at, rate_error
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
@@ -6116,7 +6165,10 @@ class DBManager:
                         'created_at': row[10],
                         'updated_at': row[11],
                         'version': row[12] if len(row) > 12 else 1,  # 默认版本为1
-                        'chat_id': row[13] if len(row) > 13 else ''
+                        'chat_id': row[13] if len(row) > 13 else '',
+                        'is_rated': bool(row[14]) if len(row) > 14 else False,
+                        'rated_at': row[15] if len(row) > 15 else None,
+                        'rate_error': row[16] if len(row) > 16 else None,
                     }
                 return None
 
@@ -7152,6 +7204,123 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取订单列表失败: {e}")
                 return []
+
+
+    # -------------------- 自动评价 --------------------
+    def get_auto_comment(self, cookie_id: str) -> bool:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT auto_comment FROM cookies WHERE id = ?", (cookie_id,))
+            row = cursor.fetchone()
+            return bool(row and row[0])
+
+    def update_auto_comment(self, cookie_id: str, enabled: bool) -> bool:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("UPDATE cookies SET auto_comment = ? WHERE id = ?", (int(enabled), cookie_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def get_comment_templates(self, cookie_id: str) -> List[Dict]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT id, name, content, is_active, sort_order, created_at, updated_at
+                FROM comment_templates WHERE cookie_id = ? ORDER BY sort_order, id
+            ''', (cookie_id,))
+            return [dict(zip(
+                ('id', 'name', 'content', 'is_active', 'sort_order', 'created_at', 'updated_at'),
+                (r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6])
+            )) for r in cursor.fetchall()]
+
+    def get_active_comment_template(self, cookie_id: str) -> Optional[Dict]:
+        templates = self.get_comment_templates(cookie_id)
+        return next((item for item in templates if item['is_active']), None)
+
+    def save_active_comment_template(self, cookie_id: str, name: str, content: str) -> Optional[int]:
+        """保存一个账号的当前模板；已有激活模板时直接更新。"""
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id FROM comment_templates WHERE cookie_id = ? AND is_active = 1 LIMIT 1", (cookie_id,))
+            row = cursor.fetchone()
+            if row:
+                cursor.execute('''UPDATE comment_templates SET name = ?, content = ?, updated_at = CURRENT_TIMESTAMP
+                                  WHERE id = ?''', (name, content, row[0]))
+                template_id = row[0]
+            else:
+                cursor.execute("UPDATE comment_templates SET is_active = 0 WHERE cookie_id = ?", (cookie_id,))
+                cursor.execute('''INSERT INTO comment_templates(cookie_id, name, content, is_active, sort_order)
+                                  VALUES (?, ?, ?, 1, 1)''', (cookie_id, name, content))
+                template_id = cursor.lastrowid
+            self.conn.commit()
+            return int(template_id)
+
+    def mark_order_rated(self, order_id: str, is_rated: bool = True, error_message: str = None) -> bool:
+        with self.lock:
+            cursor = self.conn.cursor()
+            if is_rated:
+                cursor.execute('''UPDATE orders SET is_rated = 1, rated_at = CURRENT_TIMESTAMP,
+                                  rate_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?''', (order_id,))
+            else:
+                cursor.execute('''UPDATE orders SET rate_error = ?, updated_at = CURRENT_TIMESTAMP
+                                  WHERE order_id = ?''', (str(error_message or '')[:1000], order_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+
+    def add_scheduled_rate_log(self, batch_id: str, cookie_id: str, order_id: str = None,
+                               item_id: str = None, buyer_id: str = None, comment: str = None,
+                               status: str = 'failed', message: str = None, raw_response: Any = None) -> Optional[int]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            raw_text = raw_response if isinstance(raw_response, str) else (
+                json.dumps(raw_response, ensure_ascii=False, default=str) if raw_response is not None else None
+            )
+            cursor.execute('''INSERT INTO scheduled_rate_logs
+                (batch_id, cookie_id, order_id, item_id, buyer_id, comment, status, message, raw_response)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (batch_id, cookie_id, order_id, item_id, buyer_id, comment, status, message, raw_text))
+            self.conn.commit()
+            return int(cursor.lastrowid)
+
+    def get_scheduled_rate_logs(self, user_id: int = None, cookie_id: str = None,
+                                limit: int = 100, offset: int = 0) -> List[Dict]:
+        with self.lock:
+            conditions, params = [], []
+            if user_id is not None:
+                conditions.append("c.user_id = ?")
+                params.append(user_id)
+            if cookie_id:
+                conditions.append("l.cookie_id = ?")
+                params.append(cookie_id)
+            where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.extend((max(1, min(int(limit), 500)), max(0, int(offset))))
+            cursor = self.conn.cursor()
+            cursor.execute(f'''SELECT l.id, l.batch_id, l.cookie_id, l.order_id, l.item_id, l.buyer_id,
+                               l.comment, l.status, l.message, l.raw_response, l.created_at
+                               FROM scheduled_rate_logs l LEFT JOIN cookies c ON c.id = l.cookie_id
+                               {where} ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?''', params)
+            keys = ('id', 'batch_id', 'cookie_id', 'order_id', 'item_id', 'buyer_id',
+                    'comment', 'status', 'message', 'raw_response', 'created_at')
+            return [dict(zip(keys, row)) for row in cursor.fetchall()]
+
+    def get_pending_auto_comment_orders(self, cookie_id: str, limit: int = 5,
+                                        days: int = 10, cooldown_minutes: int = 30) -> List[Dict]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''SELECT o.order_id, o.item_id, o.buyer_id, o.order_status, o.cookie_id,
+                              o.created_at, o.updated_at, o.is_rated, o.rated_at, o.rate_error
+                              FROM orders o WHERE o.cookie_id = ? AND o.order_status = 'completed'
+                              AND COALESCE(o.is_rated, 0) = 0
+                              AND datetime(o.created_at) >= datetime('now', ?)
+                              AND NOT EXISTS (SELECT 1 FROM scheduled_rate_logs l WHERE l.order_id = o.order_id
+                                  AND l.status IN ('failed', 'cookie_expired')
+                                  AND datetime(l.created_at) >= datetime('now', ?))
+                              ORDER BY datetime(o.created_at) DESC LIMIT ?''',
+                           (cookie_id, f'-{max(1, int(days))} days',
+                            f'-{max(1, int(cooldown_minutes))} minutes', max(1, min(int(limit), 50))))
+            keys = ('order_id', 'item_id', 'buyer_id', 'order_status', 'cookie_id',
+                    'created_at', 'updated_at', 'is_rated', 'rated_at', 'rate_error')
+            return [dict(zip(keys, row)) for row in cursor.fetchall()]
 
 
 # 全局单例

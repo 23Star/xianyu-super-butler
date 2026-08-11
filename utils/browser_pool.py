@@ -215,23 +215,9 @@ class BrowserPool:
             # 创建页面
             page = await context.new_page()
 
-            # 设置额外的HTTP头
-            headers = {
-                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "accept-language": "en,zh-CN;q=0.9,zh;q=0.8,ru;q=0.7",
-                "cache-control": "no-cache",
-                "pragma": "no-cache",
-                "priority": "u=0, i",
-                "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": "\"Windows\"",
-                "sec-fetch-dest": "document",
-                "sec-fetch-mode": "navigate",
-                "sec-fetch-site": "same-origin",
-                "sec-fetch-user": "?1",
-                "upgrade-insecure-requests": "1"
-            }
-            await context.set_extra_http_headers(headers)
+            # 不要手工伪造 sec-fetch-* / sec-ch-ua。浏览器会根据每个请求自动生成；
+            # 固定写成 same-origin 会让从空白页进入订单详情时请求上下文不一致，
+            # 闲鱼页面随后只返回空壳，订单金额和商品信息都无法渲染。
 
             # 等待浏览器完全初始化
             await asyncio.sleep(1)

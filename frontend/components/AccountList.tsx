@@ -15,17 +15,21 @@ import {
   updateAccountAISettings,
   getAllAISettings,
   getAccountAISettings,
-  refreshAccountProfile
+  refreshAccountProfile,
+  getAutoRatingSettings,
+  updateAutoRatingSettings,
+  saveAutoRatingTemplate,
+  runAutoRatingNow
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import {
   Power, Edit2, Trash2, QrCode, X, Check, Loader2,
   MessageSquare, RefreshCw, Save, User, Clock, MessageCircle,
-  Key, Eye, EyeOff, Bot, Settings, MapPin, Users
+  Key, Eye, EyeOff, Bot, Settings, MapPin, Users, Star
 } from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
 
-type ModalType = 'edit' | 'ai-settings' | null;
+type ModalType = 'edit' | 'ai-settings' | 'auto-rating' | null;
 
 const AccountList: React.FC = () => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
@@ -65,6 +69,11 @@ const AccountList: React.FC = () => {
     custom_prompts: '',
   });
   const [saving, setSaving] = useState(false);
+  const [ratingForm, setRatingForm] = useState({
+    enabled: false,
+    name: '默认好评',
+    content: '不错的买家，沟通愉快，期待再次交易！',
+  });
 
   const loadAccounts = async () => {
     setLoading(true);
@@ -171,6 +180,52 @@ const AccountList: React.FC = () => {
       setSaving(false);
     }
     setActiveModal('ai-settings');
+  };
+
+  const openAutoRatingModal = async (account: AccountDetail) => {
+    setEditingAccount(account);
+    setSaving(true);
+    try {
+      const settings = await getAutoRatingSettings(account.id);
+      setRatingForm({
+        enabled: settings.enabled,
+        name: settings.template?.name || '默认好评',
+        content: settings.template?.content || '不错的买家，沟通愉快，期待再次交易！',
+      });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '自动评价设置加载失败');
+    } finally {
+      setSaving(false);
+    }
+    setActiveModal('auto-rating');
+  };
+
+  const handleSaveAutoRating = async () => {
+    if (!editingAccount || !ratingForm.content.trim()) return;
+    setSaving(true);
+    try {
+      await saveAutoRatingTemplate(editingAccount.id, ratingForm.name, ratingForm.content);
+      await updateAutoRatingSettings(editingAccount.id, ratingForm.enabled);
+      setActiveModal(null);
+      notify('自动评价设置已保存');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '自动评价设置保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRunAutoRating = async () => {
+    setSaving(true);
+    try {
+      const result = await runAutoRatingNow();
+      const stats = result?.data || {};
+      notify(`执行完成：成功 ${stats.success || 0}，失败 ${stats.failed || 0}，跳过 ${stats.skipped || 0}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '自动评价执行失败');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -448,6 +503,14 @@ const AccountList: React.FC = () => {
                     title="AI设置"
                 >
                     <Bot className="w-5 h-5" />
+                </button>
+                <button
+                    onClick={() => openAutoRatingModal(account)}
+                    className="rounded-md p-2.5 text-orange-600 hover:bg-orange-50"
+                    title="自动评价"
+                    aria-label="自动评价"
+                >
+                    <Star className="w-5 h-5" />
                 </button>
                 <button
                     onClick={() => handleToggle(account.id, account.enabled)}
@@ -871,6 +934,68 @@ const AccountList: React.FC = () => {
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   {saving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {activeModal === 'auto-rating' && editingAccount && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container" style={{maxWidth: '600px'}}>
+            <div className="modal-header flex items-start justify-between gap-4">
+              <div>
+                <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900">
+                  <Star className="h-5 w-5 text-orange-500" /> 自动评价
+                </h3>
+                <p className="mt-1 text-xs text-gray-500">订单完成后自动给买家好评；默认每 5 分钟检查一次。</p>
+              </div>
+              <button type="button" onClick={() => setActiveModal(null)} className="rounded-md p-2 hover:bg-gray-100">
+                <X className="h-5 w-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="modal-body space-y-5">
+              <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
+                <div>
+                  <div className="font-bold text-gray-900">启用自动评价</div>
+                  <div className="mt-1 text-xs text-gray-500">仅处理近 10 天、状态为交易完成且尚未评价的本地订单。</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRatingForm({...ratingForm, enabled: !ratingForm.enabled})}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${ratingForm.enabled ? 'bg-[#FFE815]' : 'bg-gray-300'}`}
+                >
+                  <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${ratingForm.enabled ? 'translate-x-5' : ''}`} />
+                </button>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-bold text-gray-700">模板名称</label>
+                <input className="ios-input w-full rounded-md px-3 py-2.5" value={ratingForm.name}
+                  onChange={(event) => setRatingForm({...ratingForm, name: event.target.value})} maxLength={80} />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-bold text-gray-700">评价内容</label>
+                <textarea className="ios-input h-28 w-full resize-y rounded-md px-3 py-2.5" value={ratingForm.content}
+                  onChange={(event) => setRatingForm({...ratingForm, content: event.target.value})} maxLength={500} />
+                <p className="mt-1 text-xs text-gray-500">{ratingForm.content.length}/500 字</p>
+              </div>
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                自动评价会直接调用闲鱼评价接口，无法撤回。建议先保存但保持关闭，确认模板后再启用。
+              </div>
+            </div>
+            <div className="modal-footer">
+              <div className="flex w-full flex-wrap gap-2">
+                <button type="button" onClick={handleRunAutoRating} disabled={saving || !ratingForm.enabled}
+                  className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50">
+                  <RefreshCw className={`h-4 w-4 ${saving ? 'animate-spin' : ''}`} /> 立即检查
+                </button>
+                <button type="button" onClick={() => setActiveModal(null)} disabled={saving}
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm">取消</button>
+                <button type="button" onClick={handleSaveAutoRating} disabled={saving || !ratingForm.content.trim()}
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} 保存
                 </button>
               </div>
             </div>

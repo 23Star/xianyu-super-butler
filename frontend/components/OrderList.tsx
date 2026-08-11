@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item } from '../types';
-import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems } from '../services/api';
+import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems, startOrderHistorySync, getOrderHistorySyncStatus, cancelOrderHistorySync, OrderHistorySyncJob } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList } from 'lucide-react';
 import { EmptyState, PageHeader, PageTabs } from './ui';
@@ -54,6 +54,32 @@ const OrderList: React.FC = () => {
   const [shipResult, setShipResult] = useState<{success: boolean; message: string} | null>(null);
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  const defaultEndDate = new Date().toISOString().slice(0, 10);
+  const defaultStartDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [showHistorySyncModal, setShowHistorySyncModal] = useState(false);
+  const [historyStartDate, setHistoryStartDate] = useState(defaultStartDate);
+  const [historyEndDate, setHistoryEndDate] = useState(defaultEndDate);
+  const [historyMaxOrders, setHistoryMaxOrders] = useState(120);
+  const [historyFetchDetails, setHistoryFetchDetails] = useState(true);
+  const [historyJob, setHistoryJob] = useState<OrderHistorySyncJob | null>(null);
+
+  useEffect(() => {
+    if (!historyJob || !['pending', 'running'].includes(historyJob.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await getOrderHistorySyncStatus(historyJob.job_id);
+        setHistoryJob(result.data);
+        if (['completed', 'failed', 'cancelled'].includes(result.data.status)) {
+          if (result.data.status === 'completed') notify(result.data.message || '历史订单同步完成');
+          else if (result.data.status === 'failed') notify(result.data.error || result.data.message || '历史订单同步失败');
+          await loadOrders();
+        }
+      } catch (error) {
+        console.error('查询历史订单同步状态失败:', error);
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [historyJob?.job_id, historyJob?.status]);
 
   // 搜索过滤订单
   const filterOrders = (ordersToFilter: Order[]): Order[] => {
@@ -170,6 +196,34 @@ const OrderList: React.FC = () => {
       setLoading(true);
       await syncOrders();
       loadOrders();
+  };
+
+  const handleStartHistorySync = async () => {
+    if (!historyStartDate || !historyEndDate || historyStartDate >= historyEndDate) {
+      notify('请选择有效的日期范围（结束日期应晚于开始日期）');
+      return;
+    }
+    try {
+      const result = await startOrderHistorySync({
+        start_date: historyStartDate,
+        end_date: historyEndDate,
+        max_orders: historyMaxOrders,
+        fetch_details: historyFetchDetails,
+      });
+      setHistoryJob(result.data);
+    } catch (error: any) {
+      notify(error?.message || '创建历史订单同步任务失败');
+    }
+  };
+
+  const handleCancelHistorySync = async () => {
+    if (!historyJob) return;
+    try {
+      const result = await cancelOrderHistorySync(historyJob.job_id);
+      setHistoryJob(result.data);
+    } catch (error: any) {
+      notify(error?.message || '取消同步失败');
+    }
   };
 
   const handleShip = (id: string) => {
@@ -323,6 +377,10 @@ const OrderList: React.FC = () => {
             <button onClick={handleSync} className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm">
                 <Truck className="h-4 w-4" />
                 同步订单
+            </button>
+            <button onClick={() => setShowHistorySyncModal(true)} className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm">
+                <ClipboardList className="h-4 w-4" />
+                历史同步
             </button>
           </>
         )}
@@ -927,6 +985,59 @@ const OrderList: React.FC = () => {
                   <Save className="w-4 h-4" />
                   保存更改
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showHistorySyncModal && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container">
+            <div className="modal-header">
+              <div className="flex w-full items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">同步历史订单</h3>
+                  <p className="mt-1 text-xs text-gray-500">从闲鱼卖家中心补录订单；实时监控仍由账号连接负责。</p>
+                </div>
+                <button type="button" onClick={() => setShowHistorySyncModal(false)} className="rounded-md p-2 hover:bg-gray-100" aria-label="关闭历史同步">
+                  <X className="w-5 h-5 text-gray-600" />
+                </button>
+              </div>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block text-sm font-bold text-gray-700">开始日期
+                  <input type="date" value={historyStartDate} onChange={(e) => setHistoryStartDate(e.target.value)} className="ios-input mt-2 w-full rounded-md px-3 py-2.5" />
+                </label>
+                <label className="block text-sm font-bold text-gray-700">结束日期（不含）
+                  <input type="date" value={historyEndDate} onChange={(e) => setHistoryEndDate(e.target.value)} className="ios-input mt-2 w-full rounded-md px-3 py-2.5" />
+                </label>
+              </div>
+              <label className="block text-sm font-bold text-gray-700">最多同步订单数
+                <input type="number" min={1} max={500} value={historyMaxOrders} onChange={(e) => setHistoryMaxOrders(Math.max(1, Math.min(500, Number(e.target.value) || 1)))} className="ios-input mt-2 w-full rounded-md px-3 py-2.5" />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" checked={historyFetchDetails} onChange={(e) => setHistoryFetchDetails(e.target.checked)} />
+                同步订单详情（更完整，但速度较慢）
+              </label>
+              {historyJob && (
+                <div className={`rounded-md border p-3 text-sm ${historyJob.status === 'failed' ? 'border-red-200 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-800'}`}>
+                  <div className="font-semibold">{historyJob.message || historyJob.status}</div>
+                  <div className="mt-1 text-xs">已处理 {historyJob.orders_processed || 0} / 命中 {historyJob.matched_orders || 0} / 入库 {historyJob.orders_saved || 0}</div>
+                  {(historyJob.warnings || []).slice(0, 3).map((warning, index) => <div key={index} className="mt-1 text-xs">{warning}</div>)}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <div className="flex w-full gap-2">
+                <button type="button" onClick={() => setShowHistorySyncModal(false)} className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm">关闭</button>
+                {historyJob && ['pending', 'running'].includes(historyJob.status) ? (
+                  <button type="button" onClick={handleCancelHistorySync} className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm">取消同步</button>
+                ) : (
+                  <button type="button" onClick={handleStartHistorySync} className="ios-btn-primary flex-1 rounded-md px-4 py-2.5 text-sm">开始同步</button>
+                )}
               </div>
             </div>
           </div>

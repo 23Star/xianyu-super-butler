@@ -9,7 +9,7 @@ import {
   MessageFilter, MessageFilterType, AutoReplyLog
   , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
-  ProductAutomationResult, ProductDeletePreview
+  ProductAutomationResult, ProductDeletePreview, AutoRatingSettings
 } from '../types';
 
 // Auth
@@ -93,6 +93,22 @@ export const updateAccountAutoConfirm = async (id: string, autoConfirm: boolean)
   return put(`/cookies/${id}/auto-confirm`, { auto_confirm: autoConfirm });
 };
 
+export const getAutoRatingSettings = async (id: string): Promise<AutoRatingSettings> => {
+  return get(`/api/auto-rating/accounts/${id}`);
+};
+
+export const updateAutoRatingSettings = async (id: string, enabled: boolean): Promise<any> => {
+  return put(`/api/auto-rating/accounts/${id}`, { enabled });
+};
+
+export const saveAutoRatingTemplate = async (id: string, name: string, content: string): Promise<any> => {
+  return put(`/api/auto-rating/accounts/${id}/template`, { name, content });
+};
+
+export const runAutoRatingNow = async (): Promise<any> => {
+  return post('/api/auto-rating/run', {});
+};
+
 export const updateAccountPauseDuration = async (id: string, pauseDuration: number): Promise<any> => {
   return put(`/cookies/${id}/pause-duration`, { pause_duration: pauseDuration });
 };
@@ -115,7 +131,11 @@ export const getAllAISettings = async (): Promise<Record<string, AIReplySettings
 
 // Orders
 const normalizeOrder = (order: any): Order => {
-  const normalizedStatus = order?.order_status || order?.status || 'processing';
+  const rawStatus = order?.status || order?.order_status || 'processing';
+  // fix 项目中的部分发货状态在 Butler 中按“待发货”展示，仍可进入手动发货流程。
+  const normalizedStatus = ['partial_pending_finalize', 'partial_success'].includes(rawStatus)
+    ? 'pending_ship'
+    : rawStatus;
   return {
     ...order,
     status: normalizedStatus,
@@ -183,6 +203,45 @@ export const syncOrders = async (cookieId?: string, status?: string): Promise<an
 
 export const syncSingleOrder = async (orderId: string): Promise<any> => {
   return post(`/api/orders/${orderId}/refresh`);
+};
+
+export interface OrderHistorySyncRequest {
+  cookie_id?: string;
+  start_date: string;
+  end_date: string;
+  max_orders?: number;
+  fetch_details?: boolean;
+}
+
+export interface OrderHistorySyncJob {
+  job_id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  message?: string;
+  error?: string;
+  request?: OrderHistorySyncRequest;
+  current_account?: string;
+  current_order_id?: string;
+  accounts_total?: number;
+  accounts_completed?: number;
+  orders_discovered?: number;
+  orders_processed?: number;
+  orders_saved?: number;
+  orders_skipped?: number;
+  orders_failed?: number;
+  matched_orders?: number;
+  warnings?: string[];
+}
+
+export const startOrderHistorySync = async (data: OrderHistorySyncRequest): Promise<{ success: boolean; data: OrderHistorySyncJob }> => {
+  return post('/api/orders/history-sync', data);
+};
+
+export const getOrderHistorySyncStatus = async (jobId: string): Promise<{ success: boolean; data: OrderHistorySyncJob }> => {
+  return get(`/api/orders/history-sync/${jobId}`);
+};
+
+export const cancelOrderHistorySync = async (jobId: string): Promise<{ success: boolean; data: OrderHistorySyncJob }> => {
+  return post(`/api/orders/history-sync/${jobId}/cancel`, {});
 };
 
 export const manualShipOrder = async (orderIds: string[], shipMode: 'status_only' | 'full_delivery', content?: string): Promise<any> => {

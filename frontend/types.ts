@@ -32,6 +32,7 @@ export interface AccountDetail {
   cookie?: string; // alias for value
   enabled: boolean;
   auto_confirm: boolean;
+  auto_comment?: boolean;
   remark?: string;
   note?: string; // alias for remark
   pause_duration?: number;
@@ -54,6 +55,19 @@ export interface AccountDetail {
   max_discount_amount?: number;
   max_bargain_rounds?: number;
   custom_prompts?: string;
+}
+
+export interface CommentTemplate {
+  id: number;
+  name: string;
+  content: string;
+  is_active: boolean;
+}
+
+export interface AutoRatingSettings {
+  enabled: boolean;
+  template?: CommentTemplate | null;
+  templates?: CommentTemplate[];
 }
 
 // Orders

@@ -148,29 +148,20 @@ class OrderFetcherOptimized:
                 # 重置API响应列表
                 self.api_responses = []
 
-                # 设置路由拦截器（拦截API响应）
-                async def handle_route(route, request):
-                    """拦截网络请求"""
-                    # 拦截订单详情API
-                    if 'mtop.idle.web.trade.order.detail' in request.url:
-                        logger.info(f"[拦截] 发现订单详情API请求")
+                # 被动监听响应，不能用 route.fetch() 后再 route.continue()：那会让同一请求
+                # 执行两次，并可能导致订单详情页关键接口渲染失败，最终金额为空。
+                async def handle_response(response):
+                    if 'mtop.idle.web.trade.order.detail' not in response.url:
+                        return
+                    logger.info("[监听] 发现订单详情API响应")
+                    try:
+                        result = await response.json()
+                        self.api_responses.append(result)
+                        logger.info("[监听] API响应已保存")
+                    except Exception as e:
+                        logger.warning(f"解析订单详情API响应失败: {e}")
 
-                        # 继续请求并获取响应
-                        response = await route.fetch()
-                        body = await response.body()
-
-                        try:
-                            result = json.loads(body)
-                            self.api_responses.append(result)
-                            logger.info(f"[拦截] API响应已保存")
-                        except Exception as e:
-                            logger.error(f"解析API响应失败: {e}")
-
-                    # 继续所有请求
-                    await route.continue_()
-
-                # 设置路由拦截
-                await self.page.route('**/*', handle_route)
+                self.page.on('response', handle_response)
 
                 # 访问订单详情页面
                 url = f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller"
@@ -188,6 +179,12 @@ class OrderFetcherOptimized:
                 # 等待API响应和页面渲染
                 logger.info("等待API响应和页面渲染...")
                 await asyncio.sleep(2)
+
+                # 当前页面为异步渲染；明确等待成交价，比固定延迟更可靠。
+                try:
+                    await self.page.wait_for_selector('[class*="boldNum"]', timeout=10000)
+                except Exception:
+                    logger.warning("等待订单成交价元素超时，将继续尝试API及DOM兜底解析")
 
                 # 快速滚动，触发延迟加载的内容
                 await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')

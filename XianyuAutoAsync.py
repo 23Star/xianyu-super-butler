@@ -6174,6 +6174,69 @@ class XianyuLive:
         )
         return response.get("body", {}) if isinstance(response, dict) else {}
 
+    async def get_im_head_info(self, cid, item_id, session_type=1):
+        """Return the trade header attached to an IM conversation.
+
+        Personal sellers cannot use the fish-shop/merchant sold-order API, but
+        the normal IM page still exposes the current trade through this PC API.
+        It is therefore the reliable discovery source for ordinary accounts.
+        """
+        if not cid or not item_id:
+            return {}
+        if not self.session:
+            await self.create_session()
+
+        payload = {
+            "itemId": int(item_id) if str(item_id).isdigit() else str(item_id),
+            "sessionId": int(cid) if str(cid).isdigit() else str(cid),
+            "sessionType": int(session_type or 1),
+        }
+        data_val = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        timestamp = str(int(time.time() * 1000))
+        cookies = trans_cookies(self.cookies_str)
+        token_value = cookies.get("_m_h5_tk", "")
+        token = token_value.split("_", 1)[0] if token_value else ""
+        params = {
+            "jsv": "2.7.2",
+            "appKey": "34839810",
+            "t": timestamp,
+            "sign": generate_sign(timestamp, token, data_val),
+            "v": "1.0",
+            "type": "originaljson",
+            "accountSite": "xianyu",
+            "dataType": "json",
+            "timeout": "20000",
+            "api": "mtop.idle.trade.pc.message.headinfo",
+            "sessionOption": "AutoLoginOnly",
+            "spm_cnt": "a21ybx.im.0.0",
+            "valueType": "string",
+        }
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/x-www-form-urlencoded",
+            "origin": "https://www.goofish.com",
+            "referer": "https://www.goofish.com/im",
+            "user-agent": DEFAULT_HEADERS.get("user-agent", "Mozilla/5.0"),
+            "cookie": self.cookies_str.replace("\n", "").replace("\r", ""),
+        }
+        async with self.session.post(
+            "https://h5api.m.goofish.com/h5/mtop.idle.trade.pc.message.headinfo/1.0/",
+            params=params,
+            data={"data": data_val},
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as response:
+            result = await response.json(content_type=None)
+            await self._merge_mtop_response_cookies(response, "IM订单头信息查询")
+
+        ret_list = result.get("ret", []) if isinstance(result, dict) else []
+        if any("SUCCESS" in str(value) for value in ret_list):
+            return result.get("data", {}) or {}
+        logger.warning(
+            f"【{self.cookie_id}】获取IM订单头信息失败: cid={cid}, item_id={item_id}, ret={ret_list}"
+        )
+        return {}
+
     async def send_im_text(self, cid, toid, text):
         text = str(text or "").strip()
         if not text:
@@ -8674,18 +8737,26 @@ class XianyuLive:
                     # 处理未加密的消息（如系统提示等）
                     msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                     if isinstance(parsed_data, dict) and 'chatType' in parsed_data:
+                        # “chatType”不一定代表纯系统引导消息。付款/交易卡片也会
+                        # 带这个字段；旧代码在这里无条件 return，导致交易卡片从未
+                        # 进入 _extract_order_id，最新订单因此不会入库或触发自动发货。
+                        is_guidance_message = False
                         if 'operation' in parsed_data and 'content' in parsed_data['operation']:
                             content = parsed_data['operation']['content']
                             if 'sessionArouse' in content:
+                                is_guidance_message = True
                                 # 处理系统引导消息
                                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】小闲鱼智能提示:")
                                 if 'arouseChatScriptInfo' in content['sessionArouse']:
                                     for qa in content['sessionArouse']['arouseChatScriptInfo']:
                                         logger.info(f"  - {qa['chatScrip']}")
                             elif 'contentType' in content:
-                                # 其他类型的未加密消息
+                                # 交易卡片/其他未加密消息必须继续走订单解析链路。
                                 logger.warning(f"[{msg_time}] 【{self.cookie_id}】【系统】其他类型消息: {content}")
-                        return
+                        if is_guidance_message:
+                            return
+                        # 付款消息可能带 chatType，但不是引导消息；继续处理。
+                        message = parsed_data
                     else:
                         # 如果不是系统消息，将解析的数据作为message
                         message = parsed_data
