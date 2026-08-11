@@ -10,11 +10,19 @@ import {
   ShieldCheck,
   Sparkles,
   UserRound,
+  Zap,
 } from 'lucide-react';
 
-import { getSystemSettings, updateSystemSettings } from '../services/api';
+import {
+  createQuickPhrase,
+  deleteQuickPhrase,
+  getQuickPhrases,
+  getSystemSettings,
+  updateQuickPhrase,
+  updateSystemSettings,
+} from '../services/api';
 import { notify } from '../services/feedback';
-import { SystemSettings } from '../types';
+import { QuickPhrase, SystemSettings } from '../types';
 import {
   NoticeBanner,
   PageHeader,
@@ -23,7 +31,7 @@ import {
   SectionHeader,
 } from './ui';
 
-type SettingsSection = 'general' | 'ai' | 'email';
+type SettingsSection = 'general' | 'ai' | 'email' | 'phrases';
 
 interface SettingToggleProps {
   title: string;
@@ -66,6 +74,33 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
+  // 快捷短语：人工客服常用话术
+  const [phrases, setPhrases] = useState<QuickPhrase[]>([]);
+  const [phraseForm, setPhraseForm] = useState({ category: '默认', title: '', content: '' });
+
+  const loadPhrases = () => {
+    getQuickPhrases(true).then(setPhrases).catch(() => setPhrases([]));
+  };
+
+  useEffect(() => { loadPhrases(); }, []);
+
+  const handleAddPhrase = async () => {
+    if (!phraseForm.title.trim() || !phraseForm.content.trim()) return;
+    await createQuickPhrase(phraseForm.title.trim(), phraseForm.content.trim(), phraseForm.category.trim() || '默认');
+    setPhraseForm({ category: phraseForm.category, title: '', content: '' });
+    loadPhrases();
+  };
+
+  const handleTogglePhrase = async (phrase: QuickPhrase) => {
+    await updateQuickPhrase(phrase.id, { enabled: !phrase.enabled });
+    loadPhrases();
+  };
+
+  const handleDeletePhrase = async (id: number) => {
+    await deleteQuickPhrase(id);
+    loadPhrases();
+  };
+
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
 
@@ -131,6 +166,7 @@ const Settings: React.FC = () => {
           { id: 'general', label: '账号与同步', icon: UserRound },
           { id: 'ai', label: '默认 AI 配置', icon: Sparkles },
           { id: 'email', label: '邮件服务', icon: Mail },
+          { id: 'phrases', label: '快捷短语', icon: Zap },
         ]}
       />
 
@@ -219,7 +255,169 @@ const Settings: React.FC = () => {
               </label>
             </div>
           </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="订单同步"
+              description="定时从卖家端拉取订单，补齐监听离线期间产生的订单。"
+              icon={Database}
+            />
+            <SettingToggle
+              title="启用订单自动同步"
+              description="关闭后只能在订单页手动点「拉取卖出订单」。"
+              checked={settings.order_sync_enabled !== false}
+              onChange={() => setSettings({
+                ...settings,
+                order_sync_enabled: settings.order_sync_enabled === false,
+              })}
+            />
+            <div className="grid gap-4 p-4 sm:grid-cols-2">
+              <label>
+                <span className="field-label">同步间隔（分钟）</span>
+                <input
+                  type="number"
+                  value={Math.round((settings.order_sync_interval || 1800) / 60)}
+                  onChange={(event) => {
+                    const minutes = parseInt(event.target.value, 10) || 30;
+                    setSettings({ ...settings, order_sync_interval: minutes * 60 });
+                  }}
+                  className="ios-input w-full rounded-md px-3 py-2.5"
+                  min="5"
+                  max="1440"
+                />
+                <span className="mt-1 block text-xs text-gray-500">最低 5 分钟，建议 30 分钟。</span>
+              </label>
+            </div>
+          </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="商品擦亮"
+              description="定时擦亮商品重新获取搜索曝光，平台对每日次数有限制。"
+              icon={Database}
+            />
+            <SettingToggle
+              title="启用自动擦亮"
+              description="开启后按下方间隔自动擦亮全部商品。也可在商品页手动触发。"
+              checked={settings.auto_polish_enabled === true}
+              onChange={() => setSettings({
+                ...settings,
+                auto_polish_enabled: settings.auto_polish_enabled !== true,
+              })}
+            />
+            <div className="grid gap-4 p-4 sm:grid-cols-2">
+              <label>
+                <span className="field-label">擦亮间隔（小时）</span>
+                <input
+                  type="number"
+                  value={Math.round((settings.auto_polish_interval || 21600) / 3600)}
+                  onChange={(event) => {
+                    const hours = parseInt(event.target.value, 10) || 6;
+                    setSettings({ ...settings, auto_polish_interval: hours * 3600 });
+                  }}
+                  className="ios-input w-full rounded-md px-3 py-2.5"
+                  min="1"
+                  max="24"
+                />
+                <span className="mt-1 block text-xs text-gray-500">最短 1 小时，建议 6 小时。</span>
+              </label>
+            </div>
+          </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="买家互动"
+              description="这两项会对买家产生实际动作，确认后再开启。"
+              icon={ShieldCheck}
+            />
+            <SettingToggle
+              title="允许提交买家评价"
+              description="开启后订单页可给买家评价。评价提交后无法撤销。"
+              checked={settings.auto_rate_enabled}
+              onChange={() => setSettings({
+                ...settings,
+                auto_rate_enabled: !settings.auto_rate_enabled,
+              })}
+            />
+            <SettingToggle
+              title="允许索要小红花"
+              description="开启后订单页可发起求花，会向买家发送一条消息。"
+              checked={settings.auto_flower_enabled}
+              onChange={() => setSettings({
+                ...settings,
+                auto_flower_enabled: !settings.auto_flower_enabled,
+              })}
+            />
+          </section>
         </div>
+      )}
+
+      {activeSection === 'phrases' && (
+        <section className="section-panel">
+          <SectionHeader
+            title="快捷短语"
+            description="人工客服常用话术，在消息管理页可一键插入到输入框。"
+            icon={Zap}
+          />
+          <div className="grid gap-3 p-4 sm:grid-cols-[140px_200px_1fr_auto]">
+            <input
+              value={phraseForm.category}
+              onChange={(e) => setPhraseForm({ ...phraseForm, category: e.target.value })}
+              placeholder="分类"
+              className="ios-input rounded-md px-3 py-2.5"
+            />
+            <input
+              value={phraseForm.title}
+              onChange={(e) => setPhraseForm({ ...phraseForm, title: e.target.value })}
+              placeholder="标题"
+              className="ios-input rounded-md px-3 py-2.5"
+            />
+            <input
+              value={phraseForm.content}
+              onChange={(e) => setPhraseForm({ ...phraseForm, content: e.target.value })}
+              placeholder="话术内容"
+              className="ios-input rounded-md px-3 py-2.5"
+            />
+            <button
+              type="button"
+              onClick={() => void handleAddPhrase()}
+              disabled={!phraseForm.title.trim() || !phraseForm.content.trim()}
+              className="ios-btn-primary rounded-md px-4 py-2.5 text-sm disabled:opacity-60"
+            >
+              添加
+            </button>
+          </div>
+          <div className="divide-y divide-gray-100 border-t border-gray-100">
+            {phrases.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-gray-500">还没有快捷短语</p>
+            ) : (
+              phrases.map((phrase) => (
+                <div key={phrase.id} className="flex items-center gap-3 px-4 py-3">
+                  <span className="w-20 shrink-0 text-xs text-gray-500">{phrase.category}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-gray-800">{phrase.title}</p>
+                    <p className="truncate text-xs text-gray-500">{phrase.content}</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-gray-400">用了 {phrase.use_count} 次</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleTogglePhrase(phrase)}
+                    className="shrink-0 text-xs text-blue-600 hover:underline"
+                  >
+                    {phrase.enabled ? '停用' : '启用'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeletePhrase(phrase.id)}
+                    className="shrink-0 text-xs text-red-500 hover:underline"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
       )}
 
       {activeSection === 'ai' && (

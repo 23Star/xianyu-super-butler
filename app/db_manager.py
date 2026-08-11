@@ -241,6 +241,11 @@ class DBManager:
                 spec_value TEXT,
                 quantity TEXT,
                 amount TEXT,
+                buy_num INTEGER DEFAULT 1,
+                auction_price TEXT DEFAULT '',
+                confirm_fee TEXT DEFAULT '',
+                refund_fee TEXT DEFAULT '',
+                post_fee TEXT DEFAULT '',
                 order_status TEXT DEFAULT 'unknown',
                 cookie_id TEXT,
                 is_bargain INTEGER DEFAULT 0,
@@ -345,6 +350,19 @@ class DBManager:
                 logger.info("正在为 orders 表添加 chat_id 列...")
                 self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN chat_id TEXT DEFAULT ''")
                 logger.info("orders 表 chat_id 列添加完成")
+
+            # 卖家端 sold.get 的真实成交数据列。旧实现按商品挂牌价乘固定数量 1 推算金额，
+            # 多件和议价订单会算错，这些列用于保存接口返回的真值。
+            try:
+                self._execute_sql(cursor, "SELECT buy_num FROM orders LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 orders 表添加成交明细列...")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN buy_num INTEGER DEFAULT 1")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN auction_price TEXT DEFAULT ''")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN confirm_fee TEXT DEFAULT ''")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN refund_fee TEXT DEFAULT ''")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN post_fee TEXT DEFAULT ''")
+                logger.info("orders 表成交明细列添加完成")
 
             # 检查并添加 user_id 列（用于数据库迁移）
             try:
@@ -636,6 +654,25 @@ class DBManager:
             cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_message_filters_lookup
             ON message_filters(cookie_id, filter_type, enabled)
+            ''')
+
+            # 人工客服的常用话术库。不绑定账号，全局共享，按分类和排序展示。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_quick_phrases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT DEFAULT '默认',
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                use_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_quick_phrases_lookup
+            ON chat_quick_phrases(enabled, category, sort_order)
             ''')
 
             cursor.execute('''
@@ -5951,7 +5988,9 @@ class DBManager:
                                receiver_phone: str = None, receiver_address: str = None,
                                receiver_city: str = None,
                                system_shipped: bool = None, expected_version: int = None,
-                               chat_id: str = None):
+                               chat_id: str = None, buy_num: int = None,
+                               auction_price: str = None, confirm_fee: str = None,
+                               refund_fee: str = None, post_fee: str = None):
         """插入或更新订单信息"""
         with self.lock:
             try:
@@ -6023,6 +6062,21 @@ class DBManager:
                     if chat_id is not None:
                         update_fields.append("chat_id = ?")
                         update_values.append(chat_id)
+                    if buy_num is not None:
+                        update_fields.append("buy_num = ?")
+                        update_values.append(buy_num)
+                    if auction_price is not None:
+                        update_fields.append("auction_price = ?")
+                        update_values.append(auction_price)
+                    if confirm_fee is not None:
+                        update_fields.append("confirm_fee = ?")
+                        update_values.append(confirm_fee)
+                    if refund_fee is not None:
+                        update_fields.append("refund_fee = ?")
+                        update_values.append(refund_fee)
+                    if post_fee is not None:
+                        update_fields.append("post_fee = ?")
+                        update_values.append(post_fee)
 
                     if update_fields:
                         update_fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -6056,26 +6110,34 @@ class DBManager:
                         INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
                                           quantity, amount, order_status, cookie_id, is_bargain, created_at,
                                           receiver_name, receiver_phone, receiver_address, receiver_city,
-                                          system_shipped, chat_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          system_shipped, chat_id,
+                                          buy_num, auction_price, confirm_fee, refund_fee, post_fee)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (order_id, item_id, buyer_id, spec_name, spec_value,
                               quantity, amount, order_status or 'unknown', cookie_id,
                               1 if is_bargain else 0, created_at,
                               receiver_name, receiver_phone, receiver_address, receiver_city,
-                              1 if system_shipped else 0, chat_id or ''))
+                              1 if system_shipped else 0, chat_id or '',
+                              buy_num if buy_num is not None else 1,
+                              auction_price or '', confirm_fee or '',
+                              refund_fee or '', post_fee or ''))
                     else:
                         # 使用默认的创建时间（CURRENT_TIMESTAMP，UTC时间）
                         cursor.execute('''
                         INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
                                           quantity, amount, order_status, cookie_id, is_bargain,
                                           receiver_name, receiver_phone, receiver_address, receiver_city,
-                                          system_shipped, chat_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          system_shipped, chat_id,
+                                          buy_num, auction_price, confirm_fee, refund_fee, post_fee)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (order_id, item_id, buyer_id, spec_name, spec_value,
                               quantity, amount, order_status or 'unknown', cookie_id,
                               1 if is_bargain else 0,
                               receiver_name, receiver_phone, receiver_address, receiver_city,
-                              1 if system_shipped else 0, chat_id or ''))
+                              1 if system_shipped else 0, chat_id or '',
+                              buy_num if buy_num is not None else 1,
+                              auction_price or '', confirm_fee or '',
+                              refund_fee or '', post_fee or ''))
                     logger.info(f"插入新订单: {order_id}")
 
                 self.conn.commit()
@@ -6902,14 +6964,33 @@ class DBManager:
 
                 where_clause = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else "WHERE 1=1"
 
-                # 1. 总收益统计（估值，实际会扣税等）
+                # 不带状态筛选的条件，用于需要覆盖全部订单的统计。
+                # 趋势图和订单分布如果沿用上面的筛选，退款和已取消的订单会整天消失，
+                # 看起来像那几天没有任何成交。
+                all_status_conditions = list(where_conditions)
+                all_status_params = list(params)
+                if include_statuses:
+                    all_status_conditions = all_status_conditions[:-1]
+                    all_status_params = all_status_params[:-len(include_statuses)]
+                all_where_clause = (
+                    f"WHERE {' AND '.join(all_status_conditions)}"
+                    if all_status_conditions else "WHERE 1=1"
+                )
+
+                # 1. 总收益统计
+                # 双口径：total_amount 是成交额（含未到账和已退款），
+                # confirmed_amount 取 confirm_fee（确认收货后卖家实收，退款单为 0），
+                # 两者分开展示，不推算平台手续费。
                 cursor.execute(f"""
                     SELECT
                         COUNT(DISTINCT order_id) as total_orders,
                         SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as total_amount,
                         AVG(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as avg_amount,
                         COUNT(DISTINCT buyer_id) as unique_buyers,
-                        COUNT(DISTINCT item_id) as unique_items
+                        COUNT(DISTINCT item_id) as unique_items,
+                        SUM(CAST(REPLACE(REPLACE(COALESCE(NULLIF(confirm_fee, ''), '0'), '¥', ''), ',', '') AS REAL)) as confirmed_amount,
+                        SUM(CAST(REPLACE(REPLACE(COALESCE(NULLIF(refund_fee, ''), '0'), '¥', ''), ',', '') AS REAL)) as refunded_amount,
+                        SUM(COALESCE(buy_num, 1)) as total_items_sold
                     FROM orders
                     {where_clause}
                     AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
@@ -6921,43 +7002,69 @@ class DBManager:
                     'total_amount': round(row[1] or 0, 2),
                     'avg_amount': round(row[2] or 0, 2),
                     'unique_buyers': row[3] or 0,
-                    'unique_items': row[4] or 0
+                    'unique_items': row[4] or 0,
+                    'confirmed_amount': round(row[5] or 0, 2),
+                    'refunded_amount': round(row[6] or 0, 2),
+                    'total_items_sold': row[7] or 0
                 } if row else {}
 
+                # 补充全部状态的订单口径。上面的 total_orders 只算有效状态，
+                # 但"订单数"这个指标应该反映实际订单总量，否则用户看到的数字
+                # 会和订单页对不上。
+                cursor.execute(f"""
+                    SELECT
+                        COUNT(DISTINCT order_id) as all_orders,
+                        SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as all_amount
+                    FROM orders
+                    {all_where_clause}
+                    AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
+                """, all_status_params)
+                all_row = cursor.fetchone()
+                if all_row and revenue_stats:
+                    revenue_stats['all_orders'] = all_row[0] or 0
+                    revenue_stats['all_amount'] = round(all_row[1] or 0, 2)
+
                 # 2. 按日期统计订单量和收益
+                # 覆盖全部订单，退款和已取消也要出现在趋势里，否则那几天会整天空白。
+                # amount 是当日成交额，confirmed 是当日已到账，两者分开给前端。
                 cursor.execute(f"""
                     SELECT
                         DATE(created_at) as date,
                         COUNT(DISTINCT order_id) as order_count,
-                        SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as daily_amount
+                        SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as daily_amount,
+                        SUM(CAST(REPLACE(REPLACE(COALESCE(NULLIF(confirm_fee, ''), '0'), '¥', ''), ',', '') AS REAL)) as daily_confirmed,
+                        SUM(CAST(REPLACE(REPLACE(COALESCE(NULLIF(refund_fee, ''), '0'), '¥', ''), ',', '') AS REAL)) as daily_refunded
                     FROM orders
-                    {where_clause}
+                    {all_where_clause}
                     AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
                     GROUP BY DATE(created_at)
                     ORDER BY date DESC
                     LIMIT 30
-                """, params)
+                """, all_status_params)
 
                 daily_stats = []
                 for row in cursor.fetchall():
                     daily_stats.append({
                         'date': row[0],
                         'order_count': row[1],
-                        'amount': round(row[2] or 0, 2)
+                        'amount': round(row[2] or 0, 2),
+                        'confirmed_amount': round(row[3] or 0, 2),
+                        'refunded_amount': round(row[4] or 0, 2)
                     })
 
                 # 3. 按状态统计订单
+                # 用不带状态筛选的条件，否则"按状态分布"里永远只有那三种有效状态
                 cursor.execute(f"""
                     SELECT
                         order_status,
                         COUNT(DISTINCT order_id) as count,
                         SUM(CAST(REPLACE(REPLACE(amount, '¥', ''), ',', '') AS REAL)) as amount
                     FROM orders
-                    {where_clause}
+                    {all_where_clause}
                     AND amount IS NOT NULL AND amount != '' AND amount != 'N/A'
                     GROUP BY order_status
                     ORDER BY count DESC
-                """, params)
+                """, all_status_params)
 
                 status_stats = []
                 for row in cursor.fetchall():
@@ -7071,6 +7178,111 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
+    # ------------------------- 快捷短语 -------------------------
+
+    def get_quick_phrases(self, include_disabled: bool = False) -> List[Dict[str, Any]]:
+        """获取快捷短语，按分类和排序返回。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                where = "" if include_disabled else "WHERE enabled = 1"
+                cursor.execute(f'''
+                    SELECT id, category, title, content, sort_order, enabled, use_count,
+                           created_at, updated_at
+                    FROM chat_quick_phrases
+                    {where}
+                    ORDER BY category, sort_order, id
+                ''')
+                return [{
+                    'id': row[0],
+                    'category': row[1],
+                    'title': row[2],
+                    'content': row[3],
+                    'sort_order': row[4],
+                    'enabled': bool(row[5]),
+                    'use_count': row[6],
+                    'created_at': row[7],
+                    'updated_at': row[8],
+                } for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取快捷短语失败: {e}")
+                return []
+
+    def create_quick_phrase(self, title: str, content: str, category: str = '默认',
+                            sort_order: int = 0) -> Optional[int]:
+        """新增快捷短语，返回新记录 ID。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                    INSERT INTO chat_quick_phrases (category, title, content, sort_order)
+                    VALUES (?, ?, ?, ?)
+                ''', (category or '默认', title, content, sort_order))
+                self.conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                logger.error(f"新增快捷短语失败: {e}")
+                self.conn.rollback()
+                return None
+
+    def update_quick_phrase(self, phrase_id: int, **fields) -> bool:
+        """更新快捷短语，只写入显式传入的字段。"""
+        allowed = ('category', 'title', 'content', 'sort_order', 'enabled')
+        updates = []
+        values = []
+        for key in allowed:
+            if key in fields and fields[key] is not None:
+                updates.append(f"{key} = ?")
+                value = fields[key]
+                values.append(1 if value is True else 0 if value is False else value)
+
+        if not updates:
+            return False
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                values.append(phrase_id)
+                cursor.execute(
+                    f"UPDATE chat_quick_phrases SET {', '.join(updates)} WHERE id = ?",
+                    values,
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新快捷短语失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def delete_quick_phrase(self, phrase_id: int) -> bool:
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("DELETE FROM chat_quick_phrases WHERE id = ?", (phrase_id,))
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"删除快捷短语失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def increment_quick_phrase_usage(self, phrase_id: int) -> bool:
+        """记录使用次数，便于把高频短语排在前面。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "UPDATE chat_quick_phrases SET use_count = use_count + 1 WHERE id = ?",
+                    (phrase_id,),
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新快捷短语使用次数失败: {e}")
+                self.conn.rollback()
+                return False
+
     def get_orders_for_analytics(self, start_date: str = None, end_date: str = None,
                                   user_id: int = None, include_statuses: list = None):
         """
@@ -7125,7 +7337,12 @@ class DBManager:
                         spec_value,
                         quantity,
                         created_at,
-                        receiver_city
+                        receiver_city,
+                        buy_num,
+                        auction_price,
+                        confirm_fee,
+                        refund_fee,
+                        post_fee
                     FROM orders
                     {where_clause}
                     ORDER BY created_at DESC
@@ -7144,7 +7361,13 @@ class DBManager:
                         'spec_value': row[6],
                         'quantity': row[7],
                         'created_at': row[8],
-                        'receiver_city': row[9]
+                        'receiver_city': row[9],
+                        'buy_num': row[10],
+                        'auction_price': row[11],
+                        # 确认收货后卖家实收，退款订单为 0，用于「已到账」口径
+                        'confirm_fee': row[12],
+                        'refund_fee': row[13],
+                        'post_fee': row[14]
                     })
 
                 return orders

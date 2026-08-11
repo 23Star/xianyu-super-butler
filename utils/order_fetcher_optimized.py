@@ -634,6 +634,88 @@ async def fetch_order_complete(
     return await fetcher.fetch_order_complete(order_id, timeout, headless, force_refresh)
 
 
+async def fetch_orders_via_seller_api(
+    order_ids: List[str],
+    cookie_id: str,
+    cookie_string: str,
+    chunk_size: int = 20,
+) -> List[Dict[str, Any]]:
+    """通过卖家端 sold.get 批量获取订单，返回与浏览器抓取同构的结果。
+
+    相比 Playwright 拦截，这里不需要启动浏览器，且金额取自接口的真实成交价而非
+    商品挂牌价。orderIds 只支持逗号分隔，空格或数组会被服务端拒绝。
+
+    Args:
+        chunk_size: 单次请求携带的订单数，过大时服务端可能截断。
+
+    Returns:
+        成功获取的订单列表；未覆盖的订单不会出现在结果中，由调用方决定是否回退。
+    """
+    if not order_ids or not cookie_string:
+        return []
+
+    from utils.order_status_rules import normalize_order_status
+    from utils.xianyu_seller_api import (
+        XianyuSellerAPI,
+        SellerApiError,
+        parse_sold_order,
+    )
+
+    results: List[Dict[str, Any]] = []
+    api = XianyuSellerAPI(cookie_id, cookie_string)
+    try:
+        for start in range(0, len(order_ids), chunk_size):
+            chunk = [str(order_id) for order_id in order_ids[start:start + chunk_size]]
+            try:
+                batch = await api.get_sold_orders(
+                    order_ids=",".join(chunk),
+                    rows_per_page=max(len(chunk), 10),
+                )
+            except SellerApiError as exc:
+                logger.warning(f"【{cookie_id}】卖家端订单查询失败（{len(chunk)} 单）: {exc}")
+                continue
+
+            for item in batch.get('items') or []:
+                parsed = parse_sold_order(item)
+                if not parsed.get('order_id'):
+                    continue
+                results.append({
+                    'order_id': parsed['order_id'],
+                    'url': f"https://www.goofish.com/order-detail?orderId={parsed['order_id']}&role=seller",
+                    'title': f"订单详情 - {parsed['order_id']}",
+                    'order_status': normalize_order_status('', parsed.get('status_text')),
+                    'status_text': parsed.get('status_text', ''),
+                    'item_title': parsed.get('item_title', ''),
+                    'item_id': parsed.get('item_id', ''),
+                    'spec_name': '',
+                    'spec_value': '',
+                    'quantity': str(parsed.get('buy_num') or 1),
+                    'amount': parsed.get('amount', ''),
+                    'auction_price': parsed.get('auction_price', ''),
+                    'confirm_fee': parsed.get('confirm_fee', ''),
+                    'refund_fee': parsed.get('refund_fee', ''),
+                    'post_fee': parsed.get('post_fee', ''),
+                    'buy_num': parsed.get('buy_num') or 1,
+                    'order_time': parsed.get('created_at', ''),
+                    'receiver_name': parsed.get('receiver_name', ''),
+                    'receiver_phone': parsed.get('receiver_phone', ''),
+                    'receiver_address': parsed.get('receiver_address', ''),
+                    'receiver_city': '',
+                    'buyer_id': parsed.get('buyer_id', ''),
+                    'is_privacy': parsed.get('is_privacy', False),
+                    'can_rate': 'RATE' in (parsed.get('trade_actions') or []),
+                    'trade_actions': parsed.get('trade_actions') or [],
+                    'timestamp': time.time(),
+                    'from_seller_api': True,
+                })
+    except Exception as e:
+        logger.error(f"【{cookie_id}】卖家端订单批量获取异常: {e}")
+    finally:
+        await api.close()
+
+    return results
+
+
 async def process_orders_batch(
     order_ids: List[str],
     cookie_id: str,
@@ -662,6 +744,34 @@ async def process_orders_batch(
     Returns:
         订单信息字典列表（包含成功和失败的结果）
     """
+    if not order_ids:
+        return []
+
+    # 调用方按下标把结果对回原订单（batch_results[i] ↔ cookie_orders[i]），
+    # 因此必须保持与入参完全一致的顺序和长度。
+    original_order = [str(order_id) for order_id in order_ids]
+
+    # 优先走卖家端 sold.get 直连：一次请求即可拿到成交金额、数量和收货信息，
+    # 无需启动浏览器。仅当接口未覆盖某些订单时，才对剩余订单回退到 Playwright。
+    direct_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        for item in await fetch_orders_via_seller_api(original_order, cookie_id, cookie_string):
+            direct_map[item['order_id']] = item
+    except Exception as e:
+        logger.warning(f"卖家端接口批量获取失败，全部回退浏览器抓取: {e}")
+        direct_map = {}
+
+    remaining = [order_id for order_id in original_order if order_id not in direct_map]
+    if direct_map:
+        logger.info(
+            f"卖家端接口已获取 {len(direct_map)} 个订单，"
+            f"剩余 {len(remaining)} 个回退浏览器抓取"
+        )
+
+    if not remaining:
+        return [direct_map[order_id] for order_id in original_order]
+
+    order_ids = remaining
     logger.info(f"开始批量处理 {len(order_ids)} 个订单，最大并发数: {max_concurrent}")
     # print(f"[BATCH] Processing {len(order_ids)} orders (concurrent: {max_concurrent})")  # 已移除
 
@@ -748,7 +858,20 @@ async def process_orders_batch(
     # print(f"   [OK] 成功: {success_count}")  # 已移除
     # print(f"   [FAIL] 失败: {fail_count}")  # 已移除
 
-    return processed_results
+    if not direct_map:
+        return processed_results
+
+    # 按入参顺序合并两条来源的结果，保证下标与调用方的订单列表一一对应
+    browser_map = {
+        str(order_id): result
+        for order_id, result in zip(order_ids, processed_results)
+    }
+    return [
+        direct_map.get(order_id)
+        or browser_map.get(order_id)
+        or {'order_id': order_id, 'success': False, 'error': '获取订单信息失败'}
+        for order_id in original_order
+    ]
 
 
 async def process_orders_in_batches(

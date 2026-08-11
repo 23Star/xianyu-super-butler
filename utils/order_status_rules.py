@@ -37,6 +37,11 @@ STATUS_TEXT_RULES = (
     ("卖家取消了订单", "cancelled"),
     ("订单已关闭", "cancelled"),
     ("交易关闭", "cancelled"),
+    # 卖家端退款列表的状态文案。必须排在「已发货」之前，
+    # 否则「已发货退款」会先命中 shipped 而被当成有效订单计入营收。
+    ("未发货退款", "refunding"),
+    ("已发货退款", "refunding"),
+    ("退货退款", "refunding"),
     ("等待卖家处理退款", "refunding"),
     ("退款申请中", "refunding"),
     ("退货退款中", "refunding"),

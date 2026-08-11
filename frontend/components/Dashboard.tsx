@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AdminStats, OrderAnalytics, Order, OrderStatus, Item } from '../types';
 import { getAdminStats, getOrderAnalytics, getValidOrders, getItems } from '../services/api';
 import { TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, ArrowUpRight, Calendar, X, BarChart3, PackageCheck, ExternalLink, Eye, Edit, RefreshCw } from 'lucide-react';
-import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, Legend } from 'recharts';
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
 import { EmptyState, PageHeader, PageLoading, PageTabs, SectionHeader } from './ui';
 
 // 状态徽章组件
@@ -360,16 +360,21 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  const chartData = analytics.daily_stats?.map(d => ({
+  // 趋势图按日期正序展示，后端返回的是倒序
+  const chartData = (analytics.daily_stats ? [...analytics.daily_stats].reverse() : [])
+    .map(d => ({
       name: d.date.slice(5), // MM-DD
       amount: d.amount,
+      confirmed: d.confirmed_amount ?? 0,
+      refunded: d.refunded_amount ?? 0,
       orders: d.order_count,
       avgAmount: d.order_count > 0 ? (d.amount / d.order_count).toFixed(2) : 0
-  })) || [];
+    }));
 
   // 计算图表数据（在渲染时直接计算）
   const itemStats = analytics.item_stats || [];
-  const totalOrders = analytics.revenue_stats.total_orders || 0;
+  // 订单数用全量口径，和订单页的数字保持一致
+  const totalOrders = analytics.revenue_stats.all_orders ?? analytics.revenue_stats.total_orders ?? 0;
   const totalAmount = analytics.revenue_stats.total_amount || 0;
 
   // 1. 商品销量排行：按订单数量排序
@@ -478,23 +483,35 @@ const Dashboard: React.FC = () => {
       {/* Stats Grid */}
       <div className="metric-grid">
         <StatCard
-          title="累计营收 (CNY)"
+          title="有效成交额 (CNY)"
           value={`¥${analytics.revenue_stats.total_amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
           icon={DollarSign}
           colorClass="bg-yellow-400"
           trend={getTrendPercent() || undefined}
         />
         <StatCard
+          title="已到账 (CNY)"
+          value={`¥${(analytics.revenue_stats.confirmed_amount ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
+          icon={DollarSign}
+          colorClass="bg-green-500"
+        />
+        <StatCard
+          title="已退款 (CNY)"
+          value={`¥${(analytics.revenue_stats.refunded_amount ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
+          icon={DollarSign}
+          colorClass="bg-gray-400"
+        />
+        <StatCard
+          title="订单总数"
+          value={totalOrders.toLocaleString()}
+          icon={ShoppingCart}
+          colorClass="bg-orange-500"
+        />
+        <StatCard
           title="活跃账号 / 总数"
           value={`${stats.active_cookies} / ${stats.total_cookies}`}
           icon={Users}
           colorClass="bg-blue-500"
-        />
-        <StatCard
-          title="订单数"
-          value={analytics.revenue_stats.total_orders.toLocaleString()}
-          icon={ShoppingCart}
-          colorClass="bg-orange-500"
         />
         <StatCard
           title="库存卡密余量"
@@ -506,19 +523,27 @@ const Dashboard: React.FC = () => {
 
       {/* Main Chart Section */}
       <div className="section-panel">
-        <SectionHeader title="营收趋势" description="所选时间范围内的销售额变化。" icon={TrendingUp} />
+        <SectionHeader title="成交趋势" description="所选时间范围内的成交额变化，含已退款订单。" icon={TrendingUp} />
         <div className="h-[340px] w-full p-4 sm:p-5">
-          {chartData.length === 0 || analytics.revenue_stats.total_amount === 0 ? (
-            <EmptyState compact title="暂无营收数据" description="所选时间范围内暂无订单记录。" icon={ShoppingCart} />
-          ) : chartData.length <= 2 ? (
+          {chartData.length === 0 ? (
+            <EmptyState compact title="暂无订单数据" description="所选时间范围内暂无订单记录。" icon={ShoppingCart} />
+          ) : (
+            /* 统一用柱状图：每天的成交额是离散值而非连续趋势，
+               而且图形不会因为数据点多少在柱状和折线之间跳变。 */
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 18, right: 16, left: -20, bottom: 18 }} barCategoryGap={30}>
+              <BarChart
+                data={chartData}
+                margin={{ top: 18, right: 16, left: -20, bottom: 18 }}
+                barCategoryGap={chartData.length <= 2 ? 30 : chartData.length <= 10 ? '20%' : '10%'}
+              >
+                <CartesianGrid vertical={false} stroke="#eef0f2" strokeDasharray="3 3" />
                 <XAxis
                   dataKey="name"
                   axisLine={false}
                   tickLine={false}
                   tick={{fill: '#6d747c', fontSize: 12, fontWeight: 600}}
                   dy={10}
+                  interval="preserveStartEnd"
                 />
                 <YAxis
                   axisLine={false}
@@ -535,48 +560,27 @@ const Dashboard: React.FC = () => {
                     padding: '10px 12px'
                   }}
                   itemStyle={{ color: '#1f2328', fontWeight: 600 }}
-                  formatter={(value) => {
-                    const num = Number(value);
-                    return `营收: ¥${num.toFixed(2)}`;
-                  }}
-                />
-                <Bar
-                  dataKey="amount"
-                  fill="#d6bc00"
-                  radius={[3, 3, 0, 0]}
-                  strokeWidth={0}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <XAxis
-                  dataKey="name"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
-                  dy={15}
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
-                />
-                <CartesianGrid vertical={false} stroke="#eef0f2" strokeDasharray="3 3" />
-                <Tooltip
-                  contentStyle={{
-                    background: '#ffffff',
-                    borderRadius: '6px',
-                    border: '1px solid #e4e6e8',
-                    boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)',
-                  }}
-                  itemStyle={{ color: '#1f2328', fontWeight: 600 }}
                   labelStyle={{ color: '#6d747c' }}
-                  cursor={{ stroke: '#d6bc00', strokeWidth: 1, strokeDasharray: '4 4' }}
+                  cursor={{ fill: 'rgba(214, 188, 0, 0.08)' }}
+                  formatter={(value, name) => {
+                    const label = name === 'confirmed' ? '已到账' : '成交额';
+                    return [`¥${Number(value).toFixed(2)}`, label];
+                  }}
                 />
-                <Line type="monotone" dataKey="amount" stroke="#c7ad00" strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 4 }} />
-              </LineChart>
+                <Legend
+                  verticalAlign="top"
+                  height={28}
+                  iconType="circle"
+                  iconSize={8}
+                  formatter={(value) => (
+                    <span style={{ color: '#6d747c', fontSize: 12 }}>
+                      {value === 'confirmed' ? '已到账' : '成交额'}
+                    </span>
+                  )}
+                />
+                <Bar dataKey="amount" fill="#d6bc00" radius={[3, 3, 0, 0]} strokeWidth={0} />
+                <Bar dataKey="confirmed" fill="#22c55e" radius={[3, 3, 0, 0]} strokeWidth={0} />
+              </BarChart>
             </ResponsiveContainer>
           )}
         </div>

@@ -1159,6 +1159,19 @@ async def _run_on_account_loop(cookie_id: str, operation):
 
     instance = manager.instances.get(cookie_id)
     if instance is None:
+        # 区分风控和未登录：两者的处理方式完全不同，笼统提示"未在线"会误导用户
+        from utils import risk_control
+
+        guard = risk_control.registry.get(cookie_id)
+        if guard.is_blocked:
+            minutes = max(1, guard.remaining_seconds // 60)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"闲鱼要求人机验证，账号暂停请求中（约 {minutes} 分钟后自动重试）。"
+                    f"请勿频繁操作，等待自动恢复或稍后重新扫码登录。"
+                ),
+            )
         raise HTTPException(status_code=409, detail="账号未在线，请先启用账号并等待连接成功")
 
     try:
@@ -7287,6 +7300,8 @@ def get_user_orders(
 
         # 获取所有订单数据
         all_orders = []
+        # 各状态的全量计数，在状态筛选前累加
+        status_counts: Dict[str, int] = {}
         # 先获取所有商品的 item_id 到 item_title 的映射
         item_titles = {}
         with db_manager.lock:
@@ -7301,8 +7316,12 @@ def get_user_orders(
                 order['cookie_id'] = cid
                 # 添加 item_title 字段
                 order['item_title'] = item_titles.get(order.get('item_id'), '')
+                # 状态计数在筛选之前统计，保证各标签数字始终是全量口径
+                order_state = get_order_status(order)
+                status_counts[order_state] = status_counts.get(order_state, 0) + 1
+                status_counts['all'] = status_counts.get('all', 0) + 1
                 # 状态筛选
-                if status and get_order_status(order) != status:
+                if status and order_state != status:
                     continue
                 all_orders.append(order)
 
@@ -7323,7 +7342,9 @@ def get_user_orders(
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": total_pages
+            "total_pages": total_pages,
+            # 各状态的全量条数，供前端标签显示，不受分页和筛选影响
+            "status_counts": status_counts
         }
 
     except Exception as e:
@@ -8392,11 +8413,451 @@ API_ROOTS = {
     'keywords', 'keywords-export', 'keywords-import', 'keywords-with-item-id',
     'keywords-with-type', 'login', 'login-info-settings', 'login-info-status',
     'logout', 'logs', 'message-notifications', 'notification-channels',
-    'password-login', 'qr-login', 'register', 'registration-settings',
+    'password-login', 'qr-login', 'quick-phrases', 'register', 'registration-settings',
     'registration-status', 'risk-control-logs', 'send-message',
     'send-verification-code', 'static', 'system', 'system-settings',
     'upload-image', 'user-settings', 'verify', 'verify-captcha', 'xianyu'
 }
+
+
+# ------------------------- 卖家端订单同步与互动 -------------------------
+
+# 评价和求花都会产生不可撤销的对外动作，默认关闭，需显式开启后才允许调用
+AUTO_RATE_SETTING_KEY = 'auto_rate_enabled'
+AUTO_FLOWER_SETTING_KEY = 'auto_flower_enabled'
+
+
+def _seller_feature_enabled(key: str) -> bool:
+    from app.db_manager import db_manager
+    return str(db_manager.get_system_setting(key) or '').strip().lower() in ('1', 'true', 'yes')
+
+
+def _resolve_order_cookie(order_id: str, user_cookies: Dict[str, str]) -> tuple:
+    """校验订单归属并返回 (cookie_id, cookies_str)。"""
+    from app.db_manager import db_manager
+
+    order = db_manager.get_order_by_id(str(order_id))
+    if not order:
+        raise HTTPException(status_code=404, detail=f"订单不存在: {order_id}")
+
+    cookie_id = order.get('cookie_id')
+    if cookie_id not in user_cookies:
+        raise HTTPException(status_code=403, detail=f"无权操作订单: {order_id}")
+
+    cookies_str = user_cookies.get(cookie_id)
+    if not cookies_str:
+        raise HTTPException(status_code=400, detail=f"账号缺少 Cookie: {cookie_id}")
+    return cookie_id, cookies_str
+
+
+@app.post('/api/orders/sync-sold')
+async def sync_sold_orders(
+    cookie_id: Optional[str] = Form(None),
+    days: int = Form(7),
+    include_refund_history: bool = Form(True),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """通过卖家端接口全量同步卖出订单。
+
+    消息驱动只能捕获监听在线期间的订单，且金额按商品挂牌价推算并不准确；
+    这里直接拉取接口的真实成交数据做兜底对账。
+
+    不按时间筛选 —— 卖家端只保留近期订单，加时间条件会切掉边界订单。
+    ``days`` 仅为兼容旧调用保留。开启 ``include_refund_history`` 时会用退款列表
+    补全订单列表已查不到的历史归档单。
+    """
+    from app.db_manager import db_manager
+    from utils.seller_order_sync import sync_account_orders
+
+    user_id = current_user['user_id']
+    user_cookies = db_manager.get_all_cookies(user_id)
+    if cookie_id:
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=404, detail="Cookie不存在或无权访问")
+        user_cookies = {cookie_id: user_cookies[cookie_id]}
+
+    summary = {
+        'total': 0, 'saved': 0, 'failed': 0, 'from_refund': 0,
+        'incomplete_accounts': [], 'accounts': {},
+    }
+
+    for cid, cookies_str in user_cookies.items():
+        if not cookies_str:
+            continue
+        try:
+            res = await sync_account_orders(
+                cid, cookies_str, include_refund_history=include_refund_history
+            )
+        except Exception as e:
+            log_with_user('error', f"账号 {cid} 卖出订单同步异常: {e}", current_user)
+            summary['accounts'][cid] = {'error': str(e)}
+            continue
+
+        summary['total'] += res['total']
+        summary['saved'] += res['saved']
+        summary['failed'] += res['failed']
+        summary['from_refund'] += res['from_refund']
+        if not res['complete']:
+            summary['incomplete_accounts'].append(cid)
+        summary['accounts'][cid] = {
+            'total': res['total'],
+            'saved': res['saved'],
+            'failed': res['failed'],
+            'from_refund': res['from_refund'],
+            'expected': res['expected'],
+            'complete': res['complete'],
+        }
+
+    log_with_user(
+        'info',
+        f"卖出订单同步完成: 共 {summary['total']} 单，成功 {summary['saved']}，失败 {summary['failed']}",
+        current_user,
+    )
+
+    message = f"同步完成: 共 {summary['total']} 单，成功 {summary['saved']}"
+    if summary['from_refund']:
+        message += f"（含历史退款单 {summary['from_refund']} 单）"
+    if summary['failed']:
+        message += f"，失败 {summary['failed']}"
+    if summary['incomplete_accounts']:
+        # 拉取数量少于服务端角标，提示用户而不是静默少数据
+        message += f"；部分账号可能未拉全: {', '.join(summary['incomplete_accounts'])}"
+
+    return JSONResponse({
+        'success': True,
+        'message': message,
+        'summary': summary,
+    })
+
+
+@app.get('/api/orders/{order_id}/refund-record')
+async def get_order_refund_record(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """查询订单的退款记录（只读）。"""
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = await api.get_refund_record(order_id)
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
+# ------------------------- 快捷短语 -------------------------
+
+@app.get('/quick-phrases')
+def list_quick_phrases(
+    include_disabled: bool = Query(False),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取快捷短语列表，供人工客服快速插入常用话术。"""
+    from app.db_manager import db_manager
+    return {'success': True, 'data': db_manager.get_quick_phrases(include_disabled)}
+
+
+@app.post('/quick-phrases')
+def create_quick_phrase(
+    title: str = Form(...),
+    content: str = Form(...),
+    category: str = Form('默认'),
+    sort_order: int = Form(0),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    from app.db_manager import db_manager
+
+    if not title.strip() or not content.strip():
+        raise HTTPException(status_code=400, detail="标题和内容不能为空")
+
+    phrase_id = db_manager.create_quick_phrase(
+        title.strip(), content.strip(), category.strip() or '默认', sort_order
+    )
+    if not phrase_id:
+        raise HTTPException(status_code=500, detail="新增快捷短语失败")
+    log_with_user('info', f"新增快捷短语: {title}", current_user)
+    return {'success': True, 'id': phrase_id}
+
+
+@app.put('/quick-phrases/{phrase_id}')
+def update_quick_phrase(
+    phrase_id: int,
+    title: Optional[str] = Form(None),
+    content: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
+    sort_order: Optional[int] = Form(None),
+    enabled: Optional[bool] = Form(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    from app.db_manager import db_manager
+
+    ok = db_manager.update_quick_phrase(
+        phrase_id, title=title, content=content, category=category,
+        sort_order=sort_order, enabled=enabled,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="快捷短语不存在或无字段更新")
+    return {'success': True}
+
+
+@app.delete('/quick-phrases/{phrase_id}')
+def delete_quick_phrase(
+    phrase_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    from app.db_manager import db_manager
+
+    if not db_manager.delete_quick_phrase(phrase_id):
+        raise HTTPException(status_code=404, detail="快捷短语不存在")
+    log_with_user('info', f"删除快捷短语: {phrase_id}", current_user)
+    return {'success': True}
+
+
+@app.post('/quick-phrases/{phrase_id}/use')
+def use_quick_phrase(
+    phrase_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """记录一次使用，用于统计高频短语。"""
+    from app.db_manager import db_manager
+    return {'success': db_manager.increment_quick_phrase_usage(phrase_id)}
+
+
+@app.get('/api/risk-control/status')
+def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """查询各账号的风控熔断状态。
+
+    命中平台风控后账号会进入冷却期，期间所有主动请求被拦截 —— 继续请求
+    只会让风控持续更久。这个接口让用户能看到还要等多久。
+    """
+    from app.db_manager import db_manager
+    from utils import risk_control
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    snapshot = risk_control.registry.snapshot()
+
+    accounts = []
+    for cid in user_cookies.keys():
+        state = snapshot.get(cid) or {
+            'cookie_id': cid, 'blocked': False,
+            'remaining_seconds': 0, 'consecutive_hits': 0, 'reason': '',
+        }
+        accounts.append(state)
+
+    return {
+        'success': True,
+        'blocked_count': sum(1 for a in accounts if a['blocked']),
+        'accounts': accounts,
+    }
+
+
+@app.post('/api/items/polish')
+async def polish_items(
+    cookie_id: Optional[str] = Form(None),
+    item_ids: Optional[str] = Form(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """手动擦亮商品。
+
+    擦亮会把商品重新推到搜索和推荐前列，是平台提供的免费曝光手段。
+    平台对每个商品每天的擦亮次数有限制，超出时接口返回业务错误，不影响其他商品。
+
+    Args:
+        item_ids: 逗号分隔的商品 ID；为空时擦亮该账号的全部商品。
+    """
+    from app.db_manager import db_manager
+    from utils.item_polish import polish_account_items
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    if cookie_id:
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=404, detail="Cookie不存在或无权访问")
+        user_cookies = {cookie_id: user_cookies[cookie_id]}
+
+    targets = [i.strip() for i in str(item_ids or '').split(',') if i.strip()] or None
+    summary = {'total': 0, 'success': 0, 'failed': 0, 'accounts': {}}
+
+    for cid, cookies_str in user_cookies.items():
+        if not cookies_str:
+            continue
+        try:
+            res = await polish_account_items(cid, cookies_str, item_ids=targets)
+        except Exception as e:
+            log_with_user('error', f"账号 {cid} 商品擦亮异常: {e}", current_user)
+            summary['accounts'][cid] = {'error': str(e)}
+            continue
+
+        summary['total'] += res['total']
+        summary['success'] += res['success']
+        summary['failed'] += res['failed']
+        summary['accounts'][cid] = {
+            'total': res['total'],
+            'success': res['success'],
+            'failed': res['failed'],
+            'details': res['details'],
+        }
+
+    log_with_user(
+        'info',
+        f"商品擦亮完成: 共 {summary['total']} 个，成功 {summary['success']}，失败 {summary['failed']}",
+        current_user,
+    )
+    return JSONResponse({
+        'success': True,
+        'message': f"擦亮完成: 共 {summary['total']} 个，成功 {summary['success']}，失败 {summary['failed']}",
+        'summary': summary,
+    })
+
+
+@app.get('/api/orders/{order_id}/logistics')
+async def get_order_logistics(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """查询订单的物流轨迹（只读）。
+
+    项目原先没有物流能力，实物订单的运单状态只能人工去闲鱼查看。
+    """
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import (
+        XianyuSellerAPI, SellerApiError, parse_logistics_trace,
+    )
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = parse_logistics_trace(await api.get_logistics_trace(order_id))
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
+@app.get('/api/orders/{order_id}/consign-info')
+async def get_order_consign_info(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """查询发货所需信息（只读）。
+
+    返回规格、收货信息、支持的发货方式和是否必须填序列号。
+    规格只能从这个接口拿 —— 订单列表的 itemInfoLines 是空的。
+    """
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import (
+        XianyuSellerAPI, SellerApiError, parse_consign_render,
+    )
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = parse_consign_render(await api.get_consign_render(order_id))
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
+@app.post('/api/orders/{order_id}/require-flower')
+async def require_order_flower(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """向买家索要小红花。
+
+    会给买家发送一条消息，需先开启 auto_flower_enabled 开关。
+    """
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
+
+    if not _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY):
+        raise HTTPException(
+            status_code=403,
+            detail="求花功能未开启，请先在设置中启用（会向买家发送消息）",
+        )
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = await api.require_flower(order_id)
+        log_with_user('info', f"订单 {order_id} 已发送求花请求", current_user)
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        log_with_user('warning', f"订单 {order_id} 求花失败: {exc}", current_user)
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
+@app.post('/api/orders/rate')
+async def rate_orders(
+    order_ids: str = Form(...),
+    feedback: str = Form(...),
+    rate: int = Form(1),
+    anonymous: bool = Form(False),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """给买家提交评价，支持批量。
+
+    评价提交后无法撤销，需先开启 auto_rate_enabled 开关。
+    同一批订单必须属于同一个账号，因为接口按登录态区分卖家身份。
+    """
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
+
+    if not _seller_feature_enabled(AUTO_RATE_SETTING_KEY):
+        raise HTTPException(
+            status_code=403,
+            detail="评价功能未开启，请先在设置中启用（评价提交后不可撤销）",
+        )
+
+    id_list = [item.strip() for item in str(order_ids or '').split(',') if item.strip()]
+    if not id_list:
+        raise HTTPException(status_code=400, detail="订单列表不能为空")
+    if not (feedback or '').strip():
+        raise HTTPException(status_code=400, detail="评价内容不能为空")
+    if rate not in (1, 0, -1):
+        raise HTTPException(status_code=400, detail="评价等级只能是 1（好）/ 0（中）/ -1（差）")
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    resolved = {_resolve_order_cookie(order_id, user_cookies)[0] for order_id in id_list}
+    if len(resolved) > 1:
+        raise HTTPException(status_code=400, detail="批量评价的订单必须属于同一个账号")
+
+    cid = resolved.pop()
+    api = XianyuSellerAPI(cid, user_cookies[cid])
+    try:
+        result = await api.create_rate(
+            id_list, feedback=feedback, rate=rate, anonymous=anonymous
+        )
+        log_with_user(
+            'info',
+            f"已提交评价: 成功 {len(result['success_order_ids'])} 单，"
+            f"失败 {len(result['fail_orders'])} 单",
+            current_user,
+        )
+        return JSONResponse({'success': result['success'], 'data': result})
+    except SellerApiError as exc:
+        log_with_user('warning', f"提交评价失败: {exc}", current_user)
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
 
 @app.get('/{path:path}', response_class=HTMLResponse)
 async def catch_all_route(path: str):

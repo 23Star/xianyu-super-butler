@@ -11,6 +11,7 @@ import {
   Save,
   Settings2,
   ShoppingBag,
+  Sparkles,
   ShieldAlert,
   Trash2,
   X,
@@ -33,6 +34,7 @@ import {
   getItems,
   getShippingRules,
   saveItemDeliveryConfig,
+  polishItems,
   syncItemsFromAccount,
   updateItemDetail,
   updateItemMultiQuantity,
@@ -191,6 +193,9 @@ const ItemList: React.FC = () => {
   const [selectedAccount, setSelectedAccount] = useState('');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [polishing, setPolishing] = useState(false);
+  // 商品列表按账号过滤，多账号时避免混在一起看不清归属
+  const [listAccountFilter, setListAccountFilter] = useState('');
   const [savingKey, setSavingKey] = useState('');
   const [notice, setNotice] = useState<Notice>(null);
 
@@ -211,6 +216,11 @@ const ItemList: React.FC = () => {
       account.id,
       account.nickname || account.remark || `账号 ${account.id.substring(0, 6)}`,
     ])),
+    [accounts],
+  );
+
+  const accountAvatars = useMemo(
+    () => new Map(accounts.map(account => [account.id, account.avatar_url || ''])),
     [accounts],
   );
 
@@ -235,6 +245,11 @@ const ItemList: React.FC = () => {
       config,
     ])),
     [deliveryConfigs],
+  );
+
+  const visibleItems = useMemo(
+    () => (listAccountFilter ? items.filter(item => item.cookie_id === listAccountFilter) : items),
+    [items, listAccountFilter],
   );
 
   const configuredItemCount = useMemo(() => {
@@ -305,6 +320,21 @@ const ItemList: React.FC = () => {
       setNotice({ type: 'error', message: error instanceof Error ? error.message : '同步失败' });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  // 擦亮把商品重新推到搜索前列，平台对每日次数有限制，超出的会在结果里标记失败
+  const handlePolish = async () => {
+    setPolishing(true);
+    setNotice(null);
+    try {
+      const result = await polishItems(selectedAccount || undefined);
+      if (result?.success === false) throw new Error(result.message || '擦亮失败');
+      setNotice({ type: 'success', message: result?.message || '商品擦亮完成' });
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : '擦亮失败' });
+    } finally {
+      setPolishing(false);
     }
   };
 
@@ -658,6 +688,16 @@ const ItemList: React.FC = () => {
                 <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
                 {syncing ? '正在同步' : '同步商品'}
               </button>
+              <button
+                type="button"
+                onClick={handlePolish}
+                disabled={polishing || items.length === 0}
+                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+                title="重新获取搜索曝光，平台对每日擦亮次数有限制"
+              >
+                <Sparkles className={`h-4 w-4 ${polishing ? 'animate-pulse' : ''}`} />
+                {polishing ? '正在擦亮' : '一键擦亮'}
+              </button>
             </div>
           </div>
         </div>
@@ -665,20 +705,40 @@ const ItemList: React.FC = () => {
         <section className="section-panel">
           <SectionHeader
             title="商品列表"
-            description={`已配置专属发货 ${configuredItemCount} 件，覆盖 ${new Set(items.map(item => item.cookie_id)).size} 个账号。`}
+            description={`共 ${items.length} 件商品，已配置专属发货 ${configuredItemCount} 件，覆盖 ${new Set(items.map(item => item.cookie_id)).size} 个账号。`}
             icon={ShoppingBag}
           />
 
-          {items.length > 0 ? (
+          {accounts.length > 1 && (
+            <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-3">
+              <span className="text-xs font-semibold text-gray-500">按账号查看</span>
+              <select
+                value={listAccountFilter}
+                onChange={(event) => setListAccountFilter(event.target.value)}
+                className="ios-input rounded-md px-3 py-2 text-sm"
+                aria-label="按账号筛选商品"
+              >
+                <option value="">全部账号（{items.length}）</option>
+                {accounts.map(account => (
+                  <option key={account.id} value={account.id}>
+                    {accountNames.get(account.id)}（{items.filter(i => i.cookie_id === account.id).length}）
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {visibleItems.length > 0 ? (
             <>
-              <div className="hidden grid-cols-[minmax(300px,1.55fr)_minmax(220px,1.1fr)_minmax(170px,.8fr)_96px] gap-5 border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-bold text-gray-500 xl:grid">
+              <div className="hidden grid-cols-[minmax(260px,1.4fr)_minmax(130px,.7fr)_minmax(200px,1fr)_minmax(150px,.7fr)_96px] gap-5 border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-bold text-gray-500 xl:grid">
                 <span>商品信息</span>
+                <span>所属账号</span>
                 <span>专属自动发货</span>
                 <span>商品能力</span>
                 <span className="text-right">操作</span>
               </div>
               <div className="divide-y divide-gray-100">
-                {items.map(item => {
+                {visibleItems.map(item => {
                   const key = itemKey(item);
                   const busy = savingKey === key;
                   const rule = ruleMap.get(key);
@@ -712,7 +772,7 @@ const ItemList: React.FC = () => {
                   return (
                     <article
                       key={key}
-                      className="grid gap-4 px-4 py-4 transition-colors hover:bg-[#fffdf0] xl:grid-cols-[minmax(300px,1.55fr)_minmax(220px,1.1fr)_minmax(170px,.8fr)_96px] xl:items-center xl:gap-5"
+                      className="grid gap-4 px-4 py-4 transition-colors hover:bg-[#fffdf0] xl:grid-cols-[minmax(260px,1.4fr)_minmax(130px,.7fr)_minmax(200px,1fr)_minmax(150px,.7fr)_96px] xl:items-center xl:gap-5"
                     >
                       <div className="flex min-w-0 gap-3">
                         <div className="h-20 w-20 flex-none overflow-hidden rounded-md border border-gray-200 bg-gray-100">
@@ -728,12 +788,28 @@ const ItemList: React.FC = () => {
                             </span>
                           </div>
                           <p className="mt-1 text-lg font-bold text-[#d92d20]">{formatPrice(item.item_price)}</p>
-                          <p className="mt-1 truncate text-xs text-gray-500">
+                          <p className="mt-1 truncate font-mono text-xs text-gray-400">商品 ID {item.item_id}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 border-t border-gray-100 pt-3 xl:border-0 xl:pt-0">
+                        {accountAvatars.get(item.cookie_id) ? (
+                          <img
+                            src={accountAvatars.get(item.cookie_id)}
+                            alt=""
+                            className="h-7 w-7 flex-none rounded-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-gray-200 text-[10px] text-gray-500">
+                            {(accountNames.get(item.cookie_id) || '?').slice(0, 1)}
+                          </span>
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-semibold text-gray-800">
                             {accountNames.get(item.cookie_id) || '未命名账号'}
-                            <span className="mx-1.5 text-gray-300">·</span>
-                            <span className="font-mono">{item.cookie_id}</span>
                           </p>
-                          <p className="mt-0.5 truncate font-mono text-xs text-gray-400">商品 ID {item.item_id}</p>
+                          <p className="truncate font-mono text-[10px] text-gray-400">{item.cookie_id}</p>
                         </div>
                       </div>
 

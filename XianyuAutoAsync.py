@@ -276,6 +276,18 @@ class XianyuLive:
         if self.item_sync_task:
             status = "已完成" if self.item_sync_task.done() else "运行中"
             other_tasks_status.append(f"商品同步任务({status})")
+        if self.order_sync_task:
+            status = "已完成" if self.order_sync_task.done() else "运行中"
+            other_tasks_status.append(f"订单同步任务({status})")
+        if self.item_polish_task:
+            status = "已完成" if self.item_polish_task.done() else "运行中"
+            other_tasks_status.append(f"商品擦亮任务({status})")
+        if self.delivery_timeout_task:
+            status = "已完成" if self.delivery_timeout_task.done() else "运行中"
+            other_tasks_status.append(f"发货超时检查({status})")
+        if self.buyer_interaction_task:
+            status = "已完成" if self.buyer_interaction_task.done() else "运行中"
+            other_tasks_status.append(f"买家互动任务({status})")
 
         if other_tasks_status:
             logger.info(f"【{self.cookie_id}】其他任务继续运行（不依赖WebSocket）: {', '.join(other_tasks_status)}")
@@ -320,6 +332,30 @@ class XianyuLive:
                 else:
                     logger.debug(f"【{self.cookie_id}】商品同步任务已完成，跳过")
 
+            if self.order_sync_task:
+                if not self.order_sync_task.done():
+                    tasks_to_cancel.append(("订单同步任务", self.order_sync_task))
+                else:
+                    logger.debug(f"【{self.cookie_id}】订单同步任务已完成，跳过")
+
+            if self.item_polish_task:
+                if not self.item_polish_task.done():
+                    tasks_to_cancel.append(("商品擦亮任务", self.item_polish_task))
+                else:
+                    logger.debug(f"【{self.cookie_id}】商品擦亮任务已完成，跳过")
+
+            if self.delivery_timeout_task:
+                if not self.delivery_timeout_task.done():
+                    tasks_to_cancel.append(("发货超时检查", self.delivery_timeout_task))
+                else:
+                    logger.debug(f"【{self.cookie_id}】发货超时检查已完成，跳过")
+
+            if self.buyer_interaction_task:
+                if not self.buyer_interaction_task.done():
+                    tasks_to_cancel.append(("买家互动任务", self.buyer_interaction_task))
+                else:
+                    logger.debug(f"【{self.cookie_id}】买家互动任务已完成，跳过")
+
             if not tasks_to_cancel:
                 logger.info(f"【{self.cookie_id}】没有后台任务需要取消（所有任务已完成或不存在）")
                 # 立即重置任务引用
@@ -328,6 +364,10 @@ class XianyuLive:
                 self.cleanup_task = None
                 self.cookie_refresh_task = None
                 self.item_sync_task = None
+                self.order_sync_task = None
+                self.item_polish_task = None
+                self.delivery_timeout_task = None
+                self.buyer_interaction_task = None
                 return
             
             logger.info(f"【{self.cookie_id}】开始取消 {len(tasks_to_cancel)} 个未完成的后台任务...")
@@ -463,18 +503,48 @@ class XianyuLive:
             self.cleanup_task = None
             self.cookie_refresh_task = None
             self.item_sync_task = None
+            self.order_sync_task = None
+            self.item_polish_task = None
+            self.delivery_timeout_task = None
+            self.buyer_interaction_task = None
             logger.info(f"【{self.cookie_id}】后台任务引用已全部重置")
+
+    # 平台风控/人机验证的特征串。命中后必须大幅退避 —— 继续高频重试只会
+    # 让风控持续时间更长，实测无退避时会形成每分钟数百次请求的重试风暴。
+    RISK_CONTROL_MARKERS = (
+        'RGV587_ERROR',
+        'FAIL_SYS_USER_VALIDATE',
+        '哎哟喂',
+        '被挤爆',
+        'FAIL_SYS_FLOW_LIMIT',
+        '请稍后重试',
+    )
+
+    @classmethod
+    def is_risk_control_error(cls, message) -> bool:
+        """判断错误是否来自平台风控或限流。"""
+        text = str(message or '')
+        return any(marker in text for marker in cls.RISK_CONTROL_MARKERS)
 
     def _calculate_retry_delay(self, error_msg: str) -> int:
         """根据错误类型和失败次数计算重试延迟"""
+        # 平台风控 - 指数退避，最长 30 分钟
+        if self.is_risk_control_error(error_msg):
+            delay = min(60 * (2 ** max(0, self.connection_failures - 1)), 1800)
+            logger.warning(
+                f"【{self.cookie_id}】检测到平台风控，退避 {delay} 秒后重试"
+                f"（第 {self.connection_failures} 次）"
+            )
+            return delay
+
         # WebSocket意外断开 - 短延迟
         if "no close frame received or sent" in error_msg:
             return min(3 * self.connection_failures, 15)
-        
+
         # 网络连接问题 - 长延迟
         elif "Connection refused" in error_msg or "timeout" in error_msg.lower():
             return min(10 * self.connection_failures, 60)
-        
+
         # 其他未知错误 - 中等延迟
         else:
             return min(5 * self.connection_failures, 30)
@@ -701,6 +771,9 @@ class XianyuLive:
         self.delivery_sent_orders = set()  # 记录已发货的订单ID，防止重复发货
         self.delivery_blocked_orders = set()  # 部分发货或内容已消耗的订单，阻止自动重试造成重复发送
 
+        # 交易卡片落库前暂存卖家端接口返回的真实成交数据（金额、数量、收货信息）
+        self._pending_order_real_values = {}
+
         self.session = None  # 用于API调用的aiohttp session
 
         # 启动定期清理过期暂停记录的任务
@@ -720,6 +793,23 @@ class XianyuLive:
         self.item_sync_max_pages = cfg.get('ITEM_SYNC', {}).get('max_pages', 5)
         self.last_item_sync_time = 0
         self.item_sync_lock = asyncio.Lock()  # 使用Lock防止重复执行商品同步
+
+        # 订单同步定时任务：从卖家端接口拉全量，补齐监听离线期间的订单
+        self.order_sync_task = None
+        self.last_order_sync_time = 0
+
+        # 商品擦亮定时任务：重新获取搜索曝光，默认关闭
+        self.item_polish_task = None
+        self.last_polish_time = 0
+
+        # 发货超时告警：记录已提醒过的订单，避免重复推送
+        self.delivery_timeout_task = None
+        self._delivery_timeout_alerted = set()
+
+        # 买家互动（评价/求花）：记录已处理订单，两者都默认关闭
+        self.buyer_interaction_task = None
+        self._auto_rated_orders = set()
+        self._auto_flowered_orders = set()
 
         # 扫码登录Cookie刷新标志
         self.last_qr_cookie_refresh_time = 0  # 记录上次扫码登录Cookie刷新时间
@@ -949,7 +1039,9 @@ class XianyuLive:
         data_payload = {
             "tid": str(order_id),
             "bizOrderId": str(order_id),
-            "closeReason": "其他原因",
+            # 卖家版关单理由与买家版取值完全不同，可选值为：
+            # 不想卖了 / 宝贝已出售 / 买家联系不上 / 与买家协商一致 / 其他原因
+            "closeReason": "宝贝已出售",
         }
         data_val = json.dumps(data_payload, separators=(',', ':'), ensure_ascii=False)
         timestamp = str(int(time.time() * 1000))
@@ -1441,22 +1533,38 @@ class XianyuLive:
                 except (TypeError, ValueError, OSError):
                     created_at = None
 
+            # 金额和数量必须来自卖家端接口的真实成交数据。
+            # 旧实现取商品挂牌价并把数量固定为 1，多件和议价订单会算错，
+            # 这里只在接口不可用时保留状态，不再伪造金额。
             amount = None
-            if item_id:
-                item_info = db_manager.get_item_info(self.cookie_id, item_id)
-                if item_info and item_info.get("item_price") is not None:
-                    amount = re.sub(r"^[¥￥]\s*", "", str(item_info["item_price"])).strip()
+            buy_num = None
+            auction_price = None
+            confirm_fee = None
+            refund_fee = None
+            post_fee = None
+            receiver_name = None
+            receiver_phone = None
+            receiver_address = None
+            real_values = self._pending_order_real_values.pop(order_id, None)
+            if real_values:
+                amount = real_values.get("amount") or None
+                buy_num = real_values.get("buy_num")
+                auction_price = real_values.get("auction_price") or None
+                confirm_fee = real_values.get("confirm_fee") or None
+                refund_fee = real_values.get("refund_fee") or None
+                post_fee = real_values.get("post_fee") or None
+                receiver_name = real_values.get("receiver_name") or None
+                receiver_phone = real_values.get("receiver_phone") or None
+                receiver_address = real_values.get("receiver_address") or None
 
             existing_order = db_manager.get_order_by_id(order_id)
             snapshot_item_id = item_id
             snapshot_buyer_id = buyer_id
-            snapshot_quantity = "1"
+            snapshot_quantity = str(buy_num) if buy_num else None
             snapshot_created_at = created_at
             if existing_order:
                 snapshot_item_id = item_id if not existing_order.get("item_id") else None
                 snapshot_buyer_id = buyer_id if not existing_order.get("buyer_id") else None
-                snapshot_quantity = "1" if not existing_order.get("quantity") else None
-                amount = amount if not existing_order.get("amount") else None
                 snapshot_created_at = created_at if not existing_order.get("created_at") else None
 
             saved = db_manager.insert_or_update_order(
@@ -1469,16 +1577,88 @@ class XianyuLive:
                 cookie_id=self.cookie_id,
                 created_at=snapshot_created_at,
                 chat_id=chat_id,
+                buy_num=buy_num,
+                auction_price=auction_price,
+                confirm_fee=confirm_fee,
+                refund_fee=refund_fee,
+                post_fee=post_fee,
+                receiver_name=receiver_name,
+                receiver_phone=receiver_phone,
+                receiver_address=receiver_address,
             )
             if saved:
+                source = "卖家端接口" if real_values else "交易卡片"
                 logger.info(
-                    f"【{self.cookie_id}】订单详情尚未拉取，已按交易卡片保存订单快照: "
+                    f"【{self.cookie_id}】已保存订单快照（金额来源: {source}）: "
                     f"order_id={order_id}, item_id={item_id}, buyer_id={buyer_id}, status={order_status}"
                 )
             return saved
         except Exception as e:
             logger.error(f"【{self.cookie_id}】保存订单事件快照失败 {order_id}: {self._safe_str(e)}")
             return False
+
+    async def fetch_order_real_values(self, order_id: str) -> dict:
+        """通过卖家端 sold.get 获取订单的真实成交数据。
+
+        取代按商品挂牌价推算金额的做法；失败时返回空字典，由调用方决定降级策略。
+        """
+        if not order_id or not self.cookies_str:
+            return {}
+
+        try:
+            from utils.xianyu_seller_api import (
+                XianyuSellerAPI,
+                SellerApiError,
+                parse_sold_order,
+            )
+
+            api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+            try:
+                batch = await api.get_sold_orders(order_ids=str(order_id), rows_per_page=10)
+                # 卖家端会下发新的签名令牌，同步回本实例避免后续请求失效
+                if api.cookies_str and api.cookies_str != self.cookies_str:
+                    self.cookies_str = api.cookies_str
+            finally:
+                await api.close()
+
+            for item in batch.get("items") or []:
+                parsed = parse_sold_order(item)
+                if parsed.get("order_id") == str(order_id):
+                    return parsed
+
+            logger.warning(f"【{self.cookie_id}】卖家端未返回订单 {order_id} 的成交数据")
+            return {}
+        except SellerApiError as exc:
+            logger.warning(f"【{self.cookie_id}】获取订单真实成交数据失败 {order_id}: {exc}")
+            return {}
+        except Exception as e:
+            logger.error(
+                f"【{self.cookie_id}】获取订单真实成交数据异常 {order_id}: {self._safe_str(e)}"
+            )
+            return {}
+
+    async def sync_sold_orders(self, days: int = 7, query_code: str = "ALL") -> dict:
+        """全量同步卖出订单，作为消息驱动的兜底对账。
+
+        不按时间筛选 —— 卖家端接口本身只保留近期订单，加时间条件会把边界订单切掉。
+        ``days`` 和 ``query_code`` 仅为兼容旧调用保留，实际不再使用。
+
+        Returns:
+            ``{"total": int, "saved": int, "failed": int, ...}``
+        """
+        if not self.cookies_str:
+            return {"total": 0, "saved": 0, "failed": 0}
+
+        from utils.seller_order_sync import sync_account_orders
+
+        result = await sync_account_orders(self.cookie_id, self.cookies_str)
+
+        # 同步接口下发的新令牌，避免后续请求签名失效
+        new_cookies = result.get("cookies_str")
+        if new_cookies and new_cookies != self.cookies_str:
+            self.cookies_str = new_cookies
+
+        return result
 
     async def _handle_auto_delivery(self, websocket, message: dict, send_user_name: str, send_user_id: str,
                                    item_id: str, chat_id: str, msg_time: str):
@@ -1848,6 +2028,17 @@ class XianyuLive:
             # 重置“刷新流程内已重启”标记，避免多次重启
             self.restarted_in_browser_refresh = False
 
+            # 风控冷却期内不再尝试刷新 —— 持续请求会让风控一直不解除
+            from utils import risk_control
+            guard = risk_control.registry.get(self.cookie_id)
+            if guard.is_blocked:
+                logger.warning(
+                    f"【{self.cookie_id}】处于风控冷却期（剩余 {guard.remaining_seconds} 秒），"
+                    f"跳过本次 Token 刷新"
+                )
+                self.last_token_refresh_status = "risk_control_blocked"
+                return None
+
             # 检查滑块验证重试次数，防止无限递归
             if captcha_retry_count >= self.max_captcha_verification_count:
                 logger.error(f"【{self.cookie_id}】滑块验证重试次数已达上限 ({self.max_captcha_verification_count})，停止重试")
@@ -2010,6 +2201,7 @@ class XianyuLive:
                                 logger.info(f"【{self.cookie_id}】Token刷新成功")
                                 # 标记为成功
                                 self.last_token_refresh_status = "success"
+                                risk_control.registry.get(self.cookie_id).reset()
                                 return new_token
 
                     # 检查是否需要滑块验证
@@ -2115,16 +2307,21 @@ class XianyuLive:
                                 # 返回None，让调用者知道刷新失败
                                 return None
                             else:
-                                # 刷新成功后，重新尝试获取token
-                                return await self.refresh_token(captcha_retry_count)
-                                
-                                # 刷新失败时继续执行原有的失败处理逻辑
+                                # 刷新成功后重新获取 token。必须递增计数，否则上限判断
+                                # 永远不成立，会形成无限递归重试并持续加剧平台风控。
+                                return await self.refresh_token(captcha_retry_count + 1)
 
                     ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
                     logger.error(
                         f"【{self.cookie_id}】Token刷新失败: status={response.status}, "
                         f"ret={ret_value[:3]}, response_type={type(res_json).__name__}"
                     )
+
+                    # 平台风控：立刻熔断，避免重试风暴反复触发验证
+                    if risk_control.is_risk_control_error(json.dumps(ret_value, ensure_ascii=False)):
+                        guard.trip(str(ret_value[:2]))
+                        self.last_token_refresh_status = "risk_control"
+                        return None
 
                     # 清空当前token，确保下次重试时重新获取
                     self.current_token = None
@@ -3284,6 +3481,44 @@ class XianyuLive:
         }
 
     async def fetch_account_profile(self):
+        """获取账号公开资料。
+
+        优先走接口直连：``mtop.idle.web.user.page.head`` 直接返回结构化的昵称和
+        头像，不依赖浏览器。Playwright 抓页面留作兜底 —— 浏览器版本不匹配或未安装
+        时那条路会整个失效，而资料为空会让账号列表看起来像没登录成功。
+        """
+        try:
+            from utils.xianyu_seller_api import (
+                XianyuSellerAPI,
+                SellerApiError,
+                parse_user_profile,
+            )
+
+            api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+            try:
+                profile = parse_user_profile(await api.get_user_profile())
+                if api.cookies_str and api.cookies_str != self.cookies_str:
+                    self.cookies_str = api.cookies_str
+            finally:
+                await api.close()
+
+            if profile.get('nickname') or profile.get('avatar_url'):
+                logger.info(
+                    f"【{self.cookie_id}】账号资料获取成功（接口直连）: "
+                    f"{profile.get('nickname')}"
+                )
+                return {'success': True, 'profile': profile}
+            logger.info(f"【{self.cookie_id}】接口未返回资料，回退浏览器抓取")
+        except SellerApiError as exc:
+            logger.info(f"【{self.cookie_id}】资料接口调用失败，回退浏览器抓取: {exc}")
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】资料接口异常，回退浏览器抓取: {self._safe_str(exc)}"
+            )
+
+        return await self._fetch_account_profile_by_browser()
+
+    async def _fetch_account_profile_by_browser(self):
         """使用当前账号Cookie只读抓取闲鱼个人页公开资料。"""
         playwright = None
         browser = None
@@ -3707,7 +3942,7 @@ class XianyuLive:
         params = {
             'jsv': '2.7.2',
             'appKey': '34839810',
-            't': str(int(time.time()) * 1000),
+            't': str(int(time.time() * 1000)),
             'sign': '',
             'v': '1.0',
             'type': 'originaljson',
@@ -4279,6 +4514,63 @@ class XianyuLive:
             return float(price_clean) if price_clean else 0.0
         except:
             return 0.0
+
+    async def send_system_notification(self, message: str) -> int:
+        """把系统级消息推送到该账号绑定的全部通知渠道。
+
+        与 :meth:`send_notification` 的区别是不依赖买家消息上下文，
+        供发货超时告警这类主动通知使用。
+
+        Returns:
+            成功发送的渠道数。
+        """
+        if not message:
+            return 0
+
+        try:
+            from app.db_manager import db_manager
+
+            notifications = db_manager.get_account_notifications(self.cookie_id) or []
+        except Exception as e:
+            logger.error(f"📱 读取通知渠道失败: {self._safe_str(e)}")
+            return 0
+
+        sent = 0
+        for notification in notifications:
+            if not notification.get('enabled', True):
+                continue
+
+            channel_type = notification.get('channel_type')
+            try:
+                config_data = self._parse_notification_config(
+                    notification.get('channel_config')
+                )
+                match channel_type:
+                    case 'ding_talk' | 'dingtalk':
+                        await self._send_dingtalk_notification(config_data, message)
+                    case 'feishu' | 'lark':
+                        await self._send_feishu_notification(config_data, message)
+                    case 'bark':
+                        await self._send_bark_notification(config_data, message)
+                    case 'email':
+                        await self._send_email_notification(config_data, message)
+                    case 'webhook':
+                        await self._send_webhook_notification(config_data, message)
+                    case 'wechat':
+                        await self._send_wechat_notification(config_data, message)
+                    case 'telegram':
+                        await self._send_telegram_notification(config_data, message)
+                    case _:
+                        logger.warning(f"📱 不支持的通知渠道类型: {channel_type}")
+                        continue
+                sent += 1
+            except Exception as notify_error:
+                logger.error(
+                    f"📱 发送系统通知失败 ({notification.get('channel_name', 'Unknown')}): "
+                    f"{self._safe_str(notify_error)}"
+                )
+
+        return sent
 
     async def send_notification(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str = None, chat_id: str = None):
         """发送消息通知"""
@@ -5201,13 +5493,36 @@ class XianyuLive:
                 cookie_string = self.cookies_str
                 logger.warning(f"【{self.cookie_id}】使用Cookie长度: {len(cookie_string) if cookie_string else 0}")
 
-                # 确定是否使用有头模式（调试用）
-                headless_mode = True if debug_headless is None else debug_headless
-                if not headless_mode:
-                    logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
+                # 优先走卖家端接口直连：一次两个 HTTP 请求即可拿到成交额、规格和
+                # 收货信息，无需启动浏览器。缺规格时说明接口没覆盖，再回退抓页面。
+                result = None
+                try:
+                    from utils.seller_order_sync import fetch_order_detail_direct
 
-                # 异步获取订单详情（使用当前账号的cookie）
-                result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+                    direct = await fetch_order_detail_direct(
+                        self.cookie_id, cookie_string, order_id
+                    )
+                    if direct and direct.get('spec_value'):
+                        result = direct
+                        logger.info(f"【{self.cookie_id}】订单详情已通过卖家端接口获取: {order_id}")
+                    elif direct:
+                        logger.info(
+                            f"【{self.cookie_id}】卖家端接口未返回规格，回退浏览器抓取: {order_id}"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        f"【{self.cookie_id}】卖家端接口获取订单详情失败，回退浏览器: "
+                        f"{self._safe_str(exc)}"
+                    )
+
+                if not result:
+                    # 确定是否使用有头模式（调试用）
+                    headless_mode = True if debug_headless is None else debug_headless
+                    if not headless_mode:
+                        logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
+
+                    # 异步获取订单详情（使用当前账号的cookie）
+                    result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
@@ -5264,7 +5579,13 @@ class XianyuLive:
                                 created_at=order_time,
                                 receiver_name=receiver_name,
                                 receiver_phone=receiver_phone,
-                                receiver_address=receiver_address
+                                receiver_address=receiver_address,
+                                # 卖家端接口返回的成交明细，浏览器抓取时这些字段为空
+                                buy_num=result.get('buy_num'),
+                                auction_price=result.get('auction_price') or None,
+                                confirm_fee=result.get('confirm_fee') or None,
+                                refund_fee=result.get('refund_fee') or None,
+                                post_fee=result.get('post_fee') or None
                             )
                             
                             # 使用订单状态处理器设置状态
@@ -6127,6 +6448,15 @@ class XianyuLive:
     async def _send_im_request(self, lwp, body, timeout=15):
         websocket = self.ws
         if websocket is None:
+            # 风控冷却期内连接建不起来，给出可操作的提示而不是笼统的"未连接"
+            from utils import risk_control
+
+            guard = risk_control.registry.get(self.cookie_id)
+            if guard.is_blocked:
+                minutes = max(1, guard.remaining_seconds // 60)
+                raise ConnectionError(
+                    f"闲鱼要求人机验证，账号暂停请求中（约 {minutes} 分钟后自动重试）"
+                )
             raise ConnectionError("账号尚未连接闲鱼消息服务")
 
         closed = getattr(websocket, "closed", False)
@@ -6571,6 +6901,467 @@ class XianyuLive:
         finally:
             # 确保任务能正常结束
             logger.info(f"【{self.cookie_id}】商品同步循环已退出")
+
+
+    async def order_sync_loop(self):
+        """订单同步定时任务。
+
+        消息驱动只能捕获监听在线期间的订单事件，离线时段产生的订单会完全丢失，
+        这里定期从卖家端接口拉全量做对账。间隔可在系统设置里调整。
+        """
+        # 启动错峰：多账号多任务同时发请求容易触发平台风控
+        await self._interruptible_sleep(random.uniform(0, 120))
+        try:
+            while True:
+                try:
+                    from app.cookie_manager import manager as cookie_manager
+                    if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                        logger.info(f"【{self.cookie_id}】账号已禁用，停止订单同步循环")
+                        break
+
+                    from app.db_manager import db_manager
+                    enabled_str = db_manager.get_system_setting('order_sync_enabled')
+                    interval_str = db_manager.get_system_setting('order_sync_interval')
+
+                    # 默认开启，间隔 30 分钟
+                    enabled = enabled_str != 'false'
+                    try:
+                        interval = int(interval_str) if interval_str else 7200
+                    except (TypeError, ValueError):
+                        interval = 7200
+                    # 订单同步会翻多页，是请求量最大的任务，最短 30 分钟
+                    interval = max(1800, interval)
+
+                    if not enabled:
+                        await self._interruptible_sleep(60)
+                        continue
+
+                    current_time = time.time()
+                    if current_time - self.last_order_sync_time < interval:
+                        wait_time = min(60, interval - (current_time - self.last_order_sync_time))
+                        await self._interruptible_sleep(wait_time)
+                        continue
+
+                    if not self.cookies_str:
+                        await self._interruptible_sleep(60)
+                        continue
+
+                    # 风控冷却期内不发任何主动请求
+                    from utils import risk_control
+                    guard = risk_control.registry.get(self.cookie_id)
+                    if guard.is_blocked:
+                        wait = min(guard.remaining_seconds + 5, 300)
+                        logger.debug(
+                            f"【{self.cookie_id}】风控冷却中，{wait} 秒后再检查"
+                        )
+                        await self._interruptible_sleep(wait)
+                        continue
+
+                    try:
+                        from utils.seller_order_sync import sync_account_orders
+
+                        result = await sync_account_orders(self.cookie_id, self.cookies_str)
+                        self.last_order_sync_time = current_time
+
+                        new_cookies = result.get('cookies_str')
+                        if new_cookies and new_cookies != self.cookies_str:
+                            self.cookies_str = new_cookies
+
+                        logger.info(
+                            f"【{self.cookie_id}】定时订单同步完成: 共 {result['total']} 单，"
+                            f"成功 {result['saved']}，失败 {result['failed']}"
+                        )
+                    except asyncio.CancelledError:
+                        logger.info(f"【{self.cookie_id}】订单同步被取消")
+                        raise
+                    except Exception as sync_error:
+                        logger.error(
+                            f"【{self.cookie_id}】订单同步异常: {self._safe_str(sync_error)}"
+                        )
+
+                    await self._interruptible_sleep(interval)
+
+                except asyncio.CancelledError:
+                    logger.info(f"【{self.cookie_id}】订单同步循环收到取消信号，准备退出")
+                    raise
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】订单同步任务失败: {self._safe_str(e)}")
+                    try:
+                        await self._interruptible_sleep(60)
+                    except asyncio.CancelledError:
+                        raise
+        except asyncio.CancelledError:
+            logger.info(f"【{self.cookie_id}】订单同步循环已取消，正在退出...")
+            raise
+        finally:
+            logger.info(f"【{self.cookie_id}】订单同步循环已退出")
+
+
+    async def item_polish_loop(self):
+        """商品擦亮定时任务。
+
+        擦亮会把商品重新推到搜索和推荐前列，是平台提供的免费曝光手段。
+        平台对每个商品每天的擦亮次数有限制，超出会返回业务错误但不影响流程。
+        默认关闭，需要在设置里开启。
+        """
+        # 启动错峰：多账号多任务同时发请求容易触发平台风控
+        await self._interruptible_sleep(random.uniform(0, 180))
+        try:
+            while True:
+                try:
+                    from app.cookie_manager import manager as cookie_manager
+                    if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                        logger.info(f"【{self.cookie_id}】账号已禁用，停止商品擦亮循环")
+                        break
+
+                    from app.db_manager import db_manager
+                    enabled_str = db_manager.get_system_setting('auto_polish_enabled')
+                    interval_str = db_manager.get_system_setting('auto_polish_interval')
+
+                    # 默认关闭：擦亮是对外动作，由用户显式开启
+                    enabled = str(enabled_str or '').strip().lower() in ('1', 'true', 'yes')
+                    try:
+                        interval = int(interval_str) if interval_str else 21600
+                    except (TypeError, ValueError):
+                        interval = 21600
+                    # 擦亮太频繁没有意义，最短 1 小时
+                    interval = max(3600, interval)
+
+                    if not enabled:
+                        await self._interruptible_sleep(120)
+                        continue
+
+                    current_time = time.time()
+                    if current_time - self.last_polish_time < interval:
+                        wait_time = min(120, interval - (current_time - self.last_polish_time))
+                        await self._interruptible_sleep(wait_time)
+                        continue
+
+                    if not self.cookies_str:
+                        await self._interruptible_sleep(120)
+                        continue
+
+                    # 风控冷却期内不发任何主动请求
+                    from utils import risk_control
+                    guard = risk_control.registry.get(self.cookie_id)
+                    if guard.is_blocked:
+                        wait = min(guard.remaining_seconds + 5, 300)
+                        logger.debug(
+                            f"【{self.cookie_id}】风控冷却中，{wait} 秒后再检查"
+                        )
+                        await self._interruptible_sleep(wait)
+                        continue
+
+                    try:
+                        from utils.item_polish import polish_account_items
+
+                        result = await polish_account_items(self.cookie_id, self.cookies_str)
+                        self.last_polish_time = current_time
+
+                        new_cookies = result.get('cookies_str')
+                        if new_cookies and new_cookies != self.cookies_str:
+                            self.cookies_str = new_cookies
+
+                        if result['total']:
+                            logger.info(
+                                f"【{self.cookie_id}】定时擦亮完成: 共 {result['total']} 个商品，"
+                                f"成功 {result['success']}，失败 {result['failed']}"
+                            )
+                    except asyncio.CancelledError:
+                        logger.info(f"【{self.cookie_id}】商品擦亮被取消")
+                        raise
+                    except Exception as polish_error:
+                        logger.error(
+                            f"【{self.cookie_id}】商品擦亮异常: {self._safe_str(polish_error)}"
+                        )
+
+                    await self._interruptible_sleep(interval)
+
+                except asyncio.CancelledError:
+                    logger.info(f"【{self.cookie_id}】商品擦亮循环收到取消信号，准备退出")
+                    raise
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】商品擦亮任务失败: {self._safe_str(e)}")
+                    try:
+                        await self._interruptible_sleep(120)
+                    except asyncio.CancelledError:
+                        raise
+        except asyncio.CancelledError:
+            logger.info(f"【{self.cookie_id}】商品擦亮循环已取消，正在退出...")
+            raise
+        finally:
+            logger.info(f"【{self.cookie_id}】商品擦亮循环已退出")
+
+
+    async def delivery_timeout_loop(self):
+        """发货超时告警。
+
+        闲鱼对超时未发货有处罚。卖家端订单接口提供了两个预警状态：
+        ``NOT_SHIP_ABOUT_TO_EXPIRE``（即将超时）和 ``NOT_SHIP_EXPIRED``（已超时），
+        这里定期检查并推送到通知渠道。同一订单同一状态只提醒一次。
+        """
+        # 启动错峰：多账号多任务同时发请求容易触发平台风控
+        await self._interruptible_sleep(random.uniform(0, 90))
+        try:
+            while True:
+                try:
+                    from app.cookie_manager import manager as cookie_manager
+                    if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                        logger.info(f"【{self.cookie_id}】账号已禁用，停止发货超时检查")
+                        break
+
+                    from app.db_manager import db_manager
+                    enabled_str = db_manager.get_system_setting('delivery_timeout_alert_enabled')
+                    interval_str = db_manager.get_system_setting('delivery_timeout_interval')
+
+                    # 默认开启：超时会被平台处罚，属于必要提醒
+                    enabled = str(enabled_str or '').strip().lower() != 'false'
+                    try:
+                        interval = int(interval_str) if interval_str else 3600
+                    except (TypeError, ValueError):
+                        interval = 3600
+                    interval = max(900, interval)
+
+                    if not enabled or not self.cookies_str:
+                        await self._interruptible_sleep(120)
+                        continue
+
+                    # 风控冷却期内不发任何主动请求
+                    from utils import risk_control
+                    guard = risk_control.registry.get(self.cookie_id)
+                    if guard.is_blocked:
+                        wait = min(guard.remaining_seconds + 5, 300)
+                        logger.debug(
+                            f"【{self.cookie_id}】风控冷却中，{wait} 秒后再检查"
+                        )
+                        await self._interruptible_sleep(wait)
+                        continue
+
+                    try:
+                        await self._check_delivery_timeout()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as check_error:
+                        logger.error(
+                            f"【{self.cookie_id}】发货超时检查异常: {self._safe_str(check_error)}"
+                        )
+
+                    await self._interruptible_sleep(interval)
+
+                except asyncio.CancelledError:
+                    logger.info(f"【{self.cookie_id}】发货超时检查收到取消信号，准备退出")
+                    raise
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】发货超时检查失败: {self._safe_str(e)}")
+                    try:
+                        await self._interruptible_sleep(120)
+                    except asyncio.CancelledError:
+                        raise
+        except asyncio.CancelledError:
+            logger.info(f"【{self.cookie_id}】发货超时检查已取消，正在退出...")
+            raise
+        finally:
+            logger.info(f"【{self.cookie_id}】发货超时检查已退出")
+
+    async def _check_delivery_timeout(self) -> int:
+        """查询即将超时和已超时的待发货订单并推送告警。
+
+        Returns:
+            本次新提醒的订单数。
+        """
+        from utils.xianyu_seller_api import (
+            XianyuSellerAPI,
+            SellerApiError,
+            parse_sold_order,
+        )
+
+        alerts = []
+        api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+        try:
+            for query_code, label in (
+                ("NOT_SHIP_ABOUT_TO_EXPIRE", "即将超时"),
+                ("NOT_SHIP_EXPIRED", "已超时"),
+            ):
+                try:
+                    batch = await api.get_sold_orders(
+                        query_code=query_code, rows_per_page=50
+                    )
+                except SellerApiError as exc:
+                    logger.debug(f"【{self.cookie_id}】查询 {query_code} 失败: {exc}")
+                    continue
+
+                for item in batch.get("items") or []:
+                    parsed = parse_sold_order(item)
+                    order_id = parsed.get("order_id")
+                    if not order_id:
+                        continue
+                    # 同一订单的同一告警级别只提醒一次，避免重复轰炸
+                    alert_key = f"{order_id}:{query_code}"
+                    if alert_key in self._delivery_timeout_alerted:
+                        continue
+                    self._delivery_timeout_alerted.add(alert_key)
+                    alerts.append((label, parsed))
+
+            if self.cookies_str != api.cookies_str and api.cookies_str:
+                self.cookies_str = api.cookies_str
+        finally:
+            await api.close()
+
+        if not alerts:
+            return 0
+
+        lines = [f"⚠️ 发货超时提醒（账号 {self.cookie_id}）", ""]
+        for label, parsed in alerts:
+            lines.append(
+                f"[{label}] 订单 {parsed['order_id']}\n"
+                f"  商品: {parsed.get('item_title') or '未知'}\n"
+                f"  金额: {parsed.get('amount') or '未知'}\n"
+                f"  下单: {parsed.get('created_at') or '未知'}"
+            )
+        lines.append("")
+        lines.append("请尽快处理，超时未发货会被平台处罚。")
+
+        message = "\n".join(lines)
+        sent = await self.send_system_notification(message)
+        logger.warning(
+            f"【{self.cookie_id}】发货超时告警: {len(alerts)} 个订单，已推送 {sent} 个渠道"
+        )
+        return len(alerts)
+
+
+    async def buyer_interaction_loop(self):
+        """自动评价与求小红花。
+
+        两者都会对买家产生实际动作（评价不可撤销、求花会发消息），因此默认关闭，
+        需要在设置里显式开启。同一订单只处理一次。
+        """
+        # 启动错峰：多账号多任务同时发请求容易触发平台风控
+        await self._interruptible_sleep(random.uniform(0, 240))
+        try:
+            while True:
+                try:
+                    from app.cookie_manager import manager as cookie_manager
+                    if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                        logger.info(f"【{self.cookie_id}】账号已禁用，停止买家互动任务")
+                        break
+
+                    from app.db_manager import db_manager
+                    rate_on = str(db_manager.get_system_setting('auto_rate_enabled') or '').strip().lower() in ('1', 'true', 'yes')
+                    flower_on = str(db_manager.get_system_setting('auto_flower_enabled') or '').strip().lower() in ('1', 'true', 'yes')
+                    interval_str = db_manager.get_system_setting('buyer_interaction_interval')
+                    try:
+                        interval = int(interval_str) if interval_str else 7200
+                    except (TypeError, ValueError):
+                        interval = 7200
+                    interval = max(1800, interval)
+
+                    if (not rate_on and not flower_on) or not self.cookies_str:
+                        await self._interruptible_sleep(180)
+                        continue
+
+                    # 风控冷却期内不发任何主动请求
+                    from utils import risk_control
+                    guard = risk_control.registry.get(self.cookie_id)
+                    if guard.is_blocked:
+                        wait = min(guard.remaining_seconds + 5, 300)
+                        logger.debug(
+                            f"【{self.cookie_id}】风控冷却中，{wait} 秒后再检查"
+                        )
+                        await self._interruptible_sleep(wait)
+                        continue
+
+                    try:
+                        await self._run_buyer_interactions(rate_on, flower_on)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as run_error:
+                        logger.error(
+                            f"【{self.cookie_id}】买家互动执行异常: {self._safe_str(run_error)}"
+                        )
+
+                    await self._interruptible_sleep(interval)
+
+                except asyncio.CancelledError:
+                    logger.info(f"【{self.cookie_id}】买家互动任务收到取消信号，准备退出")
+                    raise
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】买家互动任务失败: {self._safe_str(e)}")
+                    try:
+                        await self._interruptible_sleep(180)
+                    except asyncio.CancelledError:
+                        raise
+        except asyncio.CancelledError:
+            logger.info(f"【{self.cookie_id}】买家互动任务已取消，正在退出...")
+            raise
+        finally:
+            logger.info(f"【{self.cookie_id}】买家互动任务已退出")
+
+    async def _run_buyer_interactions(self, rate_on: bool, flower_on: bool) -> dict:
+        """对已完结订单执行评价和求花。
+
+        判定依据来自订单接口：``sellerRateStatus`` 为 4 表示卖家已评价，
+        ``REQUIRE_FLOWER`` 出现在可执行动作里才说明该单能求花。
+        """
+        from app.db_manager import db_manager
+        from utils.xianyu_seller_api import (
+            XianyuSellerAPI,
+            SellerApiError,
+            parse_sold_order,
+        )
+
+        rate_content = db_manager.get_system_setting('auto_rate_content') or '感谢惠顾，欢迎下次光临！'
+        rated = 0
+        flowered = 0
+
+        api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+        try:
+            try:
+                batch = await api.get_sold_orders(
+                    query_code='TRADE_SUCCESS', rows_per_page=50
+                )
+            except SellerApiError as exc:
+                logger.debug(f"【{self.cookie_id}】查询已完结订单失败: {exc}")
+                return {'rated': 0, 'flowered': 0}
+
+            for item in batch.get('items') or []:
+                parsed = parse_sold_order(item)
+                order_id = parsed.get('order_id')
+                if not order_id:
+                    continue
+                actions = parsed.get('trade_actions') or []
+
+                if rate_on and order_id not in self._auto_rated_orders:
+                    # sellerRateStatus 为 4 表示已评价过
+                    if parsed.get('seller_rate_status') != 4:
+                        try:
+                            result = await api.create_rate([order_id], feedback=rate_content, rate=1)
+                            if result.get('success'):
+                                rated += 1
+                                logger.info(f"【{self.cookie_id}】订单 {order_id} 已自动评价")
+                        except SellerApiError as exc:
+                            logger.warning(f"【{self.cookie_id}】订单 {order_id} 评价失败: {exc}")
+                    self._auto_rated_orders.add(order_id)
+
+                if flower_on and order_id not in self._auto_flowered_orders:
+                    if 'REQUIRE_FLOWER' in actions:
+                        try:
+                            await api.require_flower(order_id)
+                            flowered += 1
+                            logger.info(f"【{self.cookie_id}】订单 {order_id} 已发送求花")
+                        except SellerApiError as exc:
+                            logger.warning(f"【{self.cookie_id}】订单 {order_id} 求花失败: {exc}")
+                    self._auto_flowered_orders.add(order_id)
+
+            if api.cookies_str and api.cookies_str != self.cookies_str:
+                self.cookies_str = api.cookies_str
+        finally:
+            await api.close()
+
+        if rated or flowered:
+            logger.info(
+                f"【{self.cookie_id}】买家互动完成: 评价 {rated} 单，求花 {flowered} 单"
+            )
+        return {'rated': rated, 'flowered': flowered}
 
 
     async def cookie_refresh_loop(self):
@@ -8767,8 +9558,12 @@ class XianyuLive:
                         except:
                             pass
 
-                        # 交易卡片已经包含订单号、商品、买家和状态。先写入基础订单，
-                        # 避免 Playwright 或订单详情页面异常时订单中心完全看不到记录。
+                        # 交易卡片只提供订单号、商品、买家和状态，金额与数量必须走卖家端接口。
+                        # 先拉真实成交数据暂存，再落库；接口失败时仅保留状态，不伪造金额。
+                        real_values = await self.fetch_order_real_values(order_id)
+                        if real_values:
+                            self._pending_order_real_values[order_id] = real_values
+
                         self._save_order_event_snapshot(
                             order_id=order_id,
                             message=message,
@@ -9205,11 +10000,44 @@ class XianyuLive:
                             else:
                                 logger.info(f"【{self.cookie_id}】商品同步功能未启用")
 
+                            # 启动订单同步任务：补齐监听离线期间产生的订单
+                            if not self.order_sync_task or self.order_sync_task.done():
+                                logger.info(f"【{self.cookie_id}】启动订单同步任务...")
+                                self.order_sync_task = asyncio.create_task(self.order_sync_loop())
+                                tasks_started.append("订单同步")
+                            else:
+                                logger.info(f"【{self.cookie_id}】订单同步任务已在运行，跳过启动")
+
+                            # 启动商品擦亮任务（是否真正执行由设置开关决定）
+                            if not self.item_polish_task or self.item_polish_task.done():
+                                logger.info(f"【{self.cookie_id}】启动商品擦亮任务...")
+                                self.item_polish_task = asyncio.create_task(self.item_polish_loop())
+                                tasks_started.append("商品擦亮")
+                            else:
+                                logger.info(f"【{self.cookie_id}】商品擦亮任务已在运行，跳过启动")
+
+                            # 启动发货超时检查：超时未发货会被平台处罚
+                            if not self.delivery_timeout_task or self.delivery_timeout_task.done():
+                                logger.info(f"【{self.cookie_id}】启动发货超时检查...")
+                                self.delivery_timeout_task = asyncio.create_task(self.delivery_timeout_loop())
+                                tasks_started.append("发货超时检查")
+                            else:
+                                logger.info(f"【{self.cookie_id}】发货超时检查已在运行，跳过启动")
+
+                            # 启动买家互动任务（评价/求花，是否执行由开关决定）
+                            if not self.buyer_interaction_task or self.buyer_interaction_task.done():
+                                logger.info(f"【{self.cookie_id}】启动买家互动任务...")
+                                self.buyer_interaction_task = asyncio.create_task(self.buyer_interaction_loop())
+                                tasks_started.append("买家互动")
+                            else:
+                                logger.info(f"【{self.cookie_id}】买家互动任务已在运行，跳过启动")
+
                             # 记录所有后台任务状态
                             if tasks_started:
                                 logger.info(f"【{self.cookie_id}】✅ 新启动的任务: {', '.join(tasks_started)}")
                             item_sync_status = '运行中' if self.item_sync_task and not self.item_sync_task.done() else '已启动' if self.item_sync_enabled else '未启用'
-                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'}), 商品同步({item_sync_status})")
+                            order_sync_status = '运行中' if self.order_sync_task and not self.order_sync_task.done() else '已启动'
+                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'}), 商品同步({item_sync_status}), 订单同步({order_sync_status})")
                             
                             logger.info(f"【{self.cookie_id}】开始监听WebSocket消息...")
                             logger.info(f"【{self.cookie_id}】WebSocket连接状态正常，等待服务器消息...")
@@ -9673,7 +10501,7 @@ class XianyuLive:
             params = {
                 'jsv': '2.7.2',
                 'appKey': '34839810',
-                't': str(int(time.time()) * 1000),
+                't': str(int(time.time() * 1000)),
                 'sign': '',
                 'v': '1.0',
                 'type': 'originaljson',

@@ -9,7 +9,7 @@ import {
   MessageFilter, MessageFilterType, AutoReplyLog
   , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
-  ProductAutomationResult, ProductDeletePreview
+  ProductAutomationResult, ProductDeletePreview, QuickPhrase
 } from '../types';
 
 // Auth
@@ -143,7 +143,8 @@ export const getOrders = async (
     total: res.total || orders.length,
     page: res.page || page,
     page_size: res.page_size || pageSize,
-    total_pages: res.total_pages || 1
+    total_pages: res.total_pages || 1,
+    status_counts: res.status_counts
   };
 };
 
@@ -205,6 +206,138 @@ export const importOrders = async (data: Partial<Order>[] | FormData): Promise<a
   });
   return response.json();
 }
+
+// 卖家端订单同步与互动
+export const syncSoldOrders = async (cookieId?: string, days = 7): Promise<any> => {
+  const formData = new FormData();
+  if (cookieId) formData.append('cookie_id', cookieId);
+  formData.append('days', String(days));
+
+  const response = await fetch('/api/orders/sync-sold', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+    body: formData
+  });
+  return response.json();
+};
+
+export const getOrderRefundRecord = async (orderId: string): Promise<any> => {
+  return get(`/api/orders/${orderId}/refund-record`);
+};
+
+// 快捷短语：人工客服常用话术
+export const getQuickPhrases = async (includeDisabled = false): Promise<QuickPhrase[]> => {
+  const res = await get<{ success: boolean; data: QuickPhrase[] }>(
+    '/quick-phrases', { include_disabled: includeDisabled }
+  );
+  return res.data || [];
+};
+
+export const createQuickPhrase = async (
+  title: string, content: string, category = '默认', sortOrder = 0
+): Promise<any> => {
+  const formData = new FormData();
+  formData.append('title', title);
+  formData.append('content', content);
+  formData.append('category', category);
+  formData.append('sort_order', String(sortOrder));
+
+  const response = await fetch('/quick-phrases', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+    body: formData
+  });
+  return response.json();
+};
+
+export const updateQuickPhrase = async (
+  id: number, fields: Partial<Pick<QuickPhrase, 'title' | 'content' | 'category' | 'sort_order' | 'enabled'>>
+): Promise<any> => {
+  const formData = new FormData();
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) formData.append(key, String(value));
+  });
+
+  const response = await fetch(`/quick-phrases/${id}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+    body: formData
+  });
+  return response.json();
+};
+
+export const deleteQuickPhrase = async (id: number): Promise<any> => {
+  return del(`/quick-phrases/${id}`);
+};
+
+export const useQuickPhrase = async (id: number): Promise<any> => {
+  return post(`/quick-phrases/${id}/use`);
+};
+
+// 风控熔断状态：命中平台风控后账号会暂停请求
+export const getRiskControlStatus = async (): Promise<{
+  success: boolean;
+  blocked_count: number;
+  accounts: Array<{
+    cookie_id: string;
+    blocked: boolean;
+    remaining_seconds: number;
+    consecutive_hits: number;
+    reason: string;
+  }>;
+}> => {
+  return get('/api/risk-control/status');
+};
+
+// 商品擦亮：重新获取搜索曝光，平台对每日次数有限制
+export const polishItems = async (cookieId?: string, itemIds?: string[]): Promise<any> => {
+  const formData = new FormData();
+  if (cookieId) formData.append('cookie_id', cookieId);
+  if (itemIds?.length) formData.append('item_ids', itemIds.join(','));
+
+  const response = await fetch('/api/items/polish', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+    body: formData
+  });
+  return response.json();
+};
+
+// 物流轨迹
+export const getOrderLogistics = async (orderId: string): Promise<any> => {
+  return get(`/api/orders/${orderId}/logistics`);
+};
+
+// 发货信息：规格、收货信息、支持的发货方式
+export const getOrderConsignInfo = async (orderId: string): Promise<any> => {
+  return get(`/api/orders/${orderId}/consign-info`);
+};
+
+// 会向买家发送消息，需先在设置中开启
+export const requireOrderFlower = async (orderId: string): Promise<any> => {
+  return post(`/api/orders/${orderId}/require-flower`);
+};
+
+// 评价提交后不可撤销，需先在设置中开启
+export const rateOrders = async (
+  orderIds: string[],
+  feedback: string,
+  rate: 1 | 0 | -1 = 1,
+  anonymous = false
+): Promise<any> => {
+  const formData = new FormData();
+  formData.append('order_ids', orderIds.join(','));
+  formData.append('feedback', feedback);
+  formData.append('rate', String(rate));
+  formData.append('anonymous', String(anonymous));
+
+  const response = await fetch('/api/orders/rate', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+    body: formData
+  });
+  return response.json();
+};
 
 // Stats
 export const getAdminStats = async (): Promise<AdminStats> => {

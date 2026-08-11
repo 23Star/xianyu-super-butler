@@ -15,7 +15,8 @@ import {
   updateAccountAISettings,
   getAllAISettings,
   getAccountAISettings,
-  refreshAccountProfile
+  refreshAccountProfile,
+  getRiskControlStatus,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import {
@@ -30,6 +31,8 @@ type ModalType = 'edit' | 'ai-settings' | null;
 const AccountList: React.FC = () => {
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [loading, setLoading] = useState(true);
+  // 风控熔断状态：命中后账号会暂停请求，需要让用户看到而不是只报 409
+  const [riskBlocked, setRiskBlocked] = useState<Array<{ cookie_id: string; remaining_seconds: number }>>([]);
   const [showQRModal, setShowQRModal] = useState(false);
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [qrStatus, setQrStatus] = useState<string>('pending');
@@ -96,6 +99,17 @@ const AccountList: React.FC = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const poll = () => {
+      getRiskControlStatus()
+        .then(res => setRiskBlocked((res.accounts || []).filter(a => a.blocked)))
+        .catch(() => setRiskBlocked([]));
+    };
+    poll();
+    const timer = setInterval(poll, 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     loadAccounts();
@@ -342,6 +356,21 @@ const AccountList: React.FC = () => {
 
   return (
     <div className="page-stack animate-fade-in relative">
+      {riskBlocked.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-bold text-amber-900">
+            闲鱼要求人机验证，{riskBlocked.length} 个账号已暂停请求
+          </p>
+          <p className="mt-1 text-xs leading-5 text-amber-800">
+            系统会自动退避并重试，预计
+            {' '}
+            {Math.max(1, Math.ceil(Math.max(...riskBlocked.map(a => a.remaining_seconds)) / 60))}
+            {' '}
+            分钟后恢复。此期间请勿频繁操作 —— 持续请求会让验证状态持续更久。
+          </p>
+        </div>
+      )}
+
       <PageHeader
         title="账号管理"
         description="管理闲鱼账号授权、监听状态、基础资料和账号级回复策略。"

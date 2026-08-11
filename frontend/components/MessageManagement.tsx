@@ -11,6 +11,7 @@ import {
   Send,
   Settings2,
   Smile,
+  Zap,
   Trash2,
   UserRound,
 } from 'lucide-react';
@@ -23,6 +24,7 @@ import {
   Item,
   MessageFilter,
   MessageFilterType,
+  QuickPhrase,
 } from '../types';
 import {
   batchCreateMessageFilters,
@@ -34,7 +36,9 @@ import {
   getChatMessages,
   getItems,
   getMessageFilters,
+  getQuickPhrases,
   sendChatMessage,
+  useQuickPhrase,
   toggleMessageFilter,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
@@ -100,6 +104,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  // 快捷短语：人工客服常用话术
+  const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
+  const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -258,6 +265,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    getQuickPhrases()
+      .then(setQuickPhrases)
+      .catch(() => setQuickPhrases([]));
+  }, []);
+
+  // 插入短语到输入框而不是直接发送，方便先改再发
+  const insertPhrase = (phrase: QuickPhrase) => {
+    setDraft(current => (current ? `${current}${phrase.content}` : phrase.content));
+    setShowPhrases(false);
+    void useQuickPhrase(phrase.id).catch(() => undefined);
+  };
 
   const sendMessage = async () => {
     const text = draft.trim();
@@ -573,6 +593,41 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="图片（暂未开放）" className="hover:text-[#111]">
                   <Image className="h-5 w-5" />
                 </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    title="快捷短语"
+                    onClick={() => setShowPhrases(value => !value)}
+                    className={`hover:text-[#111] ${showPhrases ? 'text-[#111]' : ''}`}
+                  >
+                    <Zap className="h-5 w-5" />
+                  </button>
+                  {showPhrases && (
+                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[#e4e6e8] bg-white p-2 shadow-lg">
+                      {quickPhrases.length === 0 ? (
+                        <p className="px-2 py-3 text-xs text-gray-500">
+                          还没有快捷短语，可在「设置」中添加。
+                        </p>
+                      ) : (
+                        quickPhrases.map(phrase => (
+                          <button
+                            key={phrase.id}
+                            type="button"
+                            onClick={() => insertPhrase(phrase)}
+                            className="block w-full rounded-md px-2 py-2 text-left hover:bg-[#f7f8f9]"
+                          >
+                            <span className="block text-xs font-semibold text-[#222]">
+                              [{phrase.category}] {phrase.title}
+                            </span>
+                            <span className="mt-0.5 block truncate text-xs text-gray-500">
+                              {phrase.content}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
