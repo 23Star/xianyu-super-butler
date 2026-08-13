@@ -19,6 +19,34 @@ class OrderEventSnapshotTests(unittest.TestCase):
             "pending_ship",
         )
 
+    def test_new_rating_prompt_marks_order_completed(self):
+        message = {
+            "1": {
+                "10": {
+                    "reminderContent": "快给ta一个评价吧～",
+                },
+            },
+        }
+
+        self.assertEqual(XianyuLive._extract_order_event_status(message), "completed")
+
+    def test_red_reminder_marks_order_completed(self):
+        message = {
+            "1": {
+                "10": {
+                    "reminderContent": "[我完成了评价]",
+                    "redReminder": "交易成功",
+                },
+            },
+        }
+
+        self.assertEqual(XianyuLive._extract_order_event_status(message), "completed")
+        self.assertTrue(XianyuLive._is_rate_completion_event(message))
+
+    def test_rating_prompt_is_not_completion_receipt(self):
+        message = {"1": {"10": {"reminderContent": "快给ta一个评价吧～"}}}
+        self.assertFalse(XianyuLive._is_rate_completion_event(message))
+
     def test_saves_snapshot_when_order_detail_is_unavailable(self):
         fake_db = Mock()
         fake_db.get_item_info.return_value = {"item_price": "¥0.01"}

@@ -23,6 +23,18 @@ DEFAULT_LOOKBACK_DAYS = int(os.getenv("AUTO_RATE_TASK_LOOKBACK_DAYS", "10") or 1
 DEFAULT_COOLDOWN_MINUTES = int(os.getenv("AUTO_RATE_TASK_COOLDOWN_MINUTES", "30") or 30)
 
 
+_order_rate_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_order_rate_lock(cookie_id: str, order_id: str) -> asyncio.Lock:
+    key = f"{cookie_id}:{order_id}"
+    lock = _order_rate_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _order_rate_locks[key] = lock
+    return lock
+
+
 def _status_from_result(result: Dict[str, Any]) -> str:
     if result.get("success"):
         return "success"
@@ -123,6 +135,46 @@ async def rate_order_once(
     }
 
 
+async def rate_completed_order_if_enabled(
+    cookie_id: str,
+    order_id: str,
+    *,
+    source: str = "order_event",
+) -> Dict[str, Any]:
+    """仅在账号开启自动评价且订单确已完成时执行一次评价。
+
+    订单事件和5分钟补偿任务可能同时命中同一订单，因此这里按账号和订单加锁，
+    并在锁内重新检查 is_rated，避免重复调用闲鱼评价接口。
+    """
+    cookie_id = str(cookie_id or "").strip()
+    order_id = str(order_id or "").strip()
+    if not cookie_id or not order_id:
+        return {"success": False, "skipped": True, "status": "skipped", "message": "账号或订单号为空"}
+    if not db_manager.get_auto_comment(cookie_id):
+        return {"success": False, "skipped": True, "status": "disabled", "message": "自动评价未开启"}
+
+    lock = _get_order_rate_lock(cookie_id, order_id)
+    async with lock:
+        order = db_manager.get_order_by_id(order_id)
+        if not order:
+            return {"success": False, "skipped": True, "status": "skipped", "message": "订单不存在"}
+        if str(order.get("order_status") or "") != "completed":
+            return {"success": False, "skipped": True, "status": "not_completed", "message": "订单尚未完成"}
+        if order.get("is_rated"):
+            return {"success": True, "skipped": True, "status": "already_rated", "message": "订单已评价"}
+
+        template = db_manager.get_active_comment_template(cookie_id)
+        if not template or not str(template.get("content") or "").strip():
+            return {"success": False, "skipped": True, "status": "missing_template", "message": "未设置激活的好评模板"}
+
+        return await rate_order_once(
+            cookie_id,
+            order_id,
+            str(template.get("content") or "").strip(),
+            source=source,
+        )
+
+
 async def run_auto_rate_batch(
     *,
     batch_limit: int = DEFAULT_BATCH_LIMIT,
@@ -167,11 +219,9 @@ async def run_auto_rate_batch(
             logger.info(f"【{cookie_id}】自动补评价找到 {len(orders)} 个待处理订单")
             for order in orders:
                 stats["orders"] += 1
-                result = await rate_order_once(
+                result = await rate_completed_order_if_enabled(
                     cookie_id,
                     order.get("order_id"),
-                    str(template.get("content") or "").strip(),
-                    batch_id=batch_id,
                     source="scheduled_rate",
                 )
                 if result.get("success"):

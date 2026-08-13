@@ -1391,10 +1391,17 @@ class XianyuLive:
 
         message_detail = message_1.get("10")
         event_text = message_detail.get("reminderContent", "") if isinstance(message_detail, dict) else ""
+        red_reminder = message_detail.get("redReminder", "") if isinstance(message_detail, dict) else ""
         if not event_text:
             content = message_1.get("6")
             content_detail = content.get("3") if isinstance(content, dict) else None
             event_text = content_detail.get("2", "") if isinstance(content_detail, dict) else ""
+
+        # 新版确认收货卡片不再发送旧的“[买家确认收货，交易成功]”文案，
+        # 而是发送“快给ta一个评价吧～”；评价通知卡片则显示“[我完成了评价]”。
+        # 两类卡片都携带明确的交易成功语义，可以安全地将订单推进到 completed。
+        if str(red_reminder).strip() == "交易成功":
+            return "completed"
 
         return {
             "[我已拍下，待付款]": "processing",
@@ -1406,9 +1413,43 @@ class XianyuLive:
             "[你已发货，请等待买家确认收货]": "shipped",
             "[买家确认收货，交易成功]": "completed",
             "[你已确认收货，交易成功]": "completed",
+            "快给ta一个评价吧~": "completed",
+            "快给ta一个评价吧～": "completed",
+            "[我完成了评价]": "completed",
             "[退款成功，钱款已原路退返]": "cancelled",
             "[你关闭了订单，钱款已原路退返]": "cancelled",
         }.get(str(event_text).strip())
+
+    @staticmethod
+    def _is_rate_completion_event(message: dict) -> bool:
+        """判断是否为卖家已经完成评价的系统回执。"""
+        if not isinstance(message, dict):
+            return False
+        message_1 = message.get("1")
+        message_detail = message_1.get("10") if isinstance(message_1, dict) else None
+        if not isinstance(message_detail, dict):
+            return False
+        return str(message_detail.get("reminderContent") or "").strip() == "[我完成了评价]"
+
+    async def _auto_rate_completed_order(self, order_id: str) -> None:
+        """订单事件确认交易完成后，立即尝试自动评价。"""
+        try:
+            from app.auto_rate_task import rate_completed_order_if_enabled
+
+            result = await rate_completed_order_if_enabled(
+                self.cookie_id,
+                order_id,
+                source="order_event",
+            )
+            if result.get("success"):
+                logger.info(f"【{self.cookie_id}】订单完成后自动评价成功: {order_id}")
+            elif not result.get("skipped"):
+                logger.warning(
+                    f"【{self.cookie_id}】订单完成后自动评价失败: {order_id}, "
+                    f"原因: {result.get('message', '未知')}"
+                )
+        except Exception as exc:
+            logger.error(f"【{self.cookie_id}】订单完成后触发自动评价异常: {order_id}, {self._safe_str(exc)}")
 
     def _save_order_event_snapshot(
         self,
@@ -5220,10 +5261,10 @@ class XianyuLive:
                     amount = result.get('amount', '')
 
                     # 获取订单时间和收货人信息
-                    order_time = result.get('order_time', None)
-                    receiver_name = result.get('receiver_name', None)
-                    receiver_phone = result.get('receiver_phone', None)
-                    receiver_address = result.get('receiver_address', None)
+                    order_time = result.get('order_time') or None
+                    receiver_name = result.get('receiver_name') or None
+                    receiver_phone = result.get('receiver_phone') or None
+                    receiver_address = result.get('receiver_address') or None
 
                     if spec_name and spec_value:
                         logger.info(f"【{self.cookie_id}】📋 规格名称: {spec_name}")
@@ -5250,7 +5291,18 @@ class XianyuLive:
                         if not cookie_info:
                             logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
                         else:
-                            # 先保存订单基本信息（包含时间和收货人信息）
+                            detail_status = result.get('order_status')
+                            existing_order = db_manager.get_order_by_id(order_id)
+                            existing_status = (existing_order or {}).get('order_status')
+                            if detail_status in (None, '', 'unknown') and existing_status not in (None, '', 'unknown'):
+                                logger.info(
+                                    f"【{self.cookie_id}】订单详情未识别出状态，保留事件状态: "
+                                    f"{order_id} -> {existing_status}"
+                                )
+                                detail_status = None
+
+                            # 先保存订单基本信息（包含时间和收货人信息）。空字符串和 unknown
+                            # 不覆盖交易卡片已经识别出的有效时间与状态。
                             success = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
@@ -5259,7 +5311,7 @@ class XianyuLive:
                                 spec_value=spec_value,
                                 quantity=quantity,
                                 amount=amount,
-                                order_status=result.get('order_status'),  # 添加订单状态
+                                order_status=detail_status,
                                 cookie_id=self.cookie_id,
                                 created_at=order_time,
                                 receiver_name=receiver_name,
@@ -8846,6 +8898,12 @@ class XianyuLive:
                             item_id=temp_item_id,
                             buyer_id=temp_user_id,
                         )
+                        order_event_status = self._extract_order_event_status(message)
+                        rate_completion_event = self._is_rate_completion_event(message)
+                        if rate_completion_event:
+                            from app.db_manager import db_manager
+                            db_manager.mark_order_rated(order_id, True)
+                            logger.info(f"【{self.cookie_id}】收到评价完成回执，订单已标记为已评价: {order_id}")
 
                         # 检查是否已经在获取该订单详情
                         order_detail_lock = self._order_detail_locks[order_id]
@@ -8858,6 +8916,11 @@ class XianyuLive:
                                 logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单详情获取成功: {order_id}')
                             else:
                                 logger.warning(f'[{msg_time}] 【{self.cookie_id}】⚠️ 订单详情获取失败: {order_id}')
+
+                        # “确认收货/去评价”事件本身已经能确认交易完成，无需等待5分钟轮询。
+                        # 使用追踪任务执行，避免评价接口阻塞后续消息接收。
+                        if order_event_status == "completed" and not rate_completion_event:
+                            self._create_tracked_task(self._auto_rate_completed_order(order_id))
 
                     except Exception as detail_e:
                         logger.error(f'[{msg_time}] 【{self.cookie_id}】❌ 获取订单详情异常: {self._safe_str(detail_e)}')
