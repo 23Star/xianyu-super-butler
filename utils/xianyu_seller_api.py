@@ -800,6 +800,8 @@ def parse_user_profile(data: Dict[str, Any]) -> Dict[str, Any]:
     module = data.get("module") or {}
     base = module.get("base") or {}
     shop = module.get("shop") or {}
+    # 粉丝/关注在 module.social 下，接口返回的是字符串
+    social = module.get("social") or {}
     avatar = base.get("avatar") or {}
 
     def _text(value: Any) -> str:
@@ -818,6 +820,16 @@ def parse_user_profile(data: Dict[str, Any]) -> Dict[str, Any]:
             seller_level = tag.get("text") or ""
             break
 
+    def _count(value):
+        """接口把粉丝/关注返回成字符串，转成整数供前端展示。"""
+        text = _text(value).replace(",", "").strip()
+        if not text:
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+
     return {
         "nickname": _text(base.get("displayName")),
         "avatar_url": avatar_url,
@@ -826,4 +838,6 @@ def parse_user_profile(data: Dict[str, Any]) -> Dict[str, Any]:
         "shop_level": _text(shop.get("level")),
         "praise_ratio": shop.get("praiseRatio"),
         "review_num": shop.get("reviewNum"),
+        "followers": _count(social.get("followers")),
+        "following": _count(social.get("following")),
     }

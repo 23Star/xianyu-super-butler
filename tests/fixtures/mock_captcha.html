@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mock Captcha Interception</title>
+<style>
+  body { font-family: sans-serif; }
+  #nocaptcha { width: 600px; height: 400px; border: 1px solid #ccc; margin: 50px auto; position: relative; }
+  #nc_scale { position: absolute; top: 350px; left: 0; width: 500px; height: 40px; background: #eee; }
+  #nc_slide { position: absolute; top: 0; left: 0; width: 40px; height: 40px; background: #4a90d9; cursor: grab; }
+</style></head>
+<body>
+<div id="nocaptcha">
+  <div id="nc_scale"><div id="nc_slide"></div></div>
+</div>
+<script>
+  // 拖到 450px 即完成验证 → 滑块消失
+  var slide = document.getElementById('nc_slide');
+  var box = document.getElementById('nocaptcha');
+  var dragging = false, startX = 0, curX = 0;
+  slide.addEventListener('mousedown', function(e){ dragging = true; startX = e.clientX; });
+  document.addEventListener('mousemove', function(e){ if(!dragging) return; curX = e.clientX - startX; slide.style.left = curX + 'px'; });
+  document.addEventListener('mouseup', function(e){ if(!dragging) return; dragging = false; if(curX >= 430) { box.style.display = 'none'; } });
+</script>
+</body></html>

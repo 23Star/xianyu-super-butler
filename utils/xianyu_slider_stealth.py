@@ -279,22 +279,25 @@ class XianyuSliderStealth:
         
         self.success_history_file = f"trajectory_history/{self.pure_user_id}_success.json"
         self.trajectory_params = {
-            "total_steps_range": [15, 25],  # 适中步数（平衡速度和真实度）
-            "base_delay_range": [0.003, 0.008],  # 适中延迟：3-8ms（更接近人类操作）
-            "jitter_x_range": [0, 2],  # 小幅抖动
-            "jitter_y_range": [0, 2],  # 小幅抖动
-            "slow_factor_range": [8, 12],  # 适中加速因子
-            "acceleration_phase": 1.0,  # 全程加速
-            "fast_phase": 1.0,  # 无慢速
-            "slow_start_ratio_base": 2.0,  # 确保超调100%
+            "total_steps_range": [70, 95],  # 采样点数：快速甩动约 70-95 点，仍在真人量级
+            "base_delay_range": [0.007, 0.012],  # 每步 7-12ms，对齐真实鼠标 80-140Hz 采样率
+            "jitter_x_range": [-1, 1],  # X 轴微颤，需双向，单向偏移是机器特征
+            "jitter_y_range": [-3, 3],  # Y 轴漂移，人手无法保持水平
+            "slow_factor_range": [8, 12],  # 保留字段，供学习态回写
+            "acceleration_phase": 0.1,  # 起步加速占比
+            "fast_phase": 0.75,  # 匀速段占比，其后进入减速逼近
+            "slow_start_ratio_base": 1.0,  # 落点即目标，超调另由 overshoot 控制
             "completion_usage_rate": 0.05,  # 极少补全使用率
             "avg_completion_steps": 1.0,  # 极少补全步数
             "trajectory_length_stats": [],
-            "learning_enabled": False
+            "learning_enabled": True
         }
         
         # 保存最后一次使用的轨迹参数（用于分析优化）
         self.last_trajectory_params = {}
+
+        # 当前验证页地址，重试时需要重新导航以获得全新滑块
+        self._current_url = None
     
     def _check_date_validity(self) -> bool:
         """检查日期有效性 - 已禁用
@@ -317,111 +320,83 @@ class XianyuSliderStealth:
             
             # 启动浏览器，使用随机特征
             logger.info(f"【{self.pure_user_id}】启动浏览器，headless模式: {self.headless}")
-            self.browser = self.playwright.chromium.launch(
-                headless=self.headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-accelerated-2d-canvas",
-                    "--no-first-run",
-                    "--no-zygote",
-                    "--disable-gpu",
-                    "--disable-web-security",
-                    "--disable-features=VizDisplayCompositor",
-                    "--start-maximized",  # 窗口最大化
-                    f"--window-size={browser_features['window_size']}",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    f"--lang={browser_features['lang']}",
-                    f"--accept-lang={browser_features['accept_lang']}",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-extensions",
-                    "--disable-plugins",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--hide-scrollbars",
-                    "--mute-audio",
-                    "--no-default-browser-check",
-                    "--disable-logging",
-                    "--disable-permissions-api",
-                    "--disable-notifications",
-                    "--disable-popup-blocking",
-                    "--disable-prompt-on-repost",
-                    "--disable-hang-monitor",
-                    "--disable-client-side-phishing-detection",
-                    "--disable-component-extensions-with-background-pages",
-                    "--disable-background-mode",
-                    "--disable-domain-reliability",
-                    "--disable-features=TranslateUI",
-                    "--disable-ipc-flooding-protection",
-                    "--disable-field-trial-config",
-                    "--disable-background-networking",
-                    "--disable-back-forward-cache",
-                    "--disable-breakpad",
-                    "--disable-component-update",
-                    "--force-color-profile=srgb",
-                    "--metrics-recording-only",
-                    "--password-store=basic",
-                    "--use-mock-keychain",
-                    "--no-service-autorun",
-                    "--export-tagged-pdf",
-                    "--disable-search-engine-choice-screen",
-                    "--unsafely-disable-devtools-self-xss-warnings",
-                    "--edge-skip-compat-layer-relaunch",
-                    "--allow-pre-commit-input"
-                ]
+
+            # 实测结论：Playwright 自带的 Chromium（Chrome for Testing）指纹会被阿里 nc
+            # 识破，连真人手动拖动都判定失败；换成系统正式版 Chrome + 持久化用户目录后
+            # 同样的手动拖动即可通过。因此这里必须走 channel='chrome' 的持久化上下文，
+            # 让 CDP 之外的指纹（二进制版本、插件、WebGL、历史 profile）都保持真实。
+            user_data_dir = os.path.join(
+                os.getcwd(), 'browser_data', f'slider_{self.pure_user_id}'
             )
-            
-            # 验证浏览器已启动
-            if not self.browser or not self.browser.is_connected():
-                raise Exception("浏览器启动失败或连接已断开")
-            logger.info(f"【{self.pure_user_id}】浏览器启动成功，已连接: {self.browser.is_connected()}")
-            
-            # 创建上下文，使用随机特征
-            logger.info(f"【{self.pure_user_id}】创建浏览器上下文...")
-            
-            # 🔑 关键优化：添加更多真实浏览器特征
+            os.makedirs(user_data_dir, exist_ok=True)
+
+            launch_args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--start-maximized",
+                f"--window-size={browser_features['window_size']}",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                f"--lang={browser_features['lang']}",
+                "--disable-blink-features=AutomationControlled",
+                "--no-default-browser-check",
+                "--disable-popup-blocking",
+                "--disable-search-engine-choice-screen",
+                "--password-store=basic",
+                "--use-mock-keychain",
+            ]
+
+            # 持久化上下文没有独立的 browser 对象，context 即入口
             context_options = {
-                'user_agent': browser_features['user_agent'],
                 'locale': browser_features['locale'],
                 'timezone_id': browser_features['timezone_id'],
-                # 🔑 添加真实的权限设置
-                'permissions': ['geolocation', 'notifications'],
-                # 🔑 添加真实的色彩方案
                 'color_scheme': random.choice(['light', 'dark', 'no-preference']),
-                # 🔑 添加HTTP凭据
-                'http_credentials': None,
-                # 🔑 忽略HTTPS错误（某些情况下更真实）
                 'ignore_https_errors': False,
             }
-            
-            # 根据模式配置viewport和no_viewport
             if not self.headless:
-                # 有头模式：使用 no_viewport=True 支持窗口最大化
-                # 注意：使用no_viewport时，不能设置device_scale_factor、is_mobile、has_touch
-                context_options['no_viewport'] = True  # 移除viewport限制，支持--start-maximized
-                self.context = self.browser.new_context(**context_options)
+                context_options['no_viewport'] = True
             else:
-                # 无头模式：使用固定viewport
-                context_options.update({
-                    'viewport': {'width': browser_features['viewport_width'], 'height': browser_features['viewport_height']},
-                    'device_scale_factor': browser_features['device_scale_factor'],
-                    'is_mobile': browser_features['is_mobile'],
-                    'has_touch': browser_features['has_touch'],
-                })
-                self.context = self.browser.new_context(**context_options)
-            
+                context_options['viewport'] = {
+                    'width': browser_features['viewport_width'],
+                    'height': browser_features['viewport_height'],
+                }
+
+            try:
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    user_data_dir,
+                    channel='chrome',  # 系统安装的正式版 Chrome
+                    headless=self.headless,
+                    args=launch_args,
+                    **context_options,
+                )
+                self.browser = None  # 持久化模式下无独立 browser 句柄
+                logger.info(f"【{self.pure_user_id}】已启动系统 Chrome（持久化目录）")
+            except Exception as chrome_error:
+                # 机器上没装 Chrome 时退回自带 Chromium，虽然大概率过不了，
+                # 但至少不让整个流程直接崩掉。
+                logger.warning(
+                    f"【{self.pure_user_id}】系统 Chrome 不可用（{chrome_error}），"
+                    "退回 Chromium —— 滑块通过率会显著下降"
+                )
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless, args=launch_args
+                )
+                self.context = self.browser.new_context(
+                    user_agent=browser_features['user_agent'], **context_options
+                )
+
             # 验证上下文已创建
             if not self.context:
                 raise Exception("浏览器上下文创建失败")
             logger.info(f"【{self.pure_user_id}】浏览器上下文创建成功")
-            
-            # 创建新页面
+
+            # 创建新页面（持久化上下文会自带一个空白页，复用它避免多开窗口）
             logger.info(f"【{self.pure_user_id}】创建新页面...")
-            self.page = self.context.new_page()
+            existing = self.context.pages
+            self.page = existing[0] if existing else self.context.new_page()
             
             # 验证页面已创建
             if not self.page:
@@ -584,18 +559,19 @@ class XianyuSliderStealth:
             
             # 优化参数 - 真实人类模式（优先真实度而非速度）
             # 计算步数范围（确保最小值 < 最大值）
-            steps_min = max(110, int(safe_avg(total_steps_list) - safe_std(total_steps_list) * 0.8))
-            steps_max = min(130, int(safe_avg(total_steps_list) + safe_std(total_steps_list) * 0.8))
+            steps_min = max(70, int(safe_avg(total_steps_list) - safe_std(total_steps_list) * 0.8))
+            steps_max = min(95, int(safe_avg(total_steps_list) + safe_std(total_steps_list) * 0.8))
             if steps_min >= steps_max:
-                steps_min = 115
-                steps_max = 125
+                steps_min = 75
+                steps_max = 90
             
             # 计算延迟范围（确保最小值 < 最大值）
-            delay_min = max(0.020, safe_avg(base_delay_list) - safe_std(base_delay_list) * 0.6)
+            # 下界与默认值保持一致，否则学习态会把实际成功的节奏又拉回慢档
+            delay_min = max(0.007, safe_avg(base_delay_list) - safe_std(base_delay_list) * 0.6)
             delay_max = min(0.030, safe_avg(base_delay_list) + safe_std(base_delay_list) * 0.6)
             if delay_min >= delay_max:
-                delay_min = 0.022
-                delay_max = 0.027
+                delay_min = 0.008
+                delay_max = 0.012
             
             # 计算慢速因子范围（确保最小值 < 最大值）
             slow_min = max(5, int(safe_avg(slow_factor_list) - safe_std(slow_factor_list)))
@@ -1180,65 +1156,119 @@ class XianyuSliderStealth:
             return t
     
     def _generate_physics_trajectory(self, distance: float):
-        """基于物理加速度模型生成轨迹 - 适中速度模式
+        """基于最小急动度模型生成轨迹 - 拟人模式
 
-        优化策略：
-        1. 适中轨迹点（15-25步）：平衡速度和真实度
-        2. 持续加速：一气呵成，不减速
-        3. 确保超调100%以上：保证滑动到位
-        4. 无回退：单向滑动
-        5. 适中延迟：3-8ms（更接近人类操作）
+        风控拦截的是行为特征而非落点精度，因此这里对齐人手的真实运动学：
+        1. 最小急动度曲线（10t³-15t⁴+6t⁵）：钟形速度包络，起步加速、末段减速
+        2. 百级采样点 + 20-30ms 步进：单次拖拽耗时 2.5-4 秒
+        3. 双向微颤 + Y 轴漂移：人手无法走出单向直线
+        4. 轻微超调后回拉修正：人眼确认到位需要一次微调
+        5. 随机迟疑：低概率插入额外停顿，破坏等间隔节奏
         """
         trajectory = []
-        # 确保超调100%
-        target_distance = distance * random.uniform(2.0, 2.1)  # 超调100-110%
+        params = self._optimize_trajectory_params()
 
-        # 适中步数（15-25步）
-        steps = random.randint(15, 25)
+        steps_range = params.get("total_steps_range", [110, 130])
+        delay_range = params.get("base_delay_range", [0.020, 0.030])
+        jitter_x_range = params.get("jitter_x_range", [-1, 1])
+        jitter_y_range = params.get("jitter_y_range", [-3, 3])
 
-        # 适中时间间隔（3-8ms）
-        base_delay = random.uniform(0.003, 0.008)
+        steps = random.randint(int(steps_range[0]), int(steps_range[1]))
+        base_delay = random.uniform(float(delay_range[0]), float(delay_range[1]))
 
-        # 生成轨迹点 - 直线加速
+        # 甩出量取轨道长度的 40%-85%：手感是"用力甩到底"而非"精确对准"
+        overshoot = random.uniform(distance * 0.4, distance * 0.85)
+        peak_distance = distance + overshoot
+
+        # Y 轴走非水平弧线：人手绕手腕转动，起落点不在同一高度，
+        # 且整条轨迹是斜的 —— 纯水平移动是机器特征。
+        drift_direction = random.choice([-1, 1])
+        arc_amplitude = random.uniform(6.0, 16.0)      # 弧线高度
+        tilt = drift_direction * random.uniform(4.0, 12.0)  # 整体倾斜，终点比起点高/低
+
+        # 主行程：最小急动度曲线
         for i in range(steps):
             progress = (i + 1) / steps
+            # 10t³-15t⁴+6t⁵，速度呈钟形，两端平滑
+            eased = 10 * progress ** 3 - 15 * progress ** 4 + 6 * progress ** 5
 
-            # 计算当前位置（使用平方加速曲线，越来越快）
-            x = target_distance * (progress ** 1.5)  # 加速曲线
+            x = peak_distance * eased + random.uniform(*jitter_x_range)
+            # 弧线 + 线性倾斜 + 高频微颤，三者叠加成非水平轨迹
+            y = (drift_direction * arc_amplitude * math.sin(progress * math.pi)
+                 + tilt * progress
+                 + random.uniform(*jitter_y_range) * 0.4)
 
-            # 小幅Y轴抖动
-            y = random.uniform(0, 2)
-
-            # 适中延迟
-            delay = base_delay * random.uniform(0.9, 1.1)
+            delay = base_delay * random.uniform(0.85, 1.15)
+            # 约 4% 概率出现迟疑，打破等间隔节奏
+            if random.random() < 0.04:
+                delay += random.uniform(0.02, 0.05)
 
             trajectory.append((x, y, delay))
 
-        logger.info(f"【{self.pure_user_id}】适中速度模式：{len(trajectory)}步，超调100%+")
+        # 回弹：手指松力后滑块被弹回一点，再小幅晃动稳定。
+        # 这是甩到底时的自然物理反应，与"精确回拉修正"完全不同。
+        rebound = random.uniform(6.0, 18.0)
+        rebound_steps = random.randint(3, 5)
+        last_y = trajectory[-1][1] if trajectory else 0.0
+        for i in range(rebound_steps):
+            progress = (i + 1) / rebound_steps
+            x = peak_distance - rebound * progress + random.uniform(-0.8, 0.8)
+            y = last_y + random.uniform(-1.5, 1.5)
+            trajectory.append((x, y, random.uniform(0.015, 0.035)))
+
+        # 稳定：回弹后小幅抖动，模拟手停住但仍有生理震颤
+        settle_x = peak_distance - rebound
+        for _ in range(random.randint(2, 3)):
+            trajectory.append((
+                settle_x + random.uniform(-1.2, 1.2),
+                last_y + random.uniform(-1.2, 1.2),
+                random.uniform(0.02, 0.045),
+            ))
+
+        self.last_trajectory_params = {
+            "base_delay": base_delay,
+            "jitter_x_range": jitter_x_range,
+            "jitter_y_range": jitter_y_range,
+            "overshoot": overshoot,
+            "correction_steps": rebound_steps,
+        }
+
+        logger.info(
+            f"【{self.pure_user_id}】拟人模式：{len(trajectory)}步，"
+            f"耗时{sum(p[2] for p in trajectory):.2f}秒，"
+            f"甩出{overshoot:.0f}px后回弹{rebound:.0f}px"
+        )
         return trajectory
     
     def generate_human_trajectory(self, distance: float):
-        """生成人类化滑动轨迹 - 只使用极速物理模型"""
+        """生成人类化滑动轨迹 - 最小急动度运动模型"""
         try:
-            # 只使用物理加速度模型（移除贝塞尔模型以提高速度和稳定性）
-            logger.info(f"【{self.pure_user_id}】📐 使用极速物理模型生成轨迹")
+            logger.info(f"【{self.pure_user_id}】📐 使用拟人运动模型生成轨迹")
             trajectory = self._generate_physics_trajectory(distance)
-            
-            logger.debug(f"【{self.pure_user_id}】极速模式：一次拖到位，无回退")
-            
-            # 保存轨迹数据
+
+            logger.debug(f"【{self.pure_user_id}】拟人模式：超调后回拉修正")
+
+            # 保存轨迹数据（字段需与 _save_success_record 对齐，否则学习态取不到值）
+            last_params = self.last_trajectory_params or {}
             self.current_trajectory_data = {
                 "distance": distance,
-                "model": "physics_fast",
+                "model": "physics_human",
                 "total_steps": len(trajectory),
                 "trajectory_points": trajectory.copy(),
+                "base_delay": last_params.get("base_delay", 0),
+                "jitter_x_range": last_params.get("jitter_x_range", [0, 0]),
+                "jitter_y_range": last_params.get("jitter_y_range", [0, 0]),
+                "slow_factor": self.trajectory_params.get("slow_factor_range", [0, 0])[0],
+                "acceleration_phase": self.trajectory_params.get("acceleration_phase", 0),
+                "fast_phase": self.trajectory_params.get("fast_phase", 0),
+                "slow_start_ratio": self.trajectory_params.get("slow_start_ratio_base", 0),
                 "final_left_px": 0,
                 "completion_used": False,
-                "completion_steps": 0
+                "completion_steps": last_params.get("correction_steps", 0)
             }
-            
+
             return trajectory
-            
+
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】生成轨迹时出错: {str(e)}")
             return []
@@ -1305,6 +1335,7 @@ class XianyuSliderStealth:
                 start_time = time.time()
                 current_x = start_x
                 current_y = start_y
+                last_x = start_x  # 用于按位移量拆分移动步数
                 
                 # 执行拖动轨迹
                 for i, (x, y, delay) in enumerate(trajectory):
@@ -1312,12 +1343,12 @@ class XianyuSliderStealth:
                     current_x = start_x + x
                     current_y = start_y + y
                     
-                    # 移动鼠标
-                    self.page.mouse.move(
-                        current_x,
-                        current_y,
-                        steps=random.randint(1, 3)
-                    )
+                    # 移动鼠标。
+                    # 轨迹本身已有 70-95 个密集采样点，相邻点间距仅几 px，
+                    # movementX 天然落在真人区间，无需再用 steps 细分 ——
+                    # steps=N 会产生 N 次独立 CDP 往返，把 1.3 秒的甩动拖成 4 秒。
+                    self.page.mouse.move(current_x, current_y)
+                    last_x = current_x
                     
                     # 延迟（添加微小随机变化）
                     actual_delay = delay * random.uniform(0.9, 1.1)
@@ -1346,29 +1377,15 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】🎨 刮刮乐模式：在目标位置停顿{pause_duration:.2f}秒观察...")
                     time.sleep(pause_duration)
                 
-                # 释放鼠标
-                time.sleep(random.uniform(0.02, 0.05))
+                # 释放前停顿：人手到位后会先确认再松开，立即释放是脚本特征
+                time.sleep(random.uniform(0.12, 0.28))
                 self.page.mouse.up()
-                time.sleep(random.uniform(0.01, 0.03))
-                
-                # 触发click事件
-                try:
-                    slider_button.evaluate(f"""
-                        (slider) => {{
-                            const event = new MouseEvent('click', {{
-                                bubbles: true,
-                                cancelable: true,
-                                view: window,
-                                clientX: {current_x},
-                                clientY: {current_y},
-                                button: 0
-                            }});
-                            slider.dispatchEvent(event);
-                        }}
-                    """)
-                except Exception as e:
-                    logger.debug(f"【{self.pure_user_id}】触发click事件失败（可忽略）: {e}")
-                
+                time.sleep(random.uniform(0.05, 0.12))
+
+                # 注意：此处不再补发合成 click 事件。
+                # dispatchEvent 造出的事件 isTrusted 为 false，是风控的直接判定依据，
+                # 而 mouse.up() 本身已由 CDP 产生可信的原生事件序列。
+
                 elapsed_time = time.time() - start_time
                 logger.info(f"【{self.pure_user_id}】滑动完成: 耗时={elapsed_time:.2f}秒, 最终位置=({current_x:.1f}, {current_y:.1f})")
                 
@@ -2161,7 +2178,11 @@ class XianyuSliderStealth:
             
             if found_failure:
                 logger.info(f"【{self.pure_user_id}】检测到验证失败关键词，验证失败")
-                return True
+                # 必须返回二元组：调用方按 (has_failure, retry_element) 解包。
+                # 此处若返回裸 True 会抛 unpack 异常，导致重试按钮丢失、滑块无法重置，
+                # 后续尝试便会因控件停留在失败态而找不到轨道。
+                # 关键词命中时尚未定位元素，重试按钮交由 click_retry_button 自行查找。
+                return True, None
             
             # 检查各种可能的验证失败提示元素
             failure_selectors = [
@@ -2319,7 +2340,7 @@ class XianyuSliderStealth:
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
         """
         failure_records = []
-        current_strategy = 'ultra_fast'  # 极速策略
+        current_strategy = 'human_like'  # 拟人策略（旧的 ultra_fast 统计已作废，不再混算）
         
         for attempt in range(1, max_retries + 1):
             try:
@@ -2396,19 +2417,39 @@ class XianyuSliderStealth:
                         failure_info = self._analyze_failure(attempt, slide_distance, self.current_trajectory_data)
                         failure_records.append(failure_info)
 
-                    # 🔑 如果不是最后一次尝试，点击重试按钮后继续
+                    # 🔑 如果不是最后一次尝试，重置滑块后继续
                     if attempt < max_retries:
-                        # 点击重试按钮重置滑块
+                        reset_ok = False
+                        # 优先点重试按钮，这是最轻量的重置方式
                         if retry_element is not None:
                             logger.info(f"【{self.pure_user_id}】检测到重试按钮，点击重置滑块...")
                             if self.click_retry_button(retry_element):
                                 logger.success(f"【{self.pure_user_id}】✅ 已点击重试按钮，滑块已重置")
-                                # 等待滑块重新加载
                                 time.sleep(random.uniform(0.3, 0.6))
+                                reset_ok = True
                             else:
-                                logger.warning(f"【{self.pure_user_id}】点击重试按钮失败，继续尝试")
-                        else:
-                            logger.info(f"【{self.pure_user_id}】未检测到重试按钮，直接继续下一次尝试")
+                                logger.warning(f"【{self.pure_user_id}】点击重试按钮失败")
+
+                        # 没有重试按钮（或点击无效）时重新加载惩罚页。
+                        # 验证失败后 nc 控件会停在失败态：轨道消失、按钮不可拖，
+                        # 此时直接重试等于在坏掉的控件上空拖 —— 实测第3次成功率 0%。
+                        # 重新导航能拿到一个全新的滑块，让重试真正有意义。
+                        if not reset_ok and self._current_url:
+                            try:
+                                logger.info(f"【{self.pure_user_id}】控件已失效，重新加载验证页...")
+                                self.page.goto(
+                                    self._current_url,
+                                    wait_until="domcontentloaded",
+                                    timeout=20000,
+                                )
+                                time.sleep(random.uniform(1.0, 1.8))
+                                # 页面重建后原有的 frame 引用全部失效，必须清掉
+                                self.slider_frame = None
+                                logger.success(f"【{self.pure_user_id}】✅ 验证页已重新加载")
+                            except Exception as reload_err:
+                                logger.warning(
+                                    f"【{self.pure_user_id}】重新加载验证页失败: {reload_err}"
+                                )
                         continue
                 
             except Exception as e:
@@ -4292,20 +4333,58 @@ class XianyuSliderStealth:
             except Exception as e:
                 logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
     
-    def run(self, url: str):
-        """运行主流程，返回(成功状态, cookie数据)"""
+    def run(self, url: str, cookies_str: str = None):
+        """运行主流程，返回(成功状态, cookie数据)
+
+        Args:
+            url: 滑块惩罚页地址
+            cookies_str: 账号 Cookie。必须注入，否则验证通过后拿到的
+                         x5sec 不绑定该账号，风控不会解除。
+        """
         cookies = None
         try:
             # 检查日期有效性
             if not self._check_date_validity():
                 logger.error(f"【{self.pure_user_id}】日期验证失败，无法执行")
                 return False, None
-            
+
             # 初始化浏览器
             self.init_browser()
-            
+
+            # 注入账号 Cookie —— 惩罚页的 x5secdata 绑定的是账号会话，
+            # 不带 Cookie 时即便滑块拖过，回收到的也只是空浏览器凭证（实测仅 164 字符），
+            # 风控状态不会解除。
+            if cookies_str:
+                try:
+                    pw_cookies = []
+                    for part in cookies_str.split(";"):
+                        part = part.strip()
+                        if "=" not in part:
+                            continue
+                        name, value = part.split("=", 1)
+                        pw_cookies.append({
+                            "name": name.strip(),
+                            "value": value.strip(),
+                            "domain": ".goofish.com",
+                            "path": "/",
+                        })
+                    if pw_cookies:
+                        self.context.add_cookies(pw_cookies)
+                        logger.info(
+                            f"【{self.pure_user_id}】已注入账号 Cookie（{len(pw_cookies)} 个字段）"
+                        )
+                except Exception as ck_err:
+                    logger.warning(f"【{self.pure_user_id}】注入 Cookie 失败: {ck_err}")
+            else:
+                logger.warning(
+                    f"【{self.pure_user_id}】未提供账号 Cookie —— 验证通过后风控可能不解除"
+                )
+
             # 导航到目标URL，快速加载
             logger.info(f"【{self.pure_user_id}】导航到URL: {url}")
+            # 记录下来供重试时重新加载 —— 验证失败后控件会锁死，
+            # 只有重新导航才能拿到可用的新滑块
+            self._current_url = url
             try:
                 self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as e:

@@ -1,0 +1,53 @@
+# 闲鱼智控 —— NAS / 低配设备专用部署配置（零构建）
+#
+# 适用于飞牛 fnOS、群晖、威联通、软路由等设备。
+#
+# 与 docker-compose.yml 的区别，也是这个文件存在的原因：
+#   1. 不在本机构建镜像，直接拉预构建镜像。NAS 上跑 npm ci + vite build +
+#      pip 编译 + 下载 Chromium 会让 CPU 长时间 100%，内存不够时 OOM，
+#      表现就是"部署不上、机器卡死"。
+#   2. 不依赖 .env 文件。NAS 的 Docker 图形界面里通常只能贴 compose 内容，
+#      没有地方放 .env，原配置的 ${ADMIN_PASSWORD:?...} 会直接让部署中断。
+#   3. 内存上限给到 3G。Chromium 冷启动峰值就要 300~500M，2G 容易被 OOM
+#      杀掉，配合 restart 策略会变成反复重启、CPU 一直满。
+#
+# 使用前必须修改：ADMIN_PASSWORD 和 JWT_SECRET_KEY（下面两处 CHANGE_ME）。
+#
+# 启动：docker compose -f docker-compose.nas.yml up -d
+
+services:
+  xianyu-app:
+    image: ghcr.io/23star/xianyu-super-butler:latest
+    container_name: xianyu-super-butler
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data:rw
+      - ./logs:/app/logs:rw
+      - ./backups:/app/backups:rw
+    environment:
+      TZ: Asia/Shanghai
+      DB_PATH: /app/data/xianyu_data.db
+      LOG_LEVEL: INFO
+
+      # ⚠️ 部署前务必改掉这两项
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: CHANGE_ME_到少8位的强密码
+      JWT_SECRET_KEY: CHANGE_ME_到至少32位的随机字符串
+
+      AUTO_REPLY_ENABLED: "true"
+      AUTO_DELIVERY_ENABLED: "true"
+      AI_REPLY_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 3072M
+        reservations:
+          memory: 512M

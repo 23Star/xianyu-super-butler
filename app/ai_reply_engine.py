@@ -205,7 +205,7 @@ class AIReplyEngine:
                 max_tokens=max_tokens,
                 temperature=temperature
             )
-            return response.choices[0].message.content.strip()
+            return self._extract_openai_content(response)
         except Exception as e:
             status_code = getattr(getattr(e, 'response', None), 'status_code', None)
             logger.error(
@@ -213,6 +213,115 @@ class AIReplyEngine:
                 + (f", HTTP {status_code}" if status_code else "")
             )
             raise
+
+    @staticmethod
+    def _extract_openai_content(response) -> str:
+        """从 OpenAI 兼容响应里取正文。
+
+        不能直接 `choices[0].message.content.strip()`：content 为 None 的情况很常见，
+        那样会抛 AttributeError，在调用方看来就是"接口明明通，回复却经常失败"。
+        已知会返回 None 的场景：
+          - finish_reason='length'，回复被 max_tokens 截断；
+          - 命中服务端内容过滤；
+          - 推理类模型（deepseek-r1、qwq 等）把正文放在 reasoning_content。
+        """
+        choices = getattr(response, 'choices', None)
+        if not choices:
+            raise RuntimeError("AI 返回内容为空（choices 为空）")
+
+        choice = choices[0]
+        message = getattr(choice, 'message', None)
+        content = getattr(message, 'content', None) if message else None
+
+        # 推理模型的正文可能只在 reasoning_content 里
+        if not content and message is not None:
+            content = getattr(message, 'reasoning_content', None)
+
+        if not content:
+            finish_reason = getattr(choice, 'finish_reason', None)
+            if finish_reason == 'length':
+                raise RuntimeError("AI 回复被 max_tokens 截断且未返回内容，请调大回复长度上限")
+            if finish_reason == 'content_filter':
+                raise RuntimeError("AI 回复被服务端内容过滤拦截")
+            raise RuntimeError(f"AI 返回内容为空（finish_reason={finish_reason}）")
+
+        return content.strip()
+
+    def _resolve_max_tokens(self, settings: dict) -> int:
+        """回复长度上限。
+
+        原先三处调用都写死 100，中文大约只有 50~70 字，稍长一点的客服回复就会
+        撞上 finish_reason='length'，模型可能连内容都不返回。正文本身在
+        _normalize_reply 里按 300 字符截断，这里给够额度即可。
+        """
+        raw = settings.get('max_tokens') or os.getenv('AI_MAX_TOKENS') or 400
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 400
+        # 太小必然截断，太大既费钱也没意义（正文只保留 300 字符）
+        return min(max(value, 200), 2000)
+
+    def _dispatch_api_call(self, settings: dict, messages: list, cookie_id: str, max_tokens: int) -> Optional[str]:
+        """按配置选择具体的 AI 服务并发起一次调用。"""
+        if self._is_dashscope_api(settings):
+            logger.info("使用DashScope API生成回复")
+            return self._call_dashscope_api(settings, messages, max_tokens=max_tokens, temperature=0.7)
+
+        if self._is_gemini_api(settings):
+            logger.info("使用Gemini API生成回复")
+            return self._call_gemini_api(settings, messages, max_tokens=max_tokens, temperature=0.7)
+
+        logger.info("使用OpenAI兼容API生成回复")
+        # 修复 P0-2: 调用已修改的无状态客户端创建方法
+        client = self._create_openai_client(cookie_id)
+        if not client:
+            return None
+        return self._call_openai_api(client, settings, messages, max_tokens=max_tokens, temperature=0.7)
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """判断这次失败换个时间重试还有没有意义。
+
+        限流、超时、连接中断、网关错误都是暂时的；鉴权失败、参数错误重试多少次
+        都一样，重试只会拖慢回复。
+        """
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        if status is None:
+            status = getattr(exc, 'status_code', None)
+        if isinstance(status, int):
+            return status in (408, 409, 425, 429, 500, 502, 503, 504)
+
+        name = type(exc).__name__.lower()
+        return any(k in name for k in ('timeout', 'connection', 'unavailable', 'ratelimit'))
+
+    def _generate_with_retry(self, settings: dict, messages: list, cookie_id: str) -> Optional[str]:
+        """调用 AI 服务，对暂时性故障做有限重试。
+
+        没有重试是此前失败率偏高的主因：一次限流或网络抖动就直接放弃，
+        买家那边看到的就是"这条消息没人回"。
+        """
+        max_tokens = self._resolve_max_tokens(settings)
+        attempts = 3
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._dispatch_api_call(settings, messages, cookie_id, max_tokens)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts or not self._is_retryable(exc):
+                    break
+                delay = 0.8 * (2 ** (attempt - 1))  # 0.8s、1.6s
+                logger.warning(
+                    f"AI调用失败({type(exc).__name__})，{delay:.1f}s 后重试 "
+                    f"[{attempt}/{attempts}] 账号={cookie_id}"
+                )
+                time.sleep(delay)
+
+        if last_exc:
+            raise last_exc
+        return None
 
     def _resolve_system_prompt(self, raw_prompts: str, intent: str) -> str:
         """兼容旧版 JSON 提示词和新版纯文本风格说明。"""
@@ -442,23 +551,7 @@ class AIReplyEngine:
                     {"role": "user", "content": message},
                 ]
 
-                reply = None # 初始化 reply 变量
-
-                if self._is_dashscope_api(settings):
-                    logger.info(f"使用DashScope API生成回复")
-                    reply = self._call_dashscope_api(settings, messages, max_tokens=100, temperature=0.7)
-                
-                elif self._is_gemini_api(settings):
-                    logger.info(f"使用Gemini API生成回复")
-                    reply = self._call_gemini_api(settings, messages, max_tokens=100, temperature=0.7)
-                
-                else:
-                    logger.info(f"使用OpenAI兼容API生成回复")
-                    # 修复 P0-2: 调用已修改的无状态客户端创建方法
-                    client = self._create_openai_client(cookie_id)
-                    if not client:
-                        return None
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                reply = self._generate_with_retry(settings, messages, cookie_id)
 
                 reply = self._normalize_reply(reply)
                 if not reply:

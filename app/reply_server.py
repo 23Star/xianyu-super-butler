@@ -151,7 +151,8 @@ class RegisterRequest(BaseModel):
     username: str
     email: str
     password: str
-    verification_code: str
+    # 关闭邮箱验证时前端不会带这个字段，设为可选避免直接 422
+    verification_code: Optional[str] = None
 
 
 class RegisterResponse(BaseModel):
@@ -1054,13 +1055,21 @@ async def register(request: RegisterRequest):
     try:
         logger.info(f"【{request.username}】尝试注册，邮箱: {request.email}")
 
-        # 验证邮箱验证码
-        if not db_manager.verify_email_code(request.email, request.verification_code):
-            logger.warning(f"【{request.username}】注册失败: 验证码错误或已过期")
-            return RegisterResponse(
-                success=False,
-                message="验证码错误或已过期"
-            )
+        # 邮箱验证码是否必填由管理员在系统设置里控制。
+        # 没配 SMTP 的部署发不出验证码，强制校验会让注册完全不可用；
+        # 关掉这项就能先用起来，配好邮件服务后再开回去。
+        email_verification = db_manager.get_system_setting('email_verification_enabled')
+        # 老库没有这一项，按开启处理，避免升级后安全性被悄悄降低
+        require_email_code = str(email_verification or 'true').strip().lower() not in ('0', 'false', 'no')
+
+        if require_email_code:
+            # 验证邮箱验证码
+            if not db_manager.verify_email_code(request.email, request.verification_code):
+                logger.warning(f"【{request.username}】注册失败: 验证码错误或已过期")
+                return RegisterResponse(
+                    success=False,
+                    message="验证码错误或已过期"
+                )
 
         # 检查用户名是否已存在
         existing_user = db_manager.get_user_by_username(request.username)
@@ -2608,6 +2617,16 @@ async def check_qr_code_status(session_id: str, current_user: Dict[str, Any] = D
 
             qr_login_manager.cleanup_expired_sessions()
             status_info = qr_login_manager.get_session_status(session_id)
+            if status_info.get('status') == 'verification_required' and status_info.get('verification_url'):
+                import base64
+                import qrcode
+
+                qr_image = qrcode.make(status_info['verification_url'])
+                qr_buffer = io.BytesIO()
+                qr_image.save(qr_buffer, format='PNG')
+                status_info['verification_qr_code_url'] = (
+                    'data:image/png;base64,' + base64.b64encode(qr_buffer.getvalue()).decode('ascii')
+                )
             log_with_user(
                 'debug',
                 f"扫码登录会话状态: session={session_id}, status={status_info['status']}",
@@ -3624,15 +3643,25 @@ def get_public_system_settings():
     try:
         all_settings = db_manager.get_all_system_settings()
         # 只返回公开的配置项
-        public_keys = {"registration_enabled", "show_default_login_info", "login_captcha_enabled"}
-        return {k: v for k, v in all_settings.items() if k in public_keys}
+        public_keys = {
+            "registration_enabled",
+            "show_default_login_info",
+            "login_captcha_enabled",
+            # 注册表单要据此决定是否显示验证码输入框
+            "email_verification_enabled",
+        }
+        result = {k: v for k, v in all_settings.items() if k in public_keys}
+        # 没写过这项的老库按开启处理，与后端校验逻辑保持一致
+        result.setdefault("email_verification_enabled", "true")
+        return result
     except Exception as e:
         logger.error(f"获取公开系统设置失败: {e}")
         # 返回默认值
         return {
             "registration_enabled": "true",
             "show_default_login_info": "true",
-            "login_captcha_enabled": "true"
+            "login_captcha_enabled": "true",
+            "email_verification_enabled": "true"
         }
 
 
@@ -8432,6 +8461,33 @@ def _seller_feature_enabled(key: str) -> bool:
     return str(db_manager.get_system_setting(key) or '').strip().lower() in ('1', 'true', 'yes')
 
 
+@app.get('/api/announcement')
+async def get_announcement(
+    force: bool = False,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """全局公告与版本检查。
+
+    数据来自系统设置里配置的公网 JSON 地址，后端代拉并缓存 10 分钟。
+    远端不可用时沿用上次结果，保证页面不受影响。
+    """
+    from app.announcement import get_announcement_payload
+    return await get_announcement_payload(force=force)
+
+
+@app.get('/api/orders/seller-features')
+async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """返回买家互动类功能的开关状态。
+
+    这两项会对买家产生不可撤销的实际动作，订单页需要据此决定是否展示入口，
+    避免用户点了才发现被后端拒绝。
+    """
+    return {
+        'auto_rate_enabled': _seller_feature_enabled(AUTO_RATE_SETTING_KEY),
+        'auto_flower_enabled': _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY),
+    }
+
+
 def _resolve_order_cookie(order_id: str, user_cookies: Dict[str, str]) -> tuple:
     """校验订单归属并返回 (cookie_id, cookies_str)。"""
     from app.db_manager import db_manager
@@ -8630,6 +8686,86 @@ def use_quick_phrase(
     return {'success': db_manager.increment_quick_phrase_usage(phrase_id)}
 
 
+@app.post('/api/captcha/manual-session')
+async def start_manual_captcha(
+    cookie_id: str = Form(...),
+    timeout: int = Form(300),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """开启人工验证会话。
+
+    自动识别虽然能把滑块拖到目标位置，但服务端拦的是行为特征，重试再多次也
+    不会通过。这里把滑块画面推到前端弹窗，用户手动完成后取回新 Cookie。
+
+    只有账号处于风控状态时才允许调用 —— 非风控时闲鱼不会下发惩罚页，
+    开会话只会白等一场，还可能因为多余请求把账号推向风控。
+    """
+    from app.db_manager import db_manager
+    from utils.manual_captcha import open_manual_session
+    from utils import risk_control
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    if cookie_id not in user_cookies:
+        raise HTTPException(status_code=404, detail="账号不存在或无权访问")
+
+    guard = risk_control.registry.get(cookie_id)
+    if not guard.is_blocked:
+        raise HTTPException(
+            status_code=409,
+            detail="该账号当前不处于风控状态，无需人工验证",
+        )
+
+    timeout = max(60, min(int(timeout or 300), 900))
+    result = await open_manual_session(
+        cookie_id, user_cookies[cookie_id], timeout=timeout
+    )
+
+    if result['success']:
+        # 保存新 Cookie 并解除风控熔断，让账号能立刻重连
+        db_manager.save_cookie(cookie_id, result['cookies_str'])
+
+        # 运行中的实例仍持有旧 Cookie，不同步会继续用旧值打接口并立刻再次熔断
+        try:
+            manager = cookie_manager.manager
+            if manager is not None:
+                manager.cookies[cookie_id] = result['cookies_str']
+                instance = manager.instances.get(cookie_id)
+                if instance is not None:
+                    instance.cookies_str = result['cookies_str']
+                    # 清掉失效令牌，强制下次请求重新获取
+                    instance.current_token = None
+                    log_with_user('info', f"账号 {cookie_id} 运行实例已同步新 Cookie", current_user)
+        except Exception as exc:
+            log_with_user('warning', f"同步实例 Cookie 失败: {exc}", current_user)
+
+        try:
+            from utils import risk_control
+
+            risk_control.registry.get(cookie_id).reset()
+        except Exception as exc:
+            log_with_user('warning', f"重置风控状态失败: {exc}", current_user)
+        log_with_user('info', f"账号 {cookie_id} 人工验证完成，已更新 Cookie", current_user)
+
+    return JSONResponse({
+        'success': result['success'],
+        'message': result['message'],
+        'session_id': result['session_id'],
+    })
+
+
+def classify_verification_event(detail: str, blocked: bool = False, reason: str = '') -> Tuple[str, str]:
+    text = str(detail or '')
+    if 'action=captcha' in text or 'slider_captcha' in text or '滑块' in text:
+        return 'slider', 'Token 刷新被闲鱼重定向到滑块验证页'
+    if '人脸' in text or 'face' in text.lower() or 'iframeRedirect' in text:
+        return 'face', '闲鱼要求手机完成人脸或安全验证'
+    if '扫码' in text or 'qr' in text.lower():
+        return 'qr', '闲鱼要求重新扫码登录'
+    if blocked:
+        return 'risk_control', reason or '闲鱼限制了当前账号请求'
+    return 'none', ''
+
+
 @app.get('/api/risk-control/status')
 def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_user)):
     """查询各账号的风控熔断状态。
@@ -8648,6 +8784,23 @@ def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_u
         state = snapshot.get(cid) or {
             'cookie_id': cid, 'blocked': False,
             'remaining_seconds': 0, 'consecutive_hits': 0, 'reason': '',
+        }
+        recent_logs = db_manager.get_risk_control_logs(
+            cookie_id=cid, limit=1, user_id=current_user['user_id']
+        )
+        latest = recent_logs[0] if recent_logs else {}
+        detail = ' '.join(str(latest.get(key) or '') for key in (
+            'event_type', 'event_description', 'processing_result', 'error_message'
+        ))
+        verification_type, verification_message = classify_verification_event(
+            detail, blocked=bool(state.get('blocked')), reason=state.get('reason') or ''
+        )
+        state = {
+            **state,
+            'verification_type': verification_type,
+            'verification_message': verification_message,
+            'latest_event': latest.get('event_description') or '',
+            'latest_event_at': latest.get('created_at'),
         }
         accounts.append(state)
 

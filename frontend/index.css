@@ -892,3 +892,40 @@ a:focus-visible {
     padding-right: 1.5rem;
   }
 }
+
+/* 全局公告跑马灯：轨道内容重复一份，位移 -50% 时正好接回起点，实现无缝循环 */
+.marquee {
+  overflow: hidden;
+}
+
+.marquee__track {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  will-change: transform;
+  animation: marquee-scroll 40s linear infinite;
+}
+
+/* 悬停暂停，方便阅读长公告 */
+.marquee:hover .marquee__track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* 尊重系统的「减少动态效果」设置：关掉滚动，改为可横向拖看 */
+@media (prefers-reduced-motion: reduce) {
+  .marquee__track {
+    animation: none;
+  }
+  .marquee {
+    overflow-x: auto;
+  }
+}

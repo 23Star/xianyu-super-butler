@@ -165,10 +165,21 @@ class OrderDetailFetcher:
 
             logger.info("浏览器启动成功，创建上下文...")
 
-            # 创建浏览器上下文
+            # 创建浏览器上下文。
+            # 订单详情页是 h5.m.goofish.com 的移动端 SPA，用桌面 UA + 1920x1080
+            # 视口访问会命中降级分支：外壳 HTML 返回（标题正确），但 JS 应用不挂载，
+            # DOM 只剩两三个节点 —— 表现为规格、收货人、金额全空，换任何选择器都是 0 个元素。
+            # 因此必须以真实移动端身份访问。
             self.context = await self.browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                viewport={'width': 390, 'height': 844},
+                device_scale_factor=3,
+                is_mobile=True,
+                has_touch=True,
+                user_agent=(
+                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) '
+                    'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+                    'Version/17.5 Mobile/15E148 Safari/604.1'
+                )
             )
 
             logger.info("浏览器上下文创建成功，设置HTTP头...")
@@ -308,8 +319,14 @@ class OrderDetailFetcher:
                     logger.error("浏览器初始化失败，无法获取订单详情")
                     return None
 
-                # 构建订单详情URL
-                url = f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller"
+                # 构建订单详情URL。
+                # 桌面版 www.goofish.com/order-detail 实测会被重定向到首页
+                # （标题变成「闲鱼 - 闲不住？上闲鱼！」），拿不到任何订单数据。
+                # 闲鱼消息卡片里「去发货」按钮指向的 H5 发货页才是可用地址。
+                url = (
+                    "https://h5.m.goofish.com/wow/moyu/moyu-project/idle-logistics/"
+                    f"pages/idleDeliver?kun=true&titleVisible=false&orderId={order_id}"
+                )
                 logger.info(f"开始访问订单详情页面: {url}")
 
                 # 访问页面（带重试机制）
@@ -379,6 +396,34 @@ class OrderDetailFetcher:
                     logger.warning(f"获取页面标题失败: {e}")
                     title = f"订单详情 - {order_id}"
 
+                # 空页检测：SPA 未渲染时 body 里几乎没有节点，此时各字段全空。
+                # 若照常返回 success，上层会当成「订单确实没有规格」而静默跳过发货，
+                # 真正的失败被掩盖。这里显式判定并标记出来。
+                try:
+                    node_count = await self.page.evaluate(
+                        "document.body ? document.body.querySelectorAll('*').length : 0"
+                    )
+                except Exception:
+                    node_count = -1
+
+                page_looks_empty = 0 <= node_count < 20
+                if page_looks_empty:
+                    logger.error(
+                        f"页面几乎无内容（DOM 节点仅 {node_count} 个），"
+                        f"订单 {order_id} 的详情未能真正渲染 —— "
+                        "通常是移动端页面被拒绝挂载或登录态失效"
+                    )
+                    try:
+                        shot_dir = os.path.join('logs', 'screenshots')
+                        os.makedirs(shot_dir, exist_ok=True)
+                        shot_path = os.path.join(
+                            shot_dir, f'empty_{order_id}_{int(time.time())}.png'
+                        )
+                        await self.page.screenshot(path=shot_path)
+                        logger.info(f"空页截图已保存: {shot_path}")
+                    except Exception as shot_err:
+                        logger.debug(f"空页截图失败: {shot_err}")
+
                 result = {
                     'order_id': order_id,
                     'url': url,
@@ -399,7 +444,10 @@ class OrderDetailFetcher:
                     'receiver_phone': sku_info.get('receiver_phone', '') if sku_info else '',  # 收货人电话
                     'receiver_address': sku_info.get('receiver_address', '') if sku_info else '',  # 收货地址
                     'timestamp': time.time(),
-                    'from_cache': False  # 标记数据来源
+                    'from_cache': False,  # 标记数据来源
+                    # 供上层区分「订单确实无规格」与「页面根本没渲染出来」
+                    'page_empty': page_looks_empty,
+                    'dom_node_count': node_count,
                 }
 
                 logger.info(f"订单详情获取成功: {order_id}")
@@ -461,17 +509,40 @@ class OrderDetailFetcher:
 
             result = {}
 
-            # 获取所有 sku--u_ddZval 元素
-            sku_selector = '.sku--u_ddZval'
-            sku_elements = await self.page.query_selector_all(sku_selector)
+            # 定位 SKU 元素。
+            # 闲鱼前端用 CSS Modules，类名带构建哈希（如 .sku--u_ddZval），
+            # 每次发版都会变，硬编码单一选择器一旦改版就永久失效。
+            # 这里按「精确哈希 → 通用属性匹配」的顺序回退，任一命中即可。
+            sku_selectors = [
+                '.sku--u_ddZval',
+                '[class*="sku--"]',
+                '[class*="sku"]',
+                '[class*="spec"]',
+            ]
+            sku_elements = []
+            for candidate in sku_selectors:
+                try:
+                    found = await self.page.query_selector_all(candidate)
+                except Exception:
+                    continue
+                if found:
+                    sku_elements = found
+                    logger.info(f"选择器 {candidate} 命中 {len(found)} 个 SKU 元素")
+                    break
 
-            logger.info(f"找到 {len(sku_elements)} 个 sku--u_ddZval 元素")
-            print(f"[SEARCH] 找到 {len(sku_elements)} 个 sku--u_ddZval 元素")
+            logger.info(f"找到 {len(sku_elements)} 个 SKU 元素")
+            print(f"[SEARCH] 找到 {len(sku_elements)} 个 SKU 元素")
 
-            # 获取金额信息
-            amount_selector = '.boldNum--JgEOXfA3'
-            amount_element = await self.page.query_selector(amount_selector)
+            # 获取金额信息，同样做选择器回退
             amount = ''
+            amount_element = None
+            for candidate in ['.boldNum--JgEOXfA3', '[class*="boldNum"]', '[class*="price"]']:
+                try:
+                    amount_element = await self.page.query_selector(candidate)
+                except Exception:
+                    continue
+                if amount_element:
+                    break
             if amount_element:
                 amount_text = await amount_element.text_content()
                 if amount_text:

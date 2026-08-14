@@ -499,6 +499,8 @@ export interface SystemSettings {
   ai_base_url?: string;
   default_reply?: string;
   registration_enabled?: boolean;
+  // 注册是否必须填邮箱验证码。没配 SMTP 时关掉，否则注册会卡在收不到验证码
+  email_verification_enabled?: boolean;
   // 定时从卖家端拉取订单，默认开启
   order_sync_enabled?: boolean;
   order_sync_interval?: number;
@@ -508,6 +510,9 @@ export interface SystemSettings {
   // 对买家产生实际动作，默认关闭
   auto_rate_enabled?: boolean;
   auto_flower_enabled?: boolean;
+  // 公告与更新：地址存为字符串，开关也用字符串以复用通用设置接口
+  announcement_source_url?: string;
+  announcement_enabled?: string;
   smtp_server?: string;
   [key: string]: any;
 }
@@ -534,4 +539,24 @@ export interface DefaultReply {
   reply_content: string;
   reply_once: boolean;
   reply_image_url?: string;
+}
+
+// 全局公告与版本检查
+export interface AnnouncementItem {
+  id: string;
+  title: string;
+  content: string;
+  level: 'info' | 'warning' | 'danger';
+  published_at: string;
+}
+
+export interface AnnouncementPayload {
+  local_version: string;
+  latest_version: string;
+  download_url: string;
+  release_notes: string;
+  has_update: boolean;
+  source_configured: boolean;
+  error: string;
+  announcements: AnnouncementItem[];
 }

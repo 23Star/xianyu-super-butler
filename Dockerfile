@@ -37,7 +37,7 @@ COPY --from=frontend-builder /frontend/dist ./static
 FROM base AS runtime
 
 LABEL maintainer="23Star" \
-      version="2.5.0" \
+      version="3.0.0-beta" \
       description="Xianyu account, item, order, reply, and delivery management" \
       repository="https://github.com/23Star/xianyu-super-butler" \
       author="23Star"

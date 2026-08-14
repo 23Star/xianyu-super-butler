@@ -3,7 +3,9 @@ import {
   Database,
   Eye,
   EyeOff,
+  KeyRound,
   Mail,
+  Megaphone,
   RefreshCw,
   Save,
   Settings as SettingsIcon,
@@ -14,6 +16,7 @@ import {
 } from 'lucide-react';
 
 import {
+  changePassword,
   createQuickPhrase,
   deleteQuickPhrase,
   getQuickPhrases,
@@ -31,7 +34,25 @@ import {
   SectionHeader,
 } from './ui';
 
-type SettingsSection = 'general' | 'ai' | 'email' | 'phrases';
+type SettingsSection = 'general' | 'ai' | 'email' | 'phrases' | 'notice';
+
+/**
+ * 把后端的开关值转成布尔。
+ *
+ * 后端统一把开关存成 'true' / 'false' 字符串。直接拿来当布尔用会踩坑：
+ * 'false' 本身是 truthy，关掉的开关在界面上仍显示开启；再点一次取反得到的
+ * 还是 false，于是开关一旦关闭就再也打不开。
+ */
+const toBool = (value: unknown, fallback = false): boolean => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return fallback;
+    return !['false', '0', 'no'].includes(normalized);
+  }
+  if (value === undefined || value === null) return fallback;
+  return Boolean(value);
+};
 
 interface SettingToggleProps {
   title: string;
@@ -104,6 +125,48 @@ const Settings: React.FC = () => {
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
 
+  // 修改登录密码。与页面顶部的「保存设置」互不影响：这里改的是当前账号的凭据，
+  // 走的是独立接口，成功后立刻生效。
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' });
+  const [showPasswordFields, setShowPasswordFields] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+
+  const handleChangePassword = async () => {
+    const { current, next, confirm } = passwordForm;
+    if (!current || !next) {
+      notify('请填写当前密码和新密码');
+      return;
+    }
+    if (next.length < 6) {
+      notify('新密码至少 6 位');
+      return;
+    }
+    if (next !== confirm) {
+      notify('两次输入的新密码不一致');
+      return;
+    }
+    if (next === current) {
+      notify('新密码不能与当前密码相同');
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const result = await changePassword(current, next);
+      // 后端对「当前密码错误」这类校验失败也返回 200，要看 success 字段
+      if (result?.success === false) {
+        notify(result.message || '密码修改失败');
+        return;
+      }
+      setPasswordForm({ current: '', next: '', confirm: '' });
+      notify('密码已修改，下次登录请使用新密码');
+    } catch (error) {
+      notify(`密码修改失败：${(error as Error).message}`);
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   useEffect(() => {
     loadSettings();
   }, []);
@@ -167,6 +230,7 @@ const Settings: React.FC = () => {
           { id: 'ai', label: '默认 AI 配置', icon: Sparkles },
           { id: 'email', label: '邮件服务', icon: Mail },
           { id: 'phrases', label: '快捷短语', icon: Zap },
+          { id: 'notice', label: '互动与公告', icon: Megaphone },
         ]}
       />
 
@@ -181,30 +245,107 @@ const Settings: React.FC = () => {
             <SettingToggle
               title="允许用户注册"
               description="开启后允许新用户从登录页创建管理账号。"
-              checked={settings.registration_enabled}
+              checked={toBool(settings.registration_enabled, true)}
               onChange={() => setSettings({
                 ...settings,
-                registration_enabled: !settings.registration_enabled,
+                registration_enabled: !toBool(settings.registration_enabled, true),
+              })}
+            />
+            <SettingToggle
+              title="注册邮箱验证"
+              description="要求注册时填写邮箱验证码。未配置下方「邮件服务」时请关闭，否则用户收不到验证码、无法完成注册。"
+              checked={toBool(settings.email_verification_enabled, true)}
+              onChange={() => setSettings({
+                ...settings,
+                email_verification_enabled: !toBool(settings.email_verification_enabled, true),
               })}
             />
             <SettingToggle
               title="显示默认登录信息"
               description="仅建议在本地调试环境显示默认账号提示。"
-              checked={settings.show_default_login_info}
+              checked={toBool(settings.show_default_login_info, true)}
               onChange={() => setSettings({
                 ...settings,
-                show_default_login_info: !settings.show_default_login_info,
+                show_default_login_info: !toBool(settings.show_default_login_info, true),
               })}
             />
             <SettingToggle
               title="登录滑动验证码"
               description="账号密码登录前要求完成滑动验证。"
-              checked={settings.login_captcha_enabled}
+              checked={toBool(settings.login_captcha_enabled, true)}
               onChange={() => setSettings({
                 ...settings,
-                login_captcha_enabled: !settings.login_captcha_enabled,
+                login_captcha_enabled: !toBool(settings.login_captcha_enabled, true),
               })}
             />
+          </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="修改登录密码"
+              description="修改当前登录账号的密码，保存后立即生效。"
+              icon={KeyRound}
+            />
+            <div className="grid gap-4 p-4">
+              <label>
+                <span className="field-label">当前密码</span>
+                <div className="relative">
+                  <input
+                    type={showPasswordFields ? 'text' : 'password'}
+                    value={passwordForm.current}
+                    onChange={e => setPasswordForm({ ...passwordForm, current: e.target.value })}
+                    autoComplete="current-password"
+                    placeholder="请输入当前密码"
+                    className="ios-input w-full rounded-md px-3 py-2.5 pr-11 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPasswordFields(!showPasswordFields)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    aria-label={showPasswordFields ? '隐藏密码' : '显示密码'}
+                  >
+                    {showPasswordFields ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </label>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label>
+                  <span className="field-label">新密码</span>
+                  <input
+                    type={showPasswordFields ? 'text' : 'password'}
+                    value={passwordForm.next}
+                    onChange={e => setPasswordForm({ ...passwordForm, next: e.target.value })}
+                    autoComplete="new-password"
+                    placeholder="至少 6 位"
+                    className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
+                  />
+                </label>
+                <label>
+                  <span className="field-label">确认新密码</span>
+                  <input
+                    type={showPasswordFields ? 'text' : 'password'}
+                    value={passwordForm.confirm}
+                    onChange={e => setPasswordForm({ ...passwordForm, confirm: e.target.value })}
+                    autoComplete="new-password"
+                    placeholder="再次输入新密码"
+                    className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
+                  />
+                </label>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void handleChangePassword()}
+                  disabled={changingPassword}
+                  className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm disabled:opacity-60"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  {changingPassword ? '修改中' : '修改密码'}
+                </button>
+              </div>
+            </div>
           </section>
 
           <section className="section-panel">
@@ -216,10 +357,10 @@ const Settings: React.FC = () => {
             <SettingToggle
               title="启用商品自动同步"
               description="定时将账号商品更新到本地商品库。"
-              checked={settings.item_sync_enabled}
+              checked={toBool(settings.item_sync_enabled, true)}
               onChange={() => setSettings({
                 ...settings,
-                item_sync_enabled: !settings.item_sync_enabled,
+                item_sync_enabled: !toBool(settings.item_sync_enabled, true),
               })}
             />
             <div className="grid gap-4 p-4 sm:grid-cols-2">
@@ -324,6 +465,11 @@ const Settings: React.FC = () => {
             </div>
           </section>
 
+        </div>
+      )}
+
+      {activeSection === 'notice' && (
+        <div className="grid gap-4 xl:grid-cols-2">
           <section className="section-panel">
             <SectionHeader
               title="买家互动"
@@ -333,21 +479,55 @@ const Settings: React.FC = () => {
             <SettingToggle
               title="允许提交买家评价"
               description="开启后订单页可给买家评价。评价提交后无法撤销。"
-              checked={settings.auto_rate_enabled}
+              checked={toBool(settings.auto_rate_enabled, false)}
               onChange={() => setSettings({
                 ...settings,
-                auto_rate_enabled: !settings.auto_rate_enabled,
+                auto_rate_enabled: !toBool(settings.auto_rate_enabled, false),
               })}
             />
             <SettingToggle
               title="允许索要小红花"
               description="开启后订单页可发起求花，会向买家发送一条消息。"
-              checked={settings.auto_flower_enabled}
+              checked={toBool(settings.auto_flower_enabled, false)}
               onChange={() => setSettings({
                 ...settings,
-                auto_flower_enabled: !settings.auto_flower_enabled,
+                auto_flower_enabled: !toBool(settings.auto_flower_enabled, false),
               })}
             />
+          </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="公告与更新"
+              description="填入你的公网 JSON 地址后，系统会定时拉取公告并检查新版本。"
+              icon={Megaphone}
+            />
+            <SettingToggle
+              title="启用公告与更新检查"
+              description="关闭后不再拉取远端公告，也不提示新版本。"
+              checked={settings.announcement_enabled !== 'false'}
+              onChange={() => setSettings({
+                ...settings,
+                announcement_enabled: settings.announcement_enabled === 'false' ? 'true' : 'false',
+              })}
+            />
+            <div className="px-4 py-3">
+              <label className="field-label">公告 JSON 地址</label>
+              <input
+                type="url"
+                value={settings.announcement_source_url || ''}
+                onChange={e => setSettings({
+                  ...settings,
+                  announcement_source_url: e.target.value,
+                })}
+                placeholder="https://你的域名/announcement.json"
+                className="ios-input mt-1 w-full rounded-md px-3 py-2 text-sm"
+              />
+              <p className="mt-1.5 text-xs text-gray-500">
+                后端每 10 分钟拉取一次并缓存；远端不可用时沿用上次结果。
+                在「关于」页可手动点「检查更新」立即刷新。
+              </p>
+            </div>
           </section>
         </div>
       )}

@@ -1,8 +1,9 @@
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import GlobalFeedback from './components/GlobalFeedback';
-import { login, verifyToken } from './services/api';
-import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu } from 'lucide-react';
+import AnnouncementBanner from './components/AnnouncementBanner';
+import { login, verifyToken, getPublicSettings, register, sendVerificationCode } from './services/api';
+import { ShieldCheck, ArrowRight, Loader2, User, Lock, Menu, Mail, KeyRound, CheckCircle2 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const AccountList = lazy(() => import('./components/AccountList'));
@@ -15,6 +16,7 @@ const Settings = lazy(() => import('./components/Settings'));
 const Keywords = lazy(() => import('./components/Keywords'));
 const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
+const About = lazy(() => import('./components/About'));
 
 const PageLoader = () => (
   <div className="page-loading">
@@ -35,6 +37,7 @@ const pageLabels: Record<string, string> = {
   'product-automation': '商品自动化',
   notifications: '通知与日志',
   settings: '系统设置',
+  about: '关于',
 };
 
 const App: React.FC = () => {
@@ -45,8 +48,103 @@ const App: React.FC = () => {
   const [password, setPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  // 注册成功后回到登录页时的提示
+  const [loginNotice, setLoginNotice] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // 注册相关。是否显示入口由后台「允许用户注册」控制，
+  // 是否需要填验证码由后台「注册邮箱验证」控制（没配 SMTP 时可以关掉）。
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [allowRegister, setAllowRegister] = useState(false);
+  const [needEmailCode, setNeedEmailCode] = useState(true);
+  const [regForm, setRegForm] = useState({ username: '', email: '', password: '', code: '' });
+  const [regLoading, setRegLoading] = useState(false);
+  const [regError, setRegError] = useState('');
+  const [regNotice, setRegNotice] = useState('');
+  const [codeSending, setCodeSending] = useState(false);
+  const [codeCountdown, setCodeCountdown] = useState(0);
+
+  useEffect(() => {
+    getPublicSettings()
+      .then(s => {
+        setAllowRegister(String(s.registration_enabled) === 'true');
+        setNeedEmailCode(String(s.email_verification_enabled ?? 'true') !== 'false');
+      })
+      .catch(() => setAllowRegister(false));
+  }, []);
+
+  // 验证码重发倒计时
+  useEffect(() => {
+    if (codeCountdown <= 0) return;
+    const timer = setTimeout(() => setCodeCountdown(codeCountdown - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [codeCountdown]);
+
+  const handleSendCode = async () => {
+    if (!regForm.email.trim()) {
+      setRegError('请先填写邮箱');
+      return;
+    }
+    setCodeSending(true);
+    setRegError('');
+    setRegNotice('');
+    try {
+      const res = await sendVerificationCode(regForm.email.trim(), 'register');
+      if (res?.success === false) {
+        // 多半是没配 SMTP，直接把后端原因透出来，省得对着"发送失败"猜
+        setRegError(res.message || '验证码发送失败，请确认邮件服务已配置');
+        return;
+      }
+      setRegNotice('验证码已发送，请查收邮箱');
+      setCodeCountdown(60);
+    } catch (err) {
+      setRegError(err instanceof Error ? err.message : '验证码发送失败');
+    } finally {
+      setCodeSending(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegError('');
+    setRegNotice('');
+
+    if (regForm.password.length < 6) {
+      setRegError('密码至少 6 位');
+      return;
+    }
+    if (needEmailCode && !regForm.code.trim()) {
+      setRegError('请填写邮箱验证码');
+      return;
+    }
+
+    setRegLoading(true);
+    try {
+      const res = await register({
+        username: regForm.username.trim(),
+        email: regForm.email.trim(),
+        password: regForm.password,
+        ...(needEmailCode ? { verification_code: regForm.code.trim() } : {}),
+      });
+      if (res?.success) {
+        // 注册成功后回到登录页，并把用户名带过去，少填一次
+        setUsername(regForm.username.trim());
+        setPassword('');
+        setRegForm({ username: '', email: '', password: '', code: '' });
+        setAuthMode('login');
+        setLoginError('');
+        setRegNotice('');
+        setLoginNotice('注册成功，请使用新账号登录');
+      } else {
+        setRegError(res?.message || '注册失败');
+      }
+    } catch (err) {
+      setRegError(err instanceof Error ? err.message : '注册失败，请稍后重试');
+    } finally {
+      setRegLoading(false);
+    }
+  };
 
   // Check auth on mount
   useEffect(() => {
@@ -142,10 +240,15 @@ const App: React.FC = () => {
                   <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-md border border-[#e4cf00] bg-[#ffe100] lg:hidden">
                     <span className="text-xl font-black text-[#1f2328]">闲</span>
                   </div>
-                  <h2 className="text-2xl font-extrabold text-gray-900">登录管理后台</h2>
-                  <p className="mt-2 text-sm text-gray-500">使用管理员账号进入工作台</p>
+                  <h2 className="text-2xl font-extrabold text-gray-900">
+                    {authMode === 'login' ? '登录管理后台' : '注册新账号'}
+                  </h2>
+                  <p className="mt-2 text-sm text-gray-500">
+                    {authMode === 'login' ? '使用管理员账号进入工作台' : '创建账号后即可登录工作台'}
+                  </p>
                 </div>
 
+                {authMode === 'login' && (
                 <form onSubmit={handleLogin} className="space-y-5">
                   <div className="space-y-4">
                       <label className="block">
@@ -180,6 +283,12 @@ const App: React.FC = () => {
                       </label>
                   </div>
 
+                  {loginNotice && (
+                      <div role="status" className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-700">
+                          <CheckCircle2 className="h-4 w-4 shrink-0" /> {loginNotice}
+                      </div>
+                  )}
+
                   {loginError && (
                       <div role="alert" className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
                           <ShieldCheck className="h-4 w-4 shrink-0" /> {loginError}
@@ -194,6 +303,130 @@ const App: React.FC = () => {
                     {loginLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>登录 <ArrowRight className="h-4 w-4" /></>}
                   </button>
                 </form>
+                )}
+
+                {authMode === 'register' && (
+                <form onSubmit={handleRegister} className="space-y-5">
+                  <div className="space-y-4">
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">账号</span>
+                          <div className="relative group">
+                            <User className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                            <input
+                                type="text"
+                                placeholder="设置登录账号"
+                                value={regForm.username}
+                                onChange={e => setRegForm({ ...regForm, username: e.target.value })}
+                                autoComplete="username"
+                                required
+                                className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                            />
+                          </div>
+                      </label>
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">邮箱</span>
+                          <div className="relative group">
+                            <Mail className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                            <input
+                                type="email"
+                                placeholder="用于找回账号"
+                                value={regForm.email}
+                                onChange={e => setRegForm({ ...regForm, email: e.target.value })}
+                                autoComplete="email"
+                                required
+                                className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                            />
+                          </div>
+                      </label>
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">密码</span>
+                          <div className="relative group">
+                            <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                            <input
+                                type="password"
+                                placeholder="至少 6 位"
+                                value={regForm.password}
+                                onChange={e => setRegForm({ ...regForm, password: e.target.value })}
+                                autoComplete="new-password"
+                                required
+                                className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                            />
+                          </div>
+                      </label>
+                      {needEmailCode && (
+                      <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold text-gray-600">邮箱验证码</span>
+                          <div className="flex gap-2">
+                            <div className="relative group flex-1">
+                              <KeyRound className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-gray-700" />
+                              <input
+                                  type="text"
+                                  placeholder="请输入验证码"
+                                  value={regForm.code}
+                                  onChange={e => setRegForm({ ...regForm, code: e.target.value })}
+                                  className="ios-input h-11 w-full rounded-md py-2.5 pl-10 pr-4 text-sm"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleSendCode()}
+                              disabled={codeSending || codeCountdown > 0}
+                              className="ios-btn-secondary h-11 shrink-0 rounded-md px-3 text-xs font-bold disabled:opacity-60"
+                            >
+                              {codeCountdown > 0 ? `${codeCountdown}s` : codeSending ? '发送中' : '获取验证码'}
+                            </button>
+                          </div>
+                      </label>
+                      )}
+                  </div>
+
+                  {regNotice && (
+                      <div role="status" className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-700">
+                          <CheckCircle2 className="h-4 w-4 shrink-0" /> {regNotice}
+                      </div>
+                  )}
+
+                  {regError && (
+                      <div role="alert" className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                          <ShieldCheck className="h-4 w-4 shrink-0" /> {regError}
+                      </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={regLoading}
+                    className="ios-btn-primary flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm disabled:opacity-70"
+                  >
+                    {regLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>注册 <ArrowRight className="h-4 w-4" /></>}
+                  </button>
+                </form>
+                )}
+
+                {allowRegister && (
+                  <div className="mt-5 text-center text-xs text-gray-500">
+                    {authMode === 'login' ? (
+                      <>还没有账号？
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode('register'); setLoginError(''); setLoginNotice(''); }}
+                          className="ml-1 font-bold text-[#8c7900] hover:underline"
+                        >
+                          注册新账号
+                        </button>
+                      </>
+                    ) : (
+                      <>已有账号？
+                        <button
+                          type="button"
+                          onClick={() => { setAuthMode('login'); setRegError(''); setRegNotice(''); }}
+                          className="ml-1 font-bold text-[#8c7900] hover:underline"
+                        >
+                          返回登录
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <p className="mt-7 border-t border-gray-100 pt-5 text-xs font-medium text-gray-400">
                   闲鱼智控 · Management Console
@@ -240,6 +473,7 @@ const App: React.FC = () => {
             <p className="text-[11px] text-gray-400">闲鱼智控</p>
           </div>
         </header>
+        {activeTab !== 'messages' && <AnnouncementBanner />}
         <div className={
           activeTab === 'messages'
             ? 'h-[calc(100vh-3.5rem)] lg:h-screen overflow-hidden'
@@ -281,6 +515,9 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'settings'}>
             <Suspense fallback={activeTab === 'settings' ? <PageLoader /> : null}><Settings /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'about'}>
+            <Suspense fallback={activeTab === 'about' ? <PageLoader /> : null}><About /></Suspense>
           </section>
         </div>
       </main>

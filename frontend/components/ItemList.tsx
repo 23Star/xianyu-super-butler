@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Box,
@@ -186,6 +186,7 @@ const Toggle: React.FC<{
 const ItemList: React.FC = () => {
   const [items, setItems] = useState<Item[]>([]);
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [cards, setCards] = useState<Card[]>([]);
   const [shippingRules, setShippingRules] = useState<ShippingRule[]>([]);
   const [deliveryConfigs, setDeliveryConfigs] = useState<ItemDeliveryConfigSummary[]>([]);
@@ -196,6 +197,9 @@ const ItemList: React.FC = () => {
   const [polishing, setPolishing] = useState(false);
   // 商品列表按账号过滤，多账号时避免混在一起看不清归属
   const [listAccountFilter, setListAccountFilter] = useState('');
+  // 商品分页
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [savingKey, setSavingKey] = useState('');
   const [notice, setNotice] = useState<Notice>(null);
 
@@ -252,6 +256,18 @@ const ItemList: React.FC = () => {
     [items, listAccountFilter],
   );
 
+  // 商品数据由后端一次性返回，这里做客户端分页：商品多时一屏几十行难以浏览
+  const totalPages = Math.max(1, Math.ceil(visibleItems.length / pageSize));
+  const pagedItems = useMemo(
+    () => visibleItems.slice((page - 1) * pageSize, page * pageSize),
+    [visibleItems, page, pageSize],
+  );
+
+  // 筛选变化或数据减少导致当前页越界时回到第一页
+  useEffect(() => {
+    if (page > totalPages) setPage(1);
+  }, [totalPages, page]);
+
   const configuredItemCount = useMemo(() => {
     const configuredKeys = new Set(
       deliveryConfigs.map(config => `${config.cookie_id}:${config.item_id}`),
@@ -301,6 +317,33 @@ const ItemList: React.FC = () => {
 
   useEffect(() => {
     void loadData();
+
+    // App 用 hidden 属性切换页面，组件挂载后不会卸载，只在挂载时拉一次的话，
+    // 在别的页面新增账号或卡密后，这里的下拉框始终是旧数据，必须刷新浏览器才更新。
+    const syncSharedData = () => {
+      getAccountDetails().then(setAccounts).catch(() => undefined);
+      getCards().then(setCards).catch(() => undefined);
+      getItemDeliveryConfigs().then(setDeliveryConfigs).catch(() => undefined);
+    };
+
+    // 兜底轮询
+    const timer = setInterval(syncSharedData, 30000);
+
+    // 切回本页时立即同步：刚在卡密库存加完卡密就切过来的场景，等 30 秒太久。
+    // hidden 切换不触发挂载，因此监听自身可见性变化。
+    const node = rootRef.current;
+    let observer: IntersectionObserver | undefined;
+    if (node) {
+      observer = new IntersectionObserver(entries => {
+        if (entries.some(e => e.isIntersecting)) syncSharedData();
+      });
+      observer.observe(node);
+    }
+
+    return () => {
+      clearInterval(timer);
+      observer?.disconnect();
+    };
   }, []);
 
   const handleSync = async () => {
@@ -619,10 +662,10 @@ const ItemList: React.FC = () => {
   }
 
   return (
-    <div className="page-stack animate-fade-in">
+    <div ref={rootRef} className="page-stack animate-fade-in">
       <PageHeader
         title="商品与发货"
-        description="同步闲鱼商品，在同一处维护本地详情、专属发货、通用兜底规则和发货保护。"
+        description="同步在售商品并配置自动发货。"
         icon={Box}
         badge={<span className="status-badge status-badge-info">{items.length} 件商品</span>}
       />
@@ -647,76 +690,21 @@ const ItemList: React.FC = () => {
       )}
 
       <section hidden={activeSection !== 'products'} className="space-y-4">
-        <div className="section-panel">
-          <SectionHeader
-            title="商品同步"
-            description="选择闲鱼账号后同步在售商品；未同步到的商品可手动添加并配置发货。"
-            icon={RefreshCw}
-          />
-          <div className="toolbar border-0 shadow-none">
-            <div className="toolbar__group">
-              <label className="min-w-0 sm:min-w-64">
-                <span className="field-label">同步账号</span>
-                <select
-                  className="ios-input w-full rounded-md px-3 py-2 text-sm"
-                  value={selectedAccount}
-                  onChange={event => setSelectedAccount(event.target.value)}
-                  aria-label="选择同步账号"
-                >
-                  <option value="">请选择闲鱼账号</option>
-                  {accounts.map(account => (
-                    <option key={account.id} value={account.id}>{accountNames.get(account.id)}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="toolbar__group self-end">
-              <button
-                type="button"
-                onClick={openManualModal}
-                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
-              >
-                <Plus className="h-4 w-4" />
-                手动添加
-              </button>
-              <button
-                type="button"
-                onClick={handleSync}
-                disabled={syncing || !selectedAccount}
-                className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
-              >
-                <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? '正在同步' : '同步商品'}
-              </button>
-              <button
-                type="button"
-                onClick={handlePolish}
-                disabled={polishing || items.length === 0}
-                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
-                title="重新获取搜索曝光，平台对每日擦亮次数有限制"
-              >
-                <Sparkles className={`h-4 w-4 ${polishing ? 'animate-pulse' : ''}`} />
-                {polishing ? '正在擦亮' : '一键擦亮'}
-              </button>
-            </div>
-          </div>
-        </div>
-
+        {/* 同步操作与商品列表合并为一块：原来「商品同步」独占一张卡片，
+            加上页头、Tab、列表标题，看到商品前要先翻过四层，信息密度太低。
+            同步账号与列表筛选账号本就是同一个维度，一并收进工具栏。 */}
         <section className="section-panel">
-          <SectionHeader
-            title="商品列表"
-            description={`共 ${items.length} 件商品，已配置专属发货 ${configuredItemCount} 件，覆盖 ${new Set(items.map(item => item.cookie_id)).size} 个账号。`}
-            icon={ShoppingBag}
-          />
-
-          {accounts.length > 1 && (
-            <div className="flex items-center gap-3 border-b border-gray-100 px-4 py-3">
-              <span className="text-xs font-semibold text-gray-500">按账号查看</span>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
               <select
-                value={listAccountFilter}
-                onChange={(event) => setListAccountFilter(event.target.value)}
                 className="ios-input rounded-md px-3 py-2 text-sm"
-                aria-label="按账号筛选商品"
+                value={selectedAccount}
+                onChange={event => {
+                  setSelectedAccount(event.target.value);
+                  setListAccountFilter(event.target.value);
+                  setPage(1);
+                }}
+                aria-label="选择账号"
               >
                 <option value="">全部账号（{items.length}）</option>
                 {accounts.map(account => (
@@ -725,20 +713,58 @@ const ItemList: React.FC = () => {
                   </option>
                 ))}
               </select>
+              <span className="text-xs text-gray-500">
+                已配置专属发货 {configuredItemCount} 件
+              </span>
             </div>
-          )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={openManualModal}
+                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm"
+              >
+                <Plus className="h-4 w-4" />
+                手动添加
+              </button>
+              <button
+                type="button"
+                onClick={handleSync}
+                disabled={syncing || !selectedAccount}
+                className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm"
+                title={selectedAccount ? '从闲鱼拉取该账号的在售商品' : '请先在左侧选择账号'}
+              >
+                <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? '正在同步' : '同步商品'}
+              </button>
+              <button
+                type="button"
+                onClick={handlePolish}
+                disabled={polishing || items.length === 0}
+                className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm"
+                title="重新获取搜索曝光，平台对每日擦亮次数有限制"
+              >
+                <Sparkles className={`h-4 w-4 ${polishing ? 'animate-pulse' : ''}`} />
+                {polishing ? '正在擦亮' : '一键擦亮'}
+              </button>
+            </div>
+          </div>
 
           {visibleItems.length > 0 ? (
             <>
-              <div className="hidden grid-cols-[minmax(260px,1.4fr)_minmax(130px,.7fr)_minmax(200px,1fr)_minmax(150px,.7fr)_96px] gap-5 border-b border-gray-200 bg-gray-50 px-4 py-3 text-xs font-bold text-gray-500 xl:grid">
-                <span>商品信息</span>
-                <span>所属账号</span>
-                <span>专属自动发货</span>
-                <span>商品能力</span>
-                <span className="text-right">操作</span>
-              </div>
-              <div className="divide-y divide-gray-100">
-                {visibleItems.map(item => {
+              {/* 各列用固定宽度而非 minmax 压缩：列宽足够时内容不再挤在一起，
+                  窗口放不下就由外层容器左右滚动。表头与行共用同一套列宽定义。 */}
+              <div className="overflow-x-auto">
+                <div className="min-w-full xl:min-w-[1200px]">
+                  <div className="hidden grid-cols-[340px_140px_260px_210px_110px] border-b-2 border-gray-300 bg-gray-100 text-xs font-bold text-gray-600 xl:grid [&>span]:border-r [&>span]:border-gray-300 [&>span]:px-4 [&>span]:py-3 [&>span:nth-child(2)]:px-2 [&>span:last-child]:border-r-0">
+                    <span>商品信息</span>
+                    <span>所属账号</span>
+                    <span>专属自动发货</span>
+                    <span>商品能力</span>
+                    <span className="text-right">操作</span>
+                  </div>
+              <div className="divide-y-2 divide-gray-200">
+                {pagedItems.map(item => {
                   const key = itemKey(item);
                   const busy = savingKey === key;
                   const rule = ruleMap.get(key);
@@ -772,7 +798,7 @@ const ItemList: React.FC = () => {
                   return (
                     <article
                       key={key}
-                      className="grid gap-4 px-4 py-4 transition-colors hover:bg-[#fffdf0] xl:grid-cols-[minmax(260px,1.4fr)_minmax(130px,.7fr)_minmax(200px,1fr)_minmax(150px,.7fr)_96px] xl:items-center xl:gap-5"
+                      className="grid gap-4 px-4 py-4 transition-colors hover:bg-[#fffdf0] xl:grid-cols-[340px_140px_260px_210px_110px] xl:items-stretch xl:gap-0 xl:px-0 xl:[&>*]:flex xl:[&>*]:min-w-0 xl:[&>*]:flex-col xl:[&>*]:justify-center xl:[&>*]:border-r xl:[&>*]:border-gray-200 xl:[&>*]:px-4 xl:[&>*:first-child]:!flex-row xl:[&>*:first-child]:items-center xl:[&>*:last-child]:border-r-0"
                     >
                       <div className="flex min-w-0 gap-3">
                         <div className="h-20 w-20 flex-none overflow-hidden rounded-md border border-gray-200 bg-gray-100">
@@ -792,7 +818,7 @@ const ItemList: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 border-t border-gray-100 pt-3 xl:border-0 xl:pt-0">
+                      <div className="flex items-center gap-2 border-t border-gray-100 pt-3 xl:!flex-row xl:items-center xl:gap-1.5 xl:border-0 xl:px-2 xl:pt-0">
                         {accountAvatars.get(item.cookie_id) ? (
                           <img
                             src={accountAvatars.get(item.cookie_id)}
@@ -826,12 +852,17 @@ const ItemList: React.FC = () => {
                               {deliveryDescription}
                             </p>
                           </div>
-                          <Toggle
-                            checked={deliveryEnabled}
-                            disabled={busy}
-                            label={`${item.item_title || item.item_id} 自动发货`}
-                            onChange={() => handleToggleDelivery(item)}
-                          />
+                          {/* 开关配文字标签：这一列和隔壁「商品能力」列各有一个开关，
+                              两者都靠右对齐时纵向几乎连成一条线，用户会误以为是一组。 */}
+                          <div className="flex flex-none flex-col items-center gap-1">
+                            <Toggle
+                              checked={deliveryEnabled}
+                              disabled={busy}
+                              label={`${item.item_title || item.item_id} 自动发货`}
+                              onChange={() => handleToggleDelivery(item)}
+                            />
+                            <span className="text-[10px] font-semibold text-gray-500">总开关</span>
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -844,7 +875,9 @@ const ItemList: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 border-t border-gray-100 pt-3 xl:grid-cols-1 xl:border-0 xl:pt-0">
+                      {/* 商品能力列：三项里只有「多数量」可点，另两项是只读状态。
+                          行与行之间加横线，与列竖线一起构成完整格线。 */}
+                      <div className="grid grid-cols-2 gap-3 border-t border-gray-100 pt-3 sm:grid-cols-3 xl:grid-cols-1 xl:gap-0 xl:border-0 xl:pt-0 xl:[&>div]:border-b xl:[&>div]:border-dashed xl:[&>div]:border-gray-200 xl:[&>div]:py-1.5 xl:[&>div:last-child]:border-b-0">
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs font-semibold text-gray-600">规格模式</span>
                           <span className="text-xs font-bold text-gray-800">
@@ -858,7 +891,9 @@ const ItemList: React.FC = () => {
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs font-semibold text-gray-600">多数量</span>
+                          <span className="text-xs font-semibold text-gray-600" title="买家一次买 N 件时是否发 N 份">
+                            多数量
+                          </span>
                           <Toggle
                             checked={Boolean(item.multi_quantity_delivery)}
                             disabled={busy}
@@ -866,12 +901,17 @@ const ItemList: React.FC = () => {
                             onChange={() => toggleSetting(item, 'multi_quantity_delivery')}
                           />
                         </div>
+                        {/* 详情状态属于「商品能力」而非「操作」，放在本列末尾，
+                            避免和操作按钮挤在同一格造成表头与内容错位 */}
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs font-semibold text-gray-600">本地详情</span>
+                          <span className={`text-xs font-bold ${item.item_detail ? 'text-gray-800' : 'text-gray-400'}`}>
+                            {item.item_detail ? '已维护' : '暂无'}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3 xl:flex-col xl:items-end xl:border-0 xl:pt-0">
-                        <span className="text-xs text-gray-400 xl:text-right">
-                          {item.item_detail ? '详情已维护' : '暂无详情'}
-                        </span>
+                      <div className="flex items-center justify-end gap-1 border-t border-gray-100 pt-3 xl:!flex-row xl:items-center xl:justify-end xl:border-0 xl:pt-0">
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
@@ -898,6 +938,48 @@ const ItemList: React.FC = () => {
                     </article>
                   );
                 })}
+              </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-gray-500">
+                    第 {page} 页 / 共 {totalPages} 页（{visibleItems.length} 件）
+                  </span>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-500">
+                    每页
+                    <select
+                      value={pageSize}
+                      onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+                      className="ios-input rounded-md px-2 py-1 text-sm"
+                      aria-label="每页显示数量"
+                    >
+                      {[10, 20, 50, 100].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                    件
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={page <= 1}
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    下一页
+                  </button>
+                </div>
               </div>
             </>
           ) : (
@@ -1126,10 +1208,10 @@ const ItemList: React.FC = () => {
                                 })}
                                 className="ios-input w-full rounded-md px-3 py-2.5"
                               />
-                              <p className="mt-1.5 text-xs text-gray-500">
+                              <p className={`mt-1.5 text-xs ${deliveryItem.multi_quantity_delivery ? 'text-gray-500' : 'text-amber-700'}`}>
                                 {deliveryItem.multi_quantity_delivery
-                                  ? '已开启多数量：会再乘以订单购买数量。'
-                                  : '当前按单件计算；可在商品列表开启多数量。'}
+                                  ? `已开启「多数量」：买 N 件发 ${variant.deliveryCount || 1} × N 份。`
+                                  : `⚠️ 未开启「多数量」：无论买家拍几件都只发 ${variant.deliveryCount || 1} 份。需按件数递增请到商品列表开启「多数量」。`}
                               </p>
                             </div>
                           </div>

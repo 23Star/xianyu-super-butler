@@ -806,3 +806,7 @@ frontend/coverage/
 # Keep repository regression tests tracked
 !tests/
 !tests/test_*.py
+
+# Wrangler 本地缓存（Cloudflare Worker 部署产生）
+.wrangler/
+deploy/.wrangler/

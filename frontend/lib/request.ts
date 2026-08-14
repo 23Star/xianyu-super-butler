@@ -14,6 +14,12 @@ request.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    // 实例上默认写死了 application/json，发 FormData 时必须去掉，
+    // 否则表单会被当成 JSON 发送，后端 Form(...) 解析不到字段而返回 422。
+    // 删掉后 axios 会自动补上带 boundary 的 multipart/form-data。
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      delete config.headers['Content-Type'];
+    }
     return config;
   },
   (error) => Promise.reject(error),

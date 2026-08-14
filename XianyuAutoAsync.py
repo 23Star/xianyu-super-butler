@@ -806,6 +806,9 @@ class XianyuLive:
         self.delivery_timeout_task = None
         self._delivery_timeout_alerted = set()
 
+        # 账号资料只在连接成功后同步一次，避免重连时反复请求
+        self._profile_synced = False
+
         # 买家互动（评价/求花）：记录已处理订单，两者都默认关闭
         self.buyer_interaction_task = None
         self._auto_rated_orders = set()
@@ -883,9 +886,17 @@ class XianyuLive:
     def _unregister_instance(self):
         """从类级别字典中注销当前实例"""
         try:
-            if self.cookie_id in XianyuLive._instances:
+            # 重连时同一账号会先建新实例再回收旧实例，若无条件删除，
+            # 旧实例的清理会把仍在运行的新实例一并抹掉 —— 表现为账号心跳正常、
+            # 界面显示「监听中」，完整发货却报「该账号未在线运行」。
+            # 因此只在注册表里存的确实是自己时才删除。
+            if XianyuLive._instances.get(self.cookie_id) is self:
                 del XianyuLive._instances[self.cookie_id]
                 logger.warning(f"【{self.cookie_id}】实例已从全局字典中注销")
+            elif self.cookie_id in XianyuLive._instances:
+                logger.warning(
+                    f"【{self.cookie_id}】注册表中已是更新的实例，跳过注销避免误删"
+                )
         except Exception as e:
             logger.error(f"【{self.cookie_id}】注销实例失败: {self._safe_str(e)}")
 
@@ -2260,6 +2271,13 @@ class XianyuLive:
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败")
 
+                                # 自动验证失败后立即熔断。实测滑块虽被拖到目标位置，
+                                # 服务端仍判定失败（行为特征识别），继续自动重试不会成功，
+                                # 只会让风控持续更久 —— 此时应转人工处理。
+                                risk_control.registry.get(self.cookie_id).trip(
+                                    "滑块自动验证失败，需人工处理"
+                                )
+
                                 # 更新风控日志为失败状态
                                 if 'log_id' in locals() and log_id:
                                     try:
@@ -2274,6 +2292,23 @@ class XianyuLive:
                                 
                                 # 标记已发送通知（通知已在_handle_captcha_verification中发送）
                                 notification_sent = True
+
+                                # 自动验证已无望，给出可操作的人工处理指引。
+                                # 滑块被拖到目标位置仍被判失败时，重试再多次也不会通过。
+                                try:
+                                    await self.send_token_refresh_notification(
+                                        "滑块自动验证失败，需要人工处理\n\n"
+                                        "处理方式（任选其一）：\n"
+                                        "1. 在账号管理页重新扫码登录（最直接）\n"
+                                        "2. 用浏览器登录 www.goofish.com 手动完成验证后更新 Cookie\n\n"
+                                        "系统已暂停该账号的自动请求，避免风控加重。",
+                                        "captcha_manual_required",
+                                    )
+                                except Exception as notify_error:
+                                    logger.warning(
+                                        f"【{self.cookie_id}】发送人工处理通知失败: "
+                                        f"{self._safe_str(notify_error)}"
+                                    )
                         except Exception as captcha_e:
                             logger.error(f"【{self.cookie_id}】滑块验证处理异常: {self._safe_str(captcha_e)}")
 
@@ -2452,11 +2487,17 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】XianyuSliderStealth导入成功，使用滑块验证")
 
                 # 创建独立的滑块验证实例（每个用户独立实例，避免并发冲突）
+                # headless 必须为 False：实测同一账号、同一轨迹下，
+                # 无头 0/2 通过，有头 1/3 通过且平台确认解除风控。
+                # Chrome 无头的 WebGL 渲染器、字体列表、navigator.plugins、
+                # 屏幕参数与有头差异巨大，会被阿里 nc 直接识破。
+                # 服务器无显示器时用 Xvfb 提供虚拟显示：
+                #   xvfb-run -a --server-args="-screen 0 1920x1080x24" python Start.py
+                slider_headless = os.getenv('SLIDER_HEADLESS', 'false').lower() == 'true'
                 slider_stealth = XianyuSliderStealth(
-                    # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
-                    user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
+                    user_id=f"{self.cookie_id}",
                     enable_learning=True,  # 启用学习功能
-                    headless=True  # 使用无头模式
+                    headless=slider_headless
                 )
 
                 # 在线程池中执行滑块验证
@@ -2465,11 +2506,14 @@ class XianyuLive:
 
                 loop = asyncio.get_event_loop()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    # 执行滑块验证
+                    # 执行滑块验证。必须把账号 Cookie 一并传入 ——
+                    # 惩罚页的 x5secdata 绑定账号会话，不带 Cookie 时即使滑块拖过，
+                    # 回收到的也只是空浏览器凭证，风控不会解除。
                     success, cookies = await loop.run_in_executor(
                         executor,
                         slider_stealth.run,
-                        verification_url
+                        verification_url,
+                        self.cookies_str
                     )
 
                 if success and cookies:
@@ -3414,15 +3458,38 @@ class XianyuLive:
         following = None
         follower_index = None
         following_index = None
+        # 闲鱼个人页的粉丝/关注在不同版本里排布不一：
+        #   「123 粉丝」/「粉丝 123」/「粉丝」与「123」分处相邻两行。
+        # 原来只用 fullmatch(r'([\d,.]+万?)\s*粉丝') 要求整行严格等于「123 粉丝」，
+        # 其余排布一律匹配不到，导致 followers 永远是 None。
+        count_pattern = r'[\d,.]+(?:\.\d+)?万?'
         for index, line in enumerate(lines):
-            follower_match = re.fullmatch(r'([\d,.]+(?:\.\d+)?万?)\s*粉丝', line)
-            following_match = re.fullmatch(r'([\d,.]+(?:\.\d+)?万?)\s*关注', line)
-            if follower_match and followers is None:
-                followers = cls._parse_profile_count(follower_match.group(1))
-                follower_index = index
-            if following_match and following is None:
-                following = cls._parse_profile_count(following_match.group(1))
-                following_index = index
+            for label, is_follower in (('粉丝', True), ('关注', False)):
+                if label not in line:
+                    continue
+                target = followers if is_follower else following
+                if target is not None:
+                    continue
+
+                # 同一行内取数字，兼容「123 粉丝」和「粉丝 123」
+                m = re.search(rf'({count_pattern})\s*{label}', line) \
+                    or re.search(rf'{label}\s*({count_pattern})', line)
+                value = cls._parse_profile_count(m.group(1)) if m else None
+
+                # 标签独占一行时，数字通常在相邻行
+                if value is None and line.strip() == label:
+                    for neighbor in (index + 1, index - 1):
+                        if 0 <= neighbor < len(lines):
+                            nm = re.fullmatch(count_pattern, lines[neighbor].strip())
+                            if nm:
+                                value = cls._parse_profile_count(nm.group(0))
+                                break
+
+                if value is not None:
+                    if is_follower:
+                        followers, follower_index = value, index
+                    else:
+                        following, following_index = value, index
 
         location = ''
         if follower_index is not None and follower_index > 0:
@@ -3479,6 +3546,44 @@ class XianyuLive:
             for key, value in profile.items()
             if value not in (None, '')
         }
+
+    async def _sync_account_profile(self):
+        """连接成功后把账号昵称和头像同步到数据库。
+
+        资料走接口直连，不受风控熔断影响时才执行；失败不影响主流程，
+        下次重连会再试。
+        """
+        try:
+            from utils import risk_control
+
+            if risk_control.registry.get(self.cookie_id).is_blocked:
+                logger.debug(f"【{self.cookie_id}】风控冷却中，跳过账号资料同步")
+                self._profile_synced = False
+                return
+
+            result = await self.fetch_account_profile()
+            if not result.get('success'):
+                self._profile_synced = False
+                return
+
+            profile = result.get('profile') or {}
+            if not profile.get('nickname') and not profile.get('avatar_url'):
+                self._profile_synced = False
+                return
+
+            from app.db_manager import db_manager
+
+            db_manager.update_cookie_profile(self.cookie_id, profile)
+            logger.info(
+                f"【{self.cookie_id}】账号资料已自动同步: {profile.get('nickname')}"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._profile_synced = False
+            logger.warning(
+                f"【{self.cookie_id}】账号资料自动同步失败: {self._safe_str(exc)}"
+            )
 
     async def fetch_account_profile(self):
         """获取账号公开资料。
@@ -5414,14 +5519,35 @@ class XianyuLive:
 
     async def auto_confirm(self, order_id, item_id=None, retry_count=0):
         """自动确认发货 - 使用加密模块，不包含延时处理（延时已在_auto_delivery中处理）"""
+        temp_session = None
         try:
             logger.warning(f"【{self.cookie_id}】开始确认发货，订单ID: {order_id}")
 
             # 导入解密后的确认发货模块
             from app.secure_confirm import SecureConfirm
 
+            # self.session 是账号监听循环里创建的，绑定着那个事件循环。
+            # 后台「完整发货」由 FastAPI 的循环发起，跨循环复用会抛
+            # "Timeout context manager should be used inside a task"，
+            # 表现为卡券已发出但闲鱼订单状态没变。
+            # 因此这里检测循环归属，不一致时用当前循环临时建一个 session。
+            session = self.session
+            running_loop = asyncio.get_running_loop()
+            session_loop = getattr(self.session, '_loop', None) if self.session else None
+            if self.session is None or (session_loop is not None and session_loop is not running_loop):
+                headers = DEFAULT_HEADERS.copy()
+                headers['cookie'] = self.cookies_str
+                temp_session = aiohttp.ClientSession(
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                )
+                session = temp_session
+                logger.warning(
+                    f"【{self.cookie_id}】确认发货跨事件循环，已改用临时 session"
+                )
+
             # 创建确认实例，传入主界面类实例
-            secure_confirm = SecureConfirm(self.session, self.cookies_str, self.cookie_id, self)
+            secure_confirm = SecureConfirm(session, self.cookies_str, self.cookie_id, self)
 
             # 传递必要的属性
             secure_confirm.current_token = self.current_token
@@ -5447,6 +5573,12 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】加密确认模块调用失败: {self._safe_str(e)}")
             return {"error": f"加密确认模块调用失败: {self._safe_str(e)}", "order_id": order_id}
+        finally:
+            if temp_session is not None:
+                try:
+                    await temp_session.close()
+                except Exception:
+                    pass
 
     async def auto_freeshipping(self, order_id, item_id, buyer_id, retry_count=0):
         """自动免拼发货 - 使用解密模块"""
@@ -5825,7 +5957,29 @@ class XianyuLive:
                             return None
 
                     if is_multi_spec and not (spec_name and spec_value):
-                        logger.warning("❌ 旧版多规格商品无规格信息，跳过自动发货")
+                        # 区分两种失败：页面没渲染出来（技术故障，可重试）
+                        # 与订单确实没有规格（配置问题）。原来一律静默跳过，
+                        # 加上通知没配置，卖家对发货失败完全无感知。
+                        page_empty = bool(
+                            isinstance(order_detail, dict) and order_detail.get('page_empty')
+                        )
+                        if page_empty:
+                            reason = (
+                                f"订单详情页未渲染（DOM 节点 "
+                                f"{order_detail.get('dom_node_count')} 个），未能读取规格"
+                            )
+                        else:
+                            reason = "订单详情中没有规格信息"
+                        logger.error(f"❌ 旧版多规格商品无法发货：{reason}，订单 {order_id}")
+                        try:
+                            await self.send_delivery_failure_notification(
+                                send_user_name=str(send_user_id or '买家'),
+                                send_user_id=str(send_user_id or ''),
+                                item_id=str(item_id or ''),
+                                error_message=f"订单 {order_id}：{reason}",
+                            )
+                        except Exception as notify_err:
+                            logger.debug(f"发送发货失败通知出错: {self._safe_str(notify_err)}")
                         return None
 
                     delivery_rules = db_manager.get_delivery_rules_for_item(
@@ -10008,6 +10162,12 @@ class XianyuLive:
                             else:
                                 logger.info(f"【{self.cookie_id}】订单同步任务已在运行，跳过启动")
 
+                            # 连接成功后补齐账号资料。此前只有手动点"刷新"才会拉，
+                            # 新登录的账号在列表里没有昵称和头像，看着像没登录成功。
+                            if not self._profile_synced:
+                                self._profile_synced = True
+                                self._create_tracked_task(self._sync_account_profile())
+
                             # 启动商品擦亮任务（是否真正执行由设置开关决定）
                             if not self.item_polish_task or self.item_polish_task.done():
                                 logger.info(f"【{self.cookie_id}】启动商品擦亮任务...")
@@ -10171,7 +10331,19 @@ class XianyuLive:
                         return  # 退出当前连接循环，等待被取消
 
                     # 计算重试延迟
-                    retry_delay = self._calculate_retry_delay(error_msg)
+                    # 风控期间的失败通常报"Token获取失败"，错误文本里不含风控特征，
+                    # 只看 error_msg 会退避不足（20 秒一次），因此同时查熔断状态。
+                    from utils import risk_control
+
+                    guard = risk_control.registry.get(self.cookie_id)
+                    if guard.is_blocked:
+                        retry_delay = max(guard.remaining_seconds + 5, 60)
+                        logger.warning(
+                            f"【{self.cookie_id}】风控冷却中，将在 {retry_delay} 秒后重试连接"
+                            f"（冷却剩余 {guard.remaining_seconds} 秒）"
+                        )
+                    else:
+                        retry_delay = self._calculate_retry_delay(error_msg)
                     logger.warning(f"【{self.cookie_id}】将在 {retry_delay} 秒后重试连接...")
 
                     try:

@@ -417,8 +417,10 @@ class DBManager:
                 self._execute_sql(cursor, "SELECT multi_quantity_delivery FROM item_info LIMIT 1")
             except sqlite3.OperationalError:
                 # multi_quantity_delivery 列不存在，需要添加
+                # 默认开启：买家买几件就发几份，这是符合预期的行为；
+                # 默认关闭会导致多件订单只发一份，卖家往往到客诉时才发现。
                 logger.info("正在为 item_info 表添加 multi_quantity_delivery 列...")
-                self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
+                self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT TRUE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
 
             try:
@@ -944,6 +946,13 @@ class DBManager:
                 self.set_system_setting("db_version", "1.5", "数据库版本号")
                 logger.info("数据库升级到版本1.5完成")
 
+            # 升级到版本1.6 - 多数量订单默认按实际购买件数发货
+            if current_version < "1.6":
+                logger.info("开始升级数据库到版本1.6...")
+                self.upgrade_item_multi_quantity_default(cursor)
+                self.set_system_setting("db_version", "1.6", "数据库版本号")
+                logger.info("数据库升级到版本1.6完成")
+
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
 
@@ -951,6 +960,26 @@ class DBManager:
             logger.error(f"数据库版本检查或升级失败: {e}")
             raise
             
+    def upgrade_item_multi_quantity_default(self, cursor):
+        """把存量商品的多数量发货打开。
+
+        这个开关刚加进来时默认是关的，于是买家一单买 3 件、卖家却只收到 1 份卡券，
+        还得自己去每个商品上手动打开才正常。按订单实际件数发货本来就该是默认行为，
+        这里把存量数据补齐。
+
+        只在这一次升级里执行，之后用户在商品页手动关掉的设置不会被再次覆盖。
+        """
+        try:
+            cursor.execute(
+                "UPDATE item_info SET multi_quantity_delivery = 1 "
+                "WHERE multi_quantity_delivery IS NULL OR multi_quantity_delivery = 0"
+            )
+            if cursor.rowcount > 0:
+                logger.info(f"已为 {cursor.rowcount} 个商品开启按订单件数发货")
+        except sqlite3.OperationalError as e:
+            # 老库可能还没有这一列，建表逻辑会补上，这里跳过即可
+            logger.warning(f"跳过多数量发货默认值迁移: {e}")
+
     def update_admin_user_id(self, cursor):
         """更新admin用户ID"""
         try:
@@ -1094,7 +1123,8 @@ class DBManager:
                     self._execute_sql(cursor, "SELECT multi_quantity_delivery FROM item_info LIMIT 1")
                 except sqlite3.OperationalError:
                     # 多数量发货字段不存在，需要添加
-                    self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
+                    # 默认开启，理由同建表处：默认关闭会让多件订单只发一份
+                    self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT TRUE")
                     logger.info("为item_info表添加多数量发货字段")
 
                 # 检查orders表是否有is_bargain字段
@@ -3633,8 +3663,8 @@ class DBManager:
                 smtp_use_ssl = (self.get_system_setting('smtp_use_ssl') or 'false').lower() == 'true'
             except Exception as e:
                 logger.error(f"读取SMTP系统设置失败: {e}")
-                # 如果读取配置失败，使用API方式
-                return await self._send_email_via_api(email, subject, text_content)
+                # 读不到配置就直说，不把收件人邮箱转发到站外接口
+                return False
 
             # 检查SMTP配置是否完整
             if smtp_server and smtp_port and smtp_user and smtp_password:
@@ -3644,9 +3674,14 @@ class DBManager:
                                                      smtp_server, smtp_port, smtp_user,
                                                      smtp_password, smtp_from, smtp_use_tls, smtp_use_ssl)
             else:
-                # 配置不完整，使用API方式发送
-                logger.info(f"SMTP配置不完整，使用API方式发送验证码邮件: {email}")
-                return await self._send_email_via_api(email, subject, text_content)
+                # 这里原先会回退到第三方邮件接口，等于把用户邮箱发到站外服务器，
+                # 部署方和注册用户都不知情，也无法保证对方可用或可信。
+                # 现在直接失败：要么配好自己的 SMTP，要么在系统设置里关掉「注册邮箱验证」。
+                logger.warning(
+                    f"未配置 SMTP，无法发送验证码邮件: {email}。"
+                    "请在「系统设置 → 邮件服务」中配置，或关闭「注册邮箱验证」。"
+                )
+                return False
 
         except Exception as e:
             logger.error(f"发送验证码邮件异常: {e}")
@@ -3686,44 +3721,9 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"SMTP发送验证码邮件失败: {e}")
-            # SMTP发送失败，尝试使用API方式
-            logger.info(f"SMTP发送失败，尝试使用API方式发送: {email}")
-            return await self._send_email_via_api(email, subject, text_content)
-
-    async def _send_email_via_api(self, email: str, subject: str, text_content: str) -> bool:
-        """使用API方式发送邮件"""
-        try:
-            import aiohttp
-
-            # 使用GET请求发送邮件
-            api_url = "https://dy.zhinianboke.com/api/emailSend"
-            params = {
-                'subject': subject,
-                'receiveUser': email,
-                'sendHtml': text_content
-            }
-
-            async with aiohttp.ClientSession() as session:
-                try:
-                    logger.info(f"使用API发送验证码邮件: {email}")
-                    async with session.get(api_url, params=params, timeout=15) as response:
-                        response_text = await response.text()
-                        logger.info(f"邮件API响应: {response.status}")
-
-                        if response.status == 200:
-                            logger.info(f"验证码邮件发送成功(API): {email}")
-                            return True
-                        else:
-                            logger.error(f"API发送验证码邮件失败: {email}, 状态码: {response.status}, 响应: {response_text[:200]}")
-                            return False
-                except Exception as e:
-                    logger.error(f"API邮件发送异常: {email}, 错误: {e}")
-                    return False
-        except Exception as e:
-            logger.error(f"API邮件发送方法异常: {e}")
+            # 自己的 SMTP 发不出去时，同样不改用站外接口代发：
+            # 那会把收件人邮箱交给第三方，且部署方无从察觉。
             return False
-
-    # ==================== 卡券管理方法 ====================
 
     def create_card(self, name: str, card_type: str, api_config=None,
                    text_content: str = None, data_content: str = None, image_url: str = None,

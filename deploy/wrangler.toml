@@ -1,0 +1,13 @@
+# 闲鱼智控 —— 公告与版本发布 Worker 配置
+# 部署到 Cloudflare Workers，绑定 KV 存储公告配置。
+# 部署命令: npx wrangler deploy
+
+name = "xianyu-announce"
+main = "announcement-worker.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 绑定 KV 命名空间（已在 Cloudflare 面板创建）
+[[kv_namespaces]]
+binding = "ANNOUNCEMENT_KV"
+id = "d6c5e6b30ac949a6a8405312d65c08fc"

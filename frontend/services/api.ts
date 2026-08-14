@@ -9,12 +9,37 @@ import {
   MessageFilter, MessageFilterType, AutoReplyLog
   , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
-  ProductAutomationResult, ProductDeletePreview, QuickPhrase
+  ProductAutomationResult, ProductDeletePreview, QuickPhrase,
+  AnnouncementPayload
 } from '../types';
 
 // Auth
 export const login = async (data: { username?: string; password?: string; email?: string; verification_code?: string }): Promise<LoginResponse> => {
   return post('/login', data);
+};
+
+/** 登录页需要的开关，未登录也能取。 */
+export const getPublicSettings = async (): Promise<{
+  registration_enabled?: string;
+  show_default_login_info?: string;
+  login_captcha_enabled?: string;
+  email_verification_enabled?: string;
+}> => {
+  return get('/system-settings/public');
+};
+
+export const register = async (data: {
+  username: string;
+  email: string;
+  password: string;
+  verification_code?: string;
+}): Promise<ApiResponse> => {
+  return post('/register', data);
+};
+
+/** 发送邮箱验证码。type 区分注册和登录场景。 */
+export const sendVerificationCode = async (email: string, type: 'register' | 'login' = 'register'): Promise<ApiResponse> => {
+  return post('/send-verification-code', { email, type });
 };
 
 export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?: number; username?: string; is_admin?: boolean }> => {
@@ -60,6 +85,9 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
       followers: item.followers ?? details.followers,
       following: item.following ?? details.following,
       profile_updated_at: item.profile_updated_at || details.profile_updated_at,
+      // runtime_state 只有 /cookies/details 返回，而 details 展开在前会把它盖掉，
+      // 漏掉这一行会让账号即便正常收发心跳也永远显示「未运行」+ 灰色状态点。
+      runtime_state: item.runtime_state,
       ai_enabled: false,
     };
   }));
@@ -284,9 +312,27 @@ export const getRiskControlStatus = async (): Promise<{
     remaining_seconds: number;
     consecutive_hits: number;
     reason: string;
+    verification_type: 'none' | 'slider' | 'face' | 'qr' | 'risk_control';
+    verification_message: string;
+    latest_event: string;
+    latest_event_at?: string;
   }>;
 }> => {
   return get('/api/risk-control/status');
+};
+
+export const startManualCaptchaSession = async (
+  cookieId: string,
+  timeout: number = 300,
+): Promise<{
+  success: boolean;
+  message: string;
+  session_id: string;
+}> => {
+  const formData = new FormData();
+  formData.append('cookie_id', cookieId);
+  formData.append('timeout', String(timeout));
+  return post('/api/captcha/manual-session', formData, { timeout: (timeout + 30) * 1000 });
 };
 
 // 商品擦亮：重新获取搜索曝光，平台对每日次数有限制
@@ -316,6 +362,14 @@ export const getOrderConsignInfo = async (orderId: string): Promise<any> => {
 // 会向买家发送消息，需先在设置中开启
 export const requireOrderFlower = async (orderId: string): Promise<any> => {
   return post(`/api/orders/${orderId}/require-flower`);
+};
+
+// 买家互动开关状态，用于决定订单页是否展示评价/求花入口
+export const getSellerFeatureFlags = async (): Promise<{
+  auto_rate_enabled: boolean;
+  auto_flower_enabled: boolean;
+}> => {
+  return get('/api/orders/seller-features');
 };
 
 // 评价提交后不可撤销，需先在设置中开启
@@ -1011,4 +1065,9 @@ export const deleteDefaultReply = async (cookieId: string): Promise<ApiResponse>
 
 export const clearDefaultReplyRecords = async (cookieId: string): Promise<ApiResponse> => {
   return post(`/default-replies/${cookieId}/clear-records`, {});
+};
+
+// 全局公告与版本检查：后端代拉公网 JSON 并缓存，force 用于「立即检查更新」
+export const getAnnouncement = async (force = false): Promise<AnnouncementPayload> => {
+  return get('/api/announcement', force ? { force: true } : undefined);
 };

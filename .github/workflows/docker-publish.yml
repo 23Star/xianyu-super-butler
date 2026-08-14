@@ -1,0 +1,70 @@
+# 构建并发布 Docker 镜像到 GitHub Container Registry (ghcr.io)
+#
+# 为什么需要这个：NAS、软路由这类设备上本地 `docker compose build` 要跑
+# npm ci + vite build + pip 编译 + 下载 Chromium，CPU 会长时间打满，
+# 内存不够时直接 OOM，表现为"部署不上、机器卡死"。
+# 有了预构建镜像，这些设备只需要 pull，几分钟就能起来。
+#
+# 发布后镜像地址：ghcr.io/<owner>/xianyu-super-butler:latest
+# 首次发布后需要到仓库 Packages 页面把镜像设为 Public，否则 pull 需要登录。
+
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 交叉编译 arm64 需要，飞牛等 NAS 有一部分是 ARM 机型
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

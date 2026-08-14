@@ -10,9 +10,20 @@ from utils.risk_control import (
     guarded_call,
     is_risk_control_error,
 )
+from app.reply_server import classify_verification_event
 
 
 class RiskControlDetectionTests(unittest.TestCase):
+    def test_verification_event_types_are_classified(self):
+        self.assertEqual(
+            classify_verification_event('slider_captcha action=captcha')[0],
+            'slider',
+        )
+        self.assertEqual(classify_verification_event('需要人脸 face verify')[0], 'face')
+        self.assertEqual(classify_verification_event('扫码 QR login')[0], 'qr')
+        self.assertEqual(classify_verification_event('', blocked=True)[0], 'risk_control')
+        self.assertEqual(classify_verification_event('')[0], 'none')
+
     def test_platform_risk_messages_are_detected(self):
         """这些是实测收到的风控响应，必须能识别出来。"""
         for message in (

@@ -47,7 +47,7 @@ COPY --from=frontend-builder /frontend/dist ./static
 FROM base AS runtime
 
 LABEL maintainer="23Star" \
-      version="2.5.0" \
+      version="3.0.0-beta" \
       description="Xianyu account, item, order, reply, and delivery management" \
       repository="https://github.com/23Star/xianyu-super-butler" \
       author="23Star"
@@ -68,6 +68,10 @@ COPY --from=builder /app /app
 
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Chromium 走国内镜像下载。apt/npm/pip 都换了源，唯独 playwright 仍走官方 CDN 时，
+# 国内构建会卡在这一步直到超时，表现为"镜像构建失败、无法部署"。
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 
 RUN playwright install-deps chromium && \
     playwright install chromium && \

@@ -185,6 +185,13 @@ def _check_and_install_playwright():
                     playwright_installed = True
                     return True
     
+    # 镜像和自定义安装都靠这个环境变量指定浏览器位置（容器里是 /ms-playwright）。
+    # 不先看它就会一路找不到，最后靠"真的启动一次浏览器"来判断有没有装，
+    # 在低配设备上这一次多余的冷启动就够把内存顶到 OOM。
+    env_browsers_path = os.getenv('PLAYWRIGHT_BROWSERS_PATH')
+    if env_browsers_path and env_browsers_path not in ('0', 'false'):
+        possible_paths.append(Path(env_browsers_path))
+
     # Windows上的常见位置
     if sys.platform == 'win32':
         # 用户缓存目录
@@ -449,11 +456,56 @@ except Exception as e:
     print("   程序将继续启动，但Playwright功能可能不可用")
     # 继续启动，不影响主程序运行
 
+
+def _verify_browser_launchable():
+    """启动时实际拉起一次浏览器，确认版本匹配。
+
+    仅检查目录存在是不够的：playwright 与 Chromium revision 强绑定，
+    版本不匹配时 launch 会报 "Executable doesn't exist"。此时滑块验证、
+    扫码登录、账号资料抓取会全部静默失效 —— 滑块处理在 0.3 秒内就崩掉，
+    看日志只会看到"验证失败"，很难联想到是浏览器问题。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print(f"{_WARN} 未安装 playwright，滑块验证与扫码登录将不可用")
+        return False
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            browser.close()
+        print(f"{_OK} 浏览器自检通过，滑块验证与扫码登录可用")
+        return True
+    except Exception as exc:
+        detail = str(exc)
+        print(f"{_ERROR} 浏览器无法启动，滑块验证与扫码登录将失效！")
+        if "Executable doesn't exist" in detail:
+            print("   原因：playwright 版本与已安装的 Chromium 不匹配")
+            print("   修复：python -m playwright install chromium")
+        else:
+            print(f"   详情：{detail[:200]}")
+        print("   注意：验证码处理失效会导致 Token 刷新持续失败并加剧平台风控")
+        return False
+
+
+try:
+    _verify_browser_launchable()
+except Exception as e:
+    print(f"{_WARN} 浏览器自检异常: {e}")
+
 # ==================== 自动构建前端 ====================
 def _build_frontend():
     """自动安装依赖并构建前端"""
     frontend_dir = Path("frontend")
     static_dir = Path("static")
+
+    # 容器镜像在构建阶段就已经把前端产物放进 static/，运行时既没有 npm 也没有
+    # node_modules。这里再走一遍只会白等一次 npm 失败，低配设备上还要多花几十秒，
+    # 所以直接跳过。
+    if os.getenv('DOCKER_ENV', '').lower() in ('1', 'true', 'yes'):
+        print(f"{_INFO} 容器环境，前端已在镜像构建阶段生成，跳过构建")
+        return True
 
     if not frontend_dir.exists():
         print(f"{_WARN} frontend 目录不存在，跳过前端构建")
@@ -470,15 +522,21 @@ def _build_frontend():
         need_build = True
         print(f"{_INFO} static/index.html 不存在，需要构建前端")
     else:
+        # 必须在进入目录前剪枝：node_modules 动辄几万个文件，rglob 会先把它们
+        # 全部走一遍再过滤，在 NAS 的机械盘或 overlay 文件系统上能卡住好几分钟，
+        # 看起来就像"启动卡死、资源打满"。
         ignored_dirs = {"node_modules", "dist", ".vite"}
-        source_files = [
-            path for path in frontend_dir.rglob("*")
-            if path.is_file() and not ignored_dirs.intersection(path.parts)
-        ]
-        latest_source_mtime = max(
-            (path.stat().st_mtime for path in source_files),
-            default=0
-        )
+        latest_source_mtime = 0.0
+        for root, dirs, files in os.walk(build_dir):
+            dirs[:] = [d for d in dirs if d not in ignored_dirs]
+            for name in files:
+                try:
+                    mtime = os.stat(os.path.join(root, name)).st_mtime
+                except OSError:
+                    continue
+                if mtime > latest_source_mtime:
+                    latest_source_mtime = mtime
+
         if latest_source_mtime > index_html.stat().st_mtime:
             need_build = True
             print(f"{_INFO} 前端源码比构建产物新，需要重新构建")

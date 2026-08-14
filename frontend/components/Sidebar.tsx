@@ -13,6 +13,7 @@ import {
   Users,
   Workflow,
   X,
+  Info,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -59,6 +60,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
       items: [
         { id: 'notifications', icon: BellRing, label: '通知与日志' },
         { id: 'settings', icon: Settings, label: '系统设置' },
+        { id: 'about', icon: Info, label: '关于' },
       ],
     },
   ];

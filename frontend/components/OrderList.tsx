@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item, AccountDetail } from '../types';
-import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems, syncSoldOrders, getAccountDetails } from '../services/api';
+import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems, syncSoldOrders, getAccountDetails, requireOrderFlower, rateOrders, getSellerFeatureFlags } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList } from 'lucide-react';
+import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList, Flower2, Star } from 'lucide-react';
 import { EmptyState, PageHeader, PageTabs } from './ui';
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
@@ -41,6 +41,8 @@ const OrderList: React.FC = () => {
   const [searchText, setSearchText] = useState(''); // 搜索文本
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  // 每页条数可调，订单量大时避免频繁翻页
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [syncSoldLoading, setSyncSoldLoading] = useState(false);
   // 各状态的全量条数，由后端统计，避免只按当前页计算
@@ -60,6 +62,17 @@ const OrderList: React.FC = () => {
   const [shipResult, setShipResult] = useState<{success: boolean; message: string} | null>(null);
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  // 买家互动：这两项对买家有不可撤销的实际动作，按设置页开关决定是否展示入口
+  const [sellerFeatures, setSellerFeatures] = useState({
+    auto_rate_enabled: false,
+    auto_flower_enabled: false,
+  });
+  const [interactingOrderId, setInteractingOrderId] = useState<string | null>(null);
+  const [rateOrder, setRateOrder] = useState<Order | null>(null);
+  const [rateFeedback, setRateFeedback] = useState('');
+  const [rateValue, setRateValue] = useState<1 | 0 | -1>(1);
+  const [rateAnonymous, setRateAnonymous] = useState(false);
+  const [rateSubmitting, setRateSubmitting] = useState(false);
 
   // 搜索过滤订单
   const filterOrders = (ordersToFilter: Order[]): Order[] => {
@@ -78,8 +91,9 @@ const OrderList: React.FC = () => {
     );
   };
 
-  const loadOrders = async () => {
-      setLoading(true);
+  const loadOrders = async (options?: { silent?: boolean }) => {
+      // 轮询刷新走静默模式，避免每 20 秒把整个列表闪成加载态
+      if (!options?.silent) setLoading(true);
 
       try {
           // 如果有搜索文本，加载所有页的数据；否则只加载当前页
@@ -101,7 +115,7 @@ const OrderList: React.FC = () => {
               setTotalPages(1); // 搜索时不分页
           } else {
               // 普通模式：只加载当前页
-              const res = await getOrders(accountFilter || undefined, filter, page, 20);
+              const res = await getOrders(accountFilter || undefined, filter, page, pageSize);
               setAllOrders(res.data);
               setOrders(filterOrders(res.data));
               setTotalPages(res.total_pages);
@@ -111,7 +125,7 @@ const OrderList: React.FC = () => {
       } catch (e) {
           console.error('加载订单失败:', e);
       } finally {
-          setLoading(false);
+          if (!options?.silent) setLoading(false);
       }
   };
 
@@ -163,11 +177,87 @@ const OrderList: React.FC = () => {
       setItemNames(namesMap);
   };
 
+  // 账号列表独立同步：App 用 hidden 切换页面，组件挂载后不卸载，
+  // 不定时拉取的话新增账号不会出现在筛选下拉里，只能刷新浏览器才看得到。
+  // 单独成一个 effect 是因为下面那个 effect 依赖筛选条件会反复重建，
+  // 把定时器放进去会累积泄漏。
+  useEffect(() => {
+    const syncAccounts = () => {
+      getAccountDetails()
+        .then(setAccounts)
+        .catch(() => setAccounts([]));
+    };
+    syncAccounts();
+    const timer = setInterval(syncAccounts, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 买家互动开关：在设置页改动后需要反映到订单页，随账号同步一起刷新
+  useEffect(() => {
+    const syncFlags = () => {
+      getSellerFeatureFlags()
+        .then(setSellerFeatures)
+        .catch(() => undefined);
+    };
+    syncFlags();
+    const timer = setInterval(syncFlags, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 向买家索要小红花：会真实发出一条消息，需二次确认
+  const handleRequireFlower = async (order: Order) => {
+    const ok = await confirmAction(
+      `将向订单 ${order.order_id} 的买家发送一条求花消息，确定继续吗？`
+    );
+    if (!ok) return;
+
+    setInteractingOrderId(order.order_id);
+    try {
+      const res = await requireOrderFlower(order.order_id);
+      notify(res?.message || '求花消息已发送', res?.success === false ? 'error' : 'success');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '索要小红花失败', 'error');
+    } finally {
+      setInteractingOrderId(null);
+    }
+  };
+
+  // 提交评价：不可撤销，走弹窗让用户确认内容
+  const handleSubmitRate = async () => {
+    if (!rateOrder) return;
+    if (!rateFeedback.trim()) {
+      notify('请填写评价内容', 'error');
+      return;
+    }
+
+    setRateSubmitting(true);
+    try {
+      const res = await rateOrders([rateOrder.order_id], rateFeedback.trim(), rateValue, rateAnonymous);
+      if (res?.success === false) {
+        notify(res?.message || '评价提交失败', 'error');
+      } else {
+        notify(res?.message || '评价已提交');
+        setRateOrder(null);
+        setRateFeedback('');
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '评价提交失败', 'error');
+    } finally {
+      setRateSubmitting(false);
+    }
+  };
+
+  // 订单状态会被后端持续改写（拉取详情补齐商品名/规格、发货后转状态），
+  // 只在筛选变化时加载会让列表停在「未知商品 / unknown_user」这类刚建单时的快照。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadOrders({ silent: true });
+    }, 20000);
+    return () => clearInterval(timer);
+  }, [filter, page, pageSize, searchText, accountFilter]);
+
   useEffect(() => {
     loadOrders();
-    getAccountDetails()
-      .then(setAccounts)
-      .catch(() => setAccounts([]));
 
     // 加载商品列表
     getItems().then((itemsList) => {
@@ -176,7 +266,7 @@ const OrderList: React.FC = () => {
     }).catch((e) => {
       console.error('加载商品列表失败:', e);
     });
-  }, [filter, page, searchText, accountFilter]);
+  }, [filter, page, pageSize, searchText, accountFilter]);
 
   const handleSync = async () => {
       setLoading(true);
@@ -431,6 +521,23 @@ const OrderList: React.FC = () => {
       <section className="section-panel">
         {/* Toolbar */}
         <div className="toolbar rounded-none border-0 border-b shadow-none">
+          {/* 账号筛选放在最左：它是比状态更上层的过滤维度，
+              先选看哪个账号，再看该账号下的订单状态，阅读顺序才顺。 */}
+          {accounts.length > 1 && (
+            <select
+              value={accountFilter}
+              onChange={(e) => { setAccountFilter(e.target.value); setPage(1); }}
+              className="ios-input w-full rounded-md bg-white py-2.5 px-3 md:w-44"
+              aria-label="按账号筛选订单"
+            >
+              <option value="">全部账号</option>
+              {accounts.map(account => (
+                <option key={account.id} value={account.id}>
+                  {account.nickname || account.remark || account.id}
+                </option>
+              ))}
+            </select>
+          )}
           <PageTabs
             value={filter}
             onChange={(value) => { setFilter(value); setPage(1); setSearchText(''); }}
@@ -445,21 +552,6 @@ const OrderList: React.FC = () => {
             ]}
           />
           <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
-            {accounts.length > 1 && (
-              <select
-                value={accountFilter}
-                onChange={(e) => { setAccountFilter(e.target.value); setPage(1); }}
-                className="ios-input w-full rounded-md bg-white py-2.5 px-3 md:w-48"
-                aria-label="按账号筛选订单"
-              >
-                <option value="">全部账号</option>
-                {accounts.map(account => (
-                  <option key={account.id} value={account.id}>
-                    {account.nickname || account.remark || account.id}
-                  </option>
-                ))}
-              </select>
-            )}
             <div className="group relative w-full md:w-auto">
                <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#FFE815] transition-colors" />
                <input
@@ -547,6 +639,34 @@ const OrderList: React.FC = () => {
                     >
                       <ExternalLink className="w-4 h-4" />
                     </a>
+                    {/* 买家互动入口：仅在设置中开启、且订单已进入发货后阶段时出现，
+                        避免对未成交订单误操作。两者都会对买家产生不可撤销的动作。 */}
+                    {sellerFeatures.auto_flower_enabled
+                      && (order.status === 'shipped' || order.status === 'completed') && (
+                      <button
+                        onClick={() => handleRequireFlower(order)}
+                        disabled={interactingOrderId === order.order_id}
+                        className="rounded-md p-2 text-gray-500 transition-colors hover:bg-pink-50 hover:text-pink-600 disabled:cursor-wait disabled:opacity-50"
+                        title="向买家索要小红花"
+                      >
+                        <Flower2 className="w-4 h-4" />
+                      </button>
+                    )}
+                    {sellerFeatures.auto_rate_enabled
+                      && (order.status === 'shipped' || order.status === 'completed') && (
+                      <button
+                        onClick={() => {
+                          setRateOrder(order);
+                          setRateFeedback('');
+                          setRateValue(1);
+                          setRateAnonymous(false);
+                        }}
+                        className="rounded-md p-2 text-gray-500 transition-colors hover:bg-yellow-50 hover:text-yellow-600"
+                        title="给买家评价"
+                      >
+                        <Star className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       onClick={() => handleViewDetail(order)}
                       className="rounded-md p-2 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
@@ -596,9 +716,25 @@ const OrderList: React.FC = () => {
         </div>
 
         {/* Pagination */}
-        <div className="p-4 border-t border-gray-50 flex items-center justify-between bg-white">
-            <div className="text-sm text-gray-500 font-medium pl-2">
-                第 {page} 页 / 共 {totalPages} 页
+        <div className="p-4 border-t border-gray-50 flex flex-wrap items-center justify-between gap-3 bg-white">
+            <div className="flex items-center gap-3 pl-2">
+                <span className="text-sm font-medium text-gray-500">
+                    第 {page} 页 / 共 {totalPages} 页
+                </span>
+                <label className="flex items-center gap-1.5 text-sm text-gray-500">
+                    每页
+                    <select
+                        value={pageSize}
+                        onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+                        className="ios-input rounded-md px-2 py-1 text-sm"
+                        aria-label="每页显示数量"
+                    >
+                        {[20, 50, 100, 200].map(n => (
+                            <option key={n} value={n}>{n}</option>
+                        ))}
+                    </select>
+                    条
+                </label>
             </div>
             <div className="flex gap-2">
                 <button
@@ -1027,6 +1163,88 @@ const OrderList: React.FC = () => {
                   保存更改
                 </button>
               </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {rateOrder && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container">
+            <div className="modal-header flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">给买家评价</h3>
+                <p className="mt-1 text-sm text-gray-500">订单 {rateOrder.order_id}</p>
+              </div>
+              <button type="button" onClick={() => setRateOrder(null)} className="rounded-md p-2 hover:bg-gray-100" aria-label="关闭">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                评价提交后无法撤销，请确认内容后再提交。
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-bold text-gray-700">评价类型</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([[1, '好评'], [0, '中评'], [-1, '差评']] as Array<[1 | 0 | -1, string]>).map(([value, label]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => setRateValue(value)}
+                      className={`rounded-md border px-3 py-2 text-sm font-bold transition-colors ${
+                        rateValue === value
+                          ? 'border-[#FFE815] bg-[#FFE815] text-black'
+                          : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-bold text-gray-700">评价内容</label>
+                <textarea
+                  value={rateFeedback}
+                  onChange={e => setRateFeedback(e.target.value)}
+                  rows={3}
+                  maxLength={200}
+                  placeholder="例如：交易顺利，感谢支持！"
+                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-[#FFE815] focus:outline-none"
+                />
+                <p className="mt-1 text-right text-xs text-gray-400">{rateFeedback.length}/200</p>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={rateAnonymous}
+                  onChange={e => setRateAnonymous(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                匿名评价
+              </label>
+            </div>
+            <div className="modal-footer flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRateOrder(null)}
+                className="ios-btn-secondary rounded-md px-4 py-2 text-sm"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitRate}
+                disabled={rateSubmitting || !rateFeedback.trim()}
+                className="ios-btn-primary rounded-md px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {rateSubmitting ? '提交中…' : '确认提交'}
+              </button>
             </div>
           </div>
         </div>,
