@@ -43,14 +43,7 @@ import {
 import { confirmAction } from '../services/feedback';
 import DeliveryProtection from './DeliveryProtection';
 import GeneralDeliveryRules from './GeneralDeliveryRules';
-import {
-  EmptyState,
-  NoticeBanner,
-  PageHeader,
-  PageLoading,
-  PageTabs,
-  SectionHeader,
-} from './ui';
+import {EmptyState, NoticeBanner, PageHeader, PageLoading, PageTabs} from './ui';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
 type ItemSection = 'products' | 'rules' | 'protection';

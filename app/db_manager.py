@@ -6,7 +6,6 @@ import time
 import json
 import random
 import string
-import aiohttp
 import io
 import base64
 from PIL import Image, ImageDraw, ImageFont
@@ -823,7 +822,6 @@ class DBManager:
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
             # 迁移失败不应该阻止程序启动
-            pass
 
     def _update_cards_table_constraints(self, cursor):
         """更新cards表的CHECK约束以支持image类型"""

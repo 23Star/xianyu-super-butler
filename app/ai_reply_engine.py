@@ -12,7 +12,6 @@ AI回复引擎模块
 import os
 import json
 import time
-import sqlite3
 import requests  # 确保已导入
 import threading
 import re
@@ -686,7 +685,6 @@ class AIReplyEngine:
     
     def increment_bargain_count(self, chat_id: str, cookie_id: str):
         """(此方法已废弃，通过 get_bargain_count 的 SQL 查询实现)"""
-        pass
     
     #
     # --- 修复 P0-2: 移除所有有状态的缓存管理方法 ---

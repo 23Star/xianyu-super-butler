@@ -11,9 +11,6 @@ from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from loguru import logger
 from utils import browser_limit
-import re
-import json
-from threading import Lock
 from collections import defaultdict
 from app.specification import (
     canonicalize_specification,

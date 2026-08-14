@@ -20,11 +20,7 @@ import {
   startManualCaptchaSession,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import {
-  Power, Edit2, Trash2, QrCode, X, Check, Loader2,
-  MessageSquare, RefreshCw, Save, User, Clock, MessageCircle,
-  Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck
-} from 'lucide-react';
+import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
 
 type ModalType = 'edit' | 'ai-settings' | null;

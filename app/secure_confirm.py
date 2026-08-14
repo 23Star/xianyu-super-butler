@@ -4,9 +4,7 @@
 """
 
 import asyncio
-import json
 import time
-import aiohttp
 from loguru import logger
 from utils.xianyu_utils import generate_sign, trans_cookies
 

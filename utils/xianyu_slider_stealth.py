@@ -15,9 +15,10 @@ import tempfile
 import shutil
 from datetime import datetime
 from playwright.sync_api import sync_playwright, ElementHandle
-from typing import Optional, Tuple, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
-from collections import defaultdict
+
+from utils import browser_limit
 
 # 导入配置
 try:
@@ -1419,7 +1420,6 @@ class XianyuSliderStealth:
     def _simulate_human_page_behavior(self):
         """模拟人类在验证页面的前置行为 - 极速模式已禁用"""
         # 极速模式：不进行页面行为模拟，直接开始滑动
-        pass
     
     def find_slider_elements(self, fast_mode=False):
         """查找滑块元素（支持在主页面和所有frame中查找）
@@ -1636,7 +1636,6 @@ class XianyuSliderStealth:
                         except Exception as vis_e:
                             # 如果无法检查可见性，仍然使用该元素
                             logger.debug(f"【{self.pure_user_id}】无法检查元素可见性: {vis_e}，继续使用该元素")
-                            pass
                     
                     if element:
                         frame_info = "主页面" if search_frame == self.page else f"Frame"

@@ -4,12 +4,8 @@
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
-from pathlib import Path
-from typing import Optional, List
 import asyncio
-import os
 from loguru import logger
 
 from utils.captcha_remote_control import captcha_controller

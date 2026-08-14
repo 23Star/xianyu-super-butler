@@ -1,18 +1,14 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Body, Query
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
-from urllib.parse import unquote
-import hashlib
 import secrets
 import time
 import json
 import os
-import re
-import uvicorn
 import pandas as pd
 import io
 import asyncio
@@ -988,7 +984,6 @@ async def send_verification_code(request: SendCodeRequest):
 
             # 为了简化，我们要求前端在验证图形验证码成功后立即发送邮件验证码
             # 或者我们可以在验证成功后设置一个临时标记
-            pass
 
         # 根据验证码类型进行不同的检查
         if request.type == 'register':
@@ -1959,8 +1954,6 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
         
         # 导入 XianyuSliderStealth
         from utils.xianyu_slider_stealth import XianyuSliderStealth
-        import base64
-        import io
         
         # 创建 XianyuSliderStealth 实例
         slider_instance = XianyuSliderStealth(
@@ -6481,7 +6474,6 @@ def get_system_logs(admin_user: Dict[str, Any] = Depends(require_admin),
     """获取系统日志（管理员专用）"""
     import os
     import glob
-    from datetime import datetime
 
     try:
         log_with_user('info', f"查询系统日志，行数: {lines}, 级别: {level}", admin_user)

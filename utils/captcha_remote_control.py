@@ -5,7 +5,6 @@
 
 import asyncio
 import base64
-import json
 from typing import Optional, Dict, Any
 from loguru import logger
 from playwright.async_api import Page

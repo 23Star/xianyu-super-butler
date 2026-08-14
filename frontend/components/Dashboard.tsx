@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AdminStats, OrderAnalytics, Order, OrderStatus, Item } from '../types';
 import { getAdminStats, getOrderAnalytics, getValidOrders, getItems } from '../services/api';
-import { TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, ArrowUpRight, Calendar, X, BarChart3, PackageCheck, ExternalLink, Eye, Edit, RefreshCw } from 'lucide-react';
+import {TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, BarChart3, PackageCheck, ExternalLink, RefreshCw} from 'lucide-react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
 import { EmptyState, PageHeader, PageLoading, PageTabs, SectionHeader } from './ui';
 

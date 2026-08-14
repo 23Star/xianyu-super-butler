@@ -40,7 +40,6 @@ def get_verification_url(cookie_id: str) -> Optional[str]:
     兜底：会话内若触发实时 Token 刷新拿到新 URL 更好，拿不到才用它。
     """
     import re
-    import sqlite3
     from app.db_manager import db_manager
 
     try:

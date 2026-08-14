@@ -343,7 +343,6 @@ class CookieManager:
                     except asyncio.CancelledError:
                         # 任务被取消是预期行为
                         logger.debug(f"【{cookie_id}】旧任务已取消")
-                        pass
                     except Exception as e:
                         logger.error(f"等待任务清理时出错: {cookie_id}, {e}")
                     logger.info(f"【{cookie_id}】旧任务已停止")

@@ -5,7 +5,6 @@
 from typing import Any
 from loguru import logger
 from utils import browser_limit
-from datetime import datetime, timedelta
 import time
 import random
 
@@ -69,6 +68,11 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
                     
                     # 邮件通知
                     smtp_server = config_data.get('smtp_server', '')
+                    # 端口漏取会让下面几行直接抛 NameError，邮件通知整条路都走不通
+                    try:
+                        smtp_port = int(config_data.get('smtp_port') or 587)
+                    except (TypeError, ValueError):
+                        smtp_port = 587
                     email_user = config_data.get('email_user', '')
                     email_password = config_data.get('email_password', '')
                     recipient_email = config_data.get('recipient_email', '')

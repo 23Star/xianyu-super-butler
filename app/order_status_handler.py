@@ -8,9 +8,8 @@ import json
 import time
 import uuid
 import threading
-import asyncio
 from loguru import logger
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # ==================== 订单状态处理器配置 ====================
 # 订单状态处理器配置

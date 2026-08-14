@@ -155,7 +155,7 @@ def _check_and_install_playwright():
     
     # 检查是否安装了playwright模块
     try:
-        import playwright
+        pass
     except ImportError:
         print(f"{_WARN} Playwright模块未安装，跳过浏览器检查")
         return False
@@ -663,7 +663,6 @@ except Exception as e:
 # ==================== 现在可以安全地导入其他模块 ====================
 import asyncio
 import threading
-import uvicorn
 from urllib.parse import urlparse
 from loguru import logger
 
@@ -678,7 +677,6 @@ if sys.platform.startswith('linux'):
 
 from app.config import AUTO_REPLY, COOKIES_LIST
 from app import cookie_manager as cm
-from app.db_manager import db_manager
 from app.file_log_collector import setup_file_logging
 
 

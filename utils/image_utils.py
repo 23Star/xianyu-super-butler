@@ -2,7 +2,7 @@ import os
 import uuid
 import hashlib
 from PIL import Image
-from typing import Optional, Tuple
+from typing import Optional
 from loguru import logger
 
 class ImageManager:

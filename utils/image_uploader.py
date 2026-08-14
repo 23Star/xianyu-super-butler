@@ -2,14 +2,12 @@
 图片上传器 - 负责将图片上传到闲鱼CDN
 """
 import aiohttp
-import asyncio
 import json
 import os
 import tempfile
-from typing import Optional, Dict, Any
+from typing import Optional
 from loguru import logger
 from PIL import Image
-import io
 
 
 class ImageUploader:

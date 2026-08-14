@@ -5,12 +5,10 @@
 """
 
 import asyncio
-import json
-import time
 import sys
 import os
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any, Optional
 from loguru import logger
 from utils import browser_limit
 
@@ -60,7 +58,6 @@ class XianyuSearcher:
                 - True: 等待用户完成验证（默认，用于直接处理）
                 - False: 创建会话后立即返回（用于前端处理）
         """
-        import random
         
         logger.warning("=" * 60)
         logger.warning("🎨 检测到刮刮乐验证，需要人工处理！")

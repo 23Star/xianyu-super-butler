@@ -3979,7 +3979,6 @@ class XianyuLive:
         success_count = 0
 
         try:
-            from app.db_manager import db_manager
             from app.config import config
 
             # 从配置获取并发数量和延迟时间
@@ -4682,7 +4681,6 @@ class XianyuLive:
         """发送消息通知"""
         try:
             from app.db_manager import db_manager
-            import aiohttp
             import hashlib
 
             # 过滤系统默认消息，不发送通知
@@ -4807,7 +4805,6 @@ class XianyuLive:
         """发送钉钉通知"""
         try:
             import aiohttp
-            import json
             import hmac
             import hashlib
             import base64
@@ -4930,7 +4927,6 @@ class XianyuLive:
         try:
             import aiohttp
             import json
-            from urllib.parse import quote
 
             logger.info("📱 Bark通知 - 开始处理")
 
@@ -5191,7 +5187,6 @@ class XianyuLive:
         """发送微信通知"""
         try:
             import aiohttp
-            import json
 
             # 解析配置
             webhook_url = config_data.get('webhook_url', '')
@@ -11037,7 +11032,6 @@ class XianyuLive:
 
             if image_url:
                 # 获取图片信息
-                from utils.image_utils import image_manager
                 try:
                     from PIL import Image
                     with Image.open(image_path) as img:
