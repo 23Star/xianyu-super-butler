@@ -26,7 +26,13 @@ RUN VITE_OUT_DIR=dist npm run build
 
 FROM base AS builder
 
-ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# 主源用阿里云，清华与中科大作为备用。任一镜像临时故障（例如清华曾对部分
+# 文件返回 403）都会让整个镜像构建失败，配上 extra-index 后 pip 会自动换源重试。
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_EXTRA_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.mirrors.ustc.edu.cn/simple" \
+    PIP_RETRIES=5 \
+    PIP_TIMEOUT=60 \
+    PIP_TRUSTED_HOST="mirrors.aliyun.com pypi.tuna.tsinghua.edu.cn pypi.mirrors.ustc.edu.cn"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \

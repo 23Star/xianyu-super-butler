@@ -180,7 +180,12 @@ async def open_manual_session(
         playwright = await async_playwright().start()
         browser = await browser_limit.launch_browser(
             playwright,
-            {'headless': headless, 'args': [
+            {'headless': headless,
+             # 只用完整版 Chromium。headless=True 默认会去找单独下载的
+             # chromium_headless_shell，缺失时报 Executable doesn't exist，
+             # 人工验证页面就会卡在「正在服务器上打开验证页面」。
+             'channel': 'chromium',
+             'args': [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",

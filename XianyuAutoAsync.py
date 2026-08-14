@@ -3385,6 +3385,12 @@ class XianyuLive:
         launch_options = {
             'headless': True,
             'args': browser_args,
+            # 显式指定完整版 Chromium。headless=True 时 Playwright 会优先找
+            # chromium_headless_shell-*，那是与 chromium-* 分开下载的另一份文件；
+            # 下载中断时常常只装上其中一个，于是出现「自检说浏览器已安装、
+            # 真正启动却报 Executable doesn't exist」。指定 channel 后只依赖
+            # 完整版，与下方 executable_path 的检查也就对得上了。
+            'channel': 'chromium',
         }
         bundled_executable = playwright.chromium.executable_path
         if os.path.exists(bundled_executable):
@@ -3413,6 +3419,8 @@ class XianyuLive:
 
         browser_name, browser_path = system_browser
         launch_options['executable_path'] = browser_path
+        # 指定了自定义可执行文件就不能再带 channel，两者互斥
+        launch_options.pop('channel', None)
         logger.warning(
             f"【{self.cookie_id}】{purpose}的Playwright Chromium未安装，"
             f"回退使用系统{browser_name}: {browser_path}"

@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 DEFAULT_SPEC_KEY = "__default__"
 
+# 规格文本里没写维度名时使用的默认维度。闲鱼上大量商品的规格就是一段纯文本
+# （"1-5页"、"套餐A"），并没有"名=值"结构。强制要求配对会让这类商品无法保存
+# 发货配置，界面上只看得到一个 400。
+FALLBACK_SPEC_NAME = "规格"
+
 _PAIR_SEPARATOR_RE = re.compile(r"\s*(?:[|;,\n\r、]+|\+)\s*")
 _KEY_VALUE_RE = re.compile(r"^\s*([^=:]+?)\s*[=:]\s*(.+?)\s*$")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -52,6 +57,10 @@ def parse_specification(
                     match = _KEY_VALUE_RE.match(segment)
                     if match:
                         raw_pairs.append((match.group(1), match.group(2)))
+                    else:
+                        # 没有"名=值"结构的纯文本，整段当作规格值。
+                        # 闲鱼很多商品的规格就长这样，直接丢弃会让发货配置存不下去。
+                        raw_pairs.append((FALLBACK_SPEC_NAME, segment))
 
     if spec_name and spec_value and not raw_pairs:
         raw_pairs.append((spec_name, spec_value))

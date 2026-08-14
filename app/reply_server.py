@@ -5485,6 +5485,9 @@ def save_item_delivery_config(
             "config": config,
         }
     except ValueError as e:
+        # 记下具体原因。只看访问日志里的 400 无法判断是哪一条校验没过，
+        # 用户那边也只会看到「Request failed with status code 400」。
+        logger.warning(f"保存商品发货配置被拒绝: {cookie_id}/{item_id} - {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except sqlite3.IntegrityError as e:
         logger.warning(f"保存商品变体配置冲突: {cookie_id}/{item_id} - {e}")

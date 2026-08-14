@@ -233,7 +233,9 @@ def _check_and_install_playwright():
     for path in possible_paths:
         if path.exists():
             # 查找chromium目录
-            chromium_dirs = list(path.glob('chromium-*'))
+            # 同时认 chromium-* 和 chromium_headless_shell-*：两者分开下载，
+            # 只装上其中一个时不该判定为「没装」，否则会误导后续处理。
+            chromium_dirs = list(path.glob('chromium-*')) + list(path.glob('chromium_headless_shell-*'))
             if chromium_dirs:
                 for chromium_dir in chromium_dirs:
                     for relative_exe in browser_exe_candidates:
