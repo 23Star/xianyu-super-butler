@@ -146,6 +146,12 @@ except Exception as e:
 def _check_and_install_playwright():
     """检查Playwright浏览器是否存在，如果不存在则自动安装"""
     print("检查Playwright浏览器...")
+
+    # 预置 Chromium 下载镜像。官方 CDN 在国内常年连接被重置或超时，
+    # playwright 重试三次后就放弃，用户只会看到一堆 ECONNRESET，
+    # 结果是滑块验证和扫码登录全部不可用。用户已自行设置时不覆盖。
+    if not os.getenv('PLAYWRIGHT_DOWNLOAD_HOST'):
+        os.environ['PLAYWRIGHT_DOWNLOAD_HOST'] = 'https://cdn.npmmirror.com/binaries/playwright'
     
     # 检查是否安装了playwright模块
     try:
@@ -469,6 +475,7 @@ def _verify_browser_launchable():
         from playwright.sync_api import sync_playwright
     except ImportError:
         print(f"{_WARN} 未安装 playwright，滑块验证与扫码登录将不可用")
+        _print_playwright_install_help()
         return False
 
     try:
@@ -482,11 +489,28 @@ def _verify_browser_launchable():
         print(f"{_ERROR} 浏览器无法启动，滑块验证与扫码登录将失效！")
         if "Executable doesn't exist" in detail:
             print("   原因：playwright 版本与已安装的 Chromium 不匹配")
-            print("   修复：python -m playwright install chromium")
         else:
             print(f"   详情：{detail[:200]}")
+        _print_playwright_install_help()
         print("   注意：验证码处理失效会导致 Token 刷新持续失败并加剧平台风控")
         return False
+
+
+def _print_playwright_install_help():
+    """打印安装命令，并带上国内镜像源。
+
+    Chromium 默认从 cdn.playwright.dev 下载，国内经常连接被重置或超时，
+    playwright 重试三次后就放弃，不会自己续传。直接给出换源后的命令，
+    省得用户对着一堆 ECONNRESET 无从下手。
+    """
+    mirror = 'https://cdn.npmmirror.com/binaries/playwright'
+    print("   安装浏览器（国内网络请连同第一行一起执行）：")
+    if sys.platform == 'win32':
+        print(f"     set PLAYWRIGHT_DOWNLOAD_HOST={mirror}")
+    else:
+        print(f"     export PLAYWRIGHT_DOWNLOAD_HOST={mirror}")
+    print("     python -m playwright install chromium")
+    print("   下载中断可重复执行，已下载的部分会保留。")
 
 
 try:

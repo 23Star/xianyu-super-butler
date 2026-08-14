@@ -65,7 +65,7 @@ MESSAGE_EXPIRE_TIME: 300000
 TOKEN_REFRESH_INTERVAL: 3600  # 从3600秒(1小时)增加到72000秒(20小时)
 TOKEN_RETRY_INTERVAL: 600    # 从300秒(5分钟)增加到7200秒(2小时)
 SLIDER_VERIFICATION:
-  max_concurrent: 3  # 滑块验证最大并发数
+  max_concurrent: 1  # 滑块验证最大并发数。浏览器很吃 CPU，并发拉起会互相拖慢并降低通过率
   wait_timeout: 60   # 等待排队超时时间（秒）
 WEBSOCKET_HEADERS:
   Accept-Encoding: gzip, deflate, br, zstd

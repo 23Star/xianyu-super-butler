@@ -17,6 +17,7 @@ import time
 from typing import Any, Dict, Optional
 
 from loguru import logger
+from utils import browser_limit
 
 LOGIN_URL = "https://www.goofish.com/"
 
@@ -178,14 +179,15 @@ async def open_manual_session(
     refresh_task = None
     try:
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=headless,
-            args=[
+        browser = await browser_limit.launch_browser(
+            playwright,
+            {'headless': headless, 'args': [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-            ],
+            ]},
+            "人工验证码",
         )
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},

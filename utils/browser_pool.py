@@ -8,6 +8,7 @@ import os
 from typing import Dict, Optional, Tuple
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 from loguru import logger
+from utils import browser_limit
 from collections import defaultdict
 
 
@@ -186,9 +187,10 @@ class BrowserPool:
                 ])
 
             # 启动浏览器
-            browser = await playwright.chromium.launch(
-                headless=headless,
-                args=browser_args
+            browser = await browser_limit.launch_browser(
+                playwright,
+                {'headless': headless, 'args': browser_args},
+                "浏览器池",
             )
 
             # 创建浏览器上下文

@@ -7,6 +7,7 @@ import os
 import random
 from enum import Enum
 from loguru import logger
+from utils import browser_limit
 import websockets
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
@@ -3655,7 +3656,7 @@ class XianyuLive:
                 browser_args,
                 "账号资料抓取",
             )
-            browser = await playwright.chromium.launch(**launch_options)
+            browser = await browser_limit.launch_browser(playwright, launch_options, "账号资料抓取")
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
                 user_agent=(
@@ -3807,7 +3808,7 @@ class XianyuLive:
                 browser_args,
                 "商品详情获取"
             )
-            browser = await playwright.chromium.launch(**launch_options)
+            browser = await browser_limit.launch_browser(playwright, launch_options, "商品详情获取")
 
             # 创建浏览器上下文
             context = await browser.new_context(
@@ -7836,7 +7837,7 @@ class XianyuLive:
                 )
 
             logger.info(f"【{target_cookie_id}】正在启动无头浏览器")
-            browser = await playwright.chromium.launch(**launch_options)
+            browser = await browser_limit.launch_browser(playwright, launch_options, "扫码登录")
             logger.info(f"【{target_cookie_id}】无头浏览器启动成功")
 
             # 创建浏览器上下文
@@ -8173,7 +8174,7 @@ class XianyuLive:
                 browser_args,
                 "浏览器页面刷新"
             )
-            browser = await playwright.chromium.launch(**launch_options)
+            browser = await browser_limit.launch_browser(playwright, launch_options, "浏览器页面刷新")
 
             # 创建浏览器上下文
             context_options = {
@@ -8480,7 +8481,7 @@ class XianyuLive:
                 browser_args,
                 "定时Cookie刷新"
             )
-            browser = await playwright.chromium.launch(**launch_options)
+            browser = await browser_limit.launch_browser(playwright, launch_options, "定时Cookie刷新")
 
             # 创建浏览器上下文
             context_options = {

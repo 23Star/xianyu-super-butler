@@ -22,11 +22,11 @@ from collections import defaultdict
 # 导入配置
 try:
     from app.config import SLIDER_VERIFICATION
-    SLIDER_MAX_CONCURRENT = SLIDER_VERIFICATION.get('max_concurrent', 3)
+    SLIDER_MAX_CONCURRENT = SLIDER_VERIFICATION.get('max_concurrent', 1)
     SLIDER_WAIT_TIMEOUT = SLIDER_VERIFICATION.get('wait_timeout', 60)
 except ImportError:
     # 如果无法导入配置，使用默认值
-    SLIDER_MAX_CONCURRENT = 3
+    SLIDER_MAX_CONCURRENT = 1
     SLIDER_WAIT_TIMEOUT = 60
 
 # 使用loguru日志库，与主程序保持一致
@@ -251,6 +251,7 @@ class XianyuSliderStealth:
         self.page = None
         self.context = None
         self.playwright = None
+        self._browser_slot_held = False  # 是否占用着全局浏览器槽位
         
         # 提取纯用户ID（移除时间戳部分）
         self.pure_user_id = concurrency_manager._extract_pure_user_id(user_id)
@@ -310,6 +311,13 @@ class XianyuSliderStealth:
     def init_browser(self):
         """初始化浏览器 - 增强反检测版本"""
         try:
+            # 占用一个浏览器槽位，close_browser 时归还。
+            # 多账号同时触发滑块时，弱 CPU 机器上并发拉起 Chrome 会互相拖慢，
+            # 反而更容易验证失败。
+            if not self._browser_slot_held:
+                browser_limit.acquire_slot("滑块验证")
+                self._browser_slot_held = True
+
             # 启动 Playwright
             logger.info(f"【{self.pure_user_id}】启动Playwright...")
             self.playwright = sync_playwright().start()
@@ -2520,6 +2528,11 @@ class XianyuSliderStealth:
                 self.temp_dir = None  # 设置为None，防止重复清理
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】清理临时目录时出错: {e}")
+
+        # 归还浏览器槽位。放在最后，确保浏览器进程确实退出后才放行下一个任务。
+        if self._browser_slot_held:
+            self._browser_slot_held = False
+            browser_limit.release_slot("滑块验证")
         
         # 注销实例（最后执行，确保其他清理完成）
         try:
