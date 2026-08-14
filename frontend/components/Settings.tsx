@@ -512,10 +512,11 @@ const Settings: React.FC = () => {
                   ...settings,
                   announcement_source_url: e.target.value,
                 })}
-                placeholder="https://你的域名/announcement.json"
+                placeholder="https://connect.corleom.com/announcement.json（留空即用此地址）"
                 className="ios-input mt-1 w-full rounded-md px-3 py-2 text-sm"
               />
               <p className="mt-1.5 text-xs text-gray-500">
+                留空则使用官方公告源，可填入自建地址替换。
                 后端每 10 分钟拉取一次并缓存；远端不可用时沿用上次结果。
                 在「关于」页可手动点「检查更新」立即刷新。
               </p>

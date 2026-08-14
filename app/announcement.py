@@ -35,6 +35,11 @@ ANNOUNCEMENT_ENABLED_KEY = 'announcement_enabled'
 ANNOUNCEMENT_SHOW_NOTICE_KEY = 'announcement_show_notice'
 ANNOUNCEMENT_SHOW_UPDATE_KEY = 'announcement_show_update'
 
+# 官方公告源。不配置就用它，否则新装的用户在「关于」页只会看到
+# 「未配置更新源」，发布方也就没有任何办法把公告和新版本推送出去。
+# 想换成自建地址、或者不想连官方源，在系统设置里改掉或关掉开关即可。
+DEFAULT_ANNOUNCEMENT_URL = 'https://connect.corleom.com/announcement.json'
+
 # 远端不可用时沿用上一次成功的结果，避免公告栏忽隐忽现
 _cache: Dict[str, Any] = {
     'data': None,
@@ -157,7 +162,9 @@ async def get_announcement_payload(force: bool = False) -> Dict[str, Any]:
 
     url = str(db_manager.get_system_setting(ANNOUNCEMENT_URL_KEY) or '').strip()
     if not url:
-        return base
+        # 没填就用官方源。用户想换自建地址可以在设置里改，
+        # 完全不想连外网则关掉「启用公告与更新检查」。
+        url = DEFAULT_ANNOUNCEMENT_URL
 
     base['source_configured'] = True
 

@@ -103,7 +103,7 @@ const About: React.FC = () => {
 
         {!data?.source_configured && (
           <p className="mt-4 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-            尚未配置公告与更新源。在「系统设置 → 公告与更新」里填入你的公网 JSON 地址后，
+            公告与更新检查已关闭。在「系统设置 → 公告与更新」里开启后，
             这里会显示公告并自动检查新版本。
           </p>
         )}
