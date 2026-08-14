@@ -30,6 +30,10 @@ from loguru import logger
 # 公告地址与检查间隔存在系统设置里，键名集中在这里便于前后端对齐
 ANNOUNCEMENT_URL_KEY = 'announcement_source_url'
 ANNOUNCEMENT_ENABLED_KEY = 'announcement_enabled'
+# 拉回来的内容分两块，各自决定展不展示：
+# 有人只想收公告不想看到升级提醒，也有人反过来。
+ANNOUNCEMENT_SHOW_NOTICE_KEY = 'announcement_show_notice'
+ANNOUNCEMENT_SHOW_UPDATE_KEY = 'announcement_show_update'
 
 # 远端不可用时沿用上一次成功的结果，避免公告栏忽隐忽现
 _cache: Dict[str, Any] = {
@@ -176,4 +180,17 @@ async def get_announcement_payload(force: bool = False) -> Dict[str, Any]:
     base.update(data)
     base['has_update'] = has_update(local_version, data.get('latest_version', ''))
     base['error'] = _cache['error']
+
+    # 按展示开关裁剪。放在最后统一处理，顶部横幅和「关于」页读的是同一份数据，
+    # 关掉哪一块两处就一起消失，不用各自判断。
+    def _shown(key: str) -> bool:
+        raw = str(db_manager.get_system_setting(key) or '').strip().lower()
+        # 没设置过按展示处理，避免升级后公告突然消失
+        return raw not in ('0', 'false', 'no')
+
+    if not _shown(ANNOUNCEMENT_SHOW_NOTICE_KEY):
+        base['announcements'] = []
+    if not _shown(ANNOUNCEMENT_SHOW_UPDATE_KEY):
+        base['has_update'] = False
+
     return base

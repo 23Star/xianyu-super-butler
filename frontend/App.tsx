@@ -17,6 +17,7 @@ const Keywords = lazy(() => import('./components/Keywords'));
 const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 const About = lazy(() => import('./components/About'));
+const BuyerInteraction = lazy(() => import('./components/BuyerInteraction'));
 
 const PageLoader = () => (
   <div className="page-loading">
@@ -30,6 +31,7 @@ const pageLabels: Record<string, string> = {
   accounts: '账号管理',
   items: '商品与发货',
   orders: '订单管理',
+  'buyer-interaction': '买家互动',
   cards: '卡密库存',
   messages: '消息中心',
   'auto-reply': '自动回复',
@@ -515,6 +517,9 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'settings'}>
             <Suspense fallback={activeTab === 'settings' ? <PageLoader /> : null}><Settings /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'buyer-interaction'}>
+            <Suspense fallback={activeTab === 'buyer-interaction' ? <PageLoader /> : null}><BuyerInteraction /></Suspense>
           </section>
           <section hidden={activeTab !== 'about'}>
             <Suspense fallback={activeTab === 'about' ? <PageLoader /> : null}><About /></Suspense>

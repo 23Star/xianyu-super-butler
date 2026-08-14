@@ -165,18 +165,22 @@ python Start.py
 
 ## Docker 部署
 
+默认账号：**admin / admin123**。登录后请在「设置 → 账号与同步 → 修改登录密码」立即改掉，
+后台直接暴露到公网时尤其重要。
+
+`ADMIN_PASSWORD` 只在首次创建数据库时生效。数据库已经存在时，改环境变量不会改密码，请在后台改。
+
 1. 创建环境文件：
 
 ```bash
 cp .env.example .env
 ```
 
-2. 修改 `.env`，至少设置强密码和随机密钥：
+2. 按需修改 `.env`（不改也能启动，此时使用默认密码）：
 
 ```dotenv
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=replace-with-a-strong-password
-JWT_SECRET_KEY=replace-with-at-least-32-random-characters
+ADMIN_PASSWORD=admin123
 ```
 
 3. 构建并启动：
@@ -225,8 +229,9 @@ docker compose --profile with-nginx up -d --build
 1. **NAS / 低配设备不要本地构建**：CPU 被打满、内存耗尽、构建中途被杀，绝大多数是本机编译导致的。
    改用 `docker compose -f docker-compose.nas.yml up -d` 拉取预构建镜像。
 2. **确认版本**：使用 Docker Engine 24+、Docker Compose v2；本地构建至少 4 GB 可用内存，仅拉取镜像 2 GB 即可。
-3. **确认 `.env`**：未设置 `ADMIN_PASSWORD` 或 `JWT_SECRET_KEY` 时，Compose 会主动拒绝启动。
-   在没有 `.env` 的图形界面里部署，请改用 `docker-compose.nas.yml`。
+3. **确认 `.env`**：现在不填也能启动，会使用默认账号 admin / admin123。
+   旧版本要求必须设置 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY`，缺任意一个 Compose 都会拒绝启动，
+   这也是部分环境「装不上」的原因之一。其中 `JWT_SECRET_KEY` 代码中从未使用，已移除。
 4. **确认端口**：`8080` 被占用时，在 `.env` 设置 `WEB_PORT=8081`，然后访问对应端口。
 5. **确认目录权限**：容器必须能够写入 `data`、`logs` 和 `backups`。
 6. **国内网络用 CN 配置**：`Dockerfile-cn` 已把 apt、pip、npm 和 Chromium 全部指向国内镜像；

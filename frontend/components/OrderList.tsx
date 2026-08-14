@@ -63,7 +63,11 @@ const OrderList: React.FC = () => {
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
   // 买家互动：这两项对买家有不可撤销的实际动作，按设置页开关决定是否展示入口
-  const [sellerFeatures, setSellerFeatures] = useState({
+  const [sellerFeatures, setSellerFeatures] = useState<{
+    auto_rate_enabled: boolean;
+    auto_flower_enabled: boolean;
+    auto_rate_template?: string;
+  }>({
     auto_rate_enabled: false,
     auto_flower_enabled: false,
   });
@@ -657,7 +661,8 @@ const OrderList: React.FC = () => {
                       <button
                         onClick={() => {
                           setRateOrder(order);
-                          setRateFeedback('');
+                          // 预填「买家互动」页配置的默认文案，仍可在弹窗里逐单改
+                          setRateFeedback(sellerFeatures.auto_rate_template || '');
                           setRateValue(1);
                           setRateAnonymous(false);
                         }}

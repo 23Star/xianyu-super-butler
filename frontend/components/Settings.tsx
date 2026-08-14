@@ -230,7 +230,7 @@ const Settings: React.FC = () => {
           { id: 'ai', label: '默认 AI 配置', icon: Sparkles },
           { id: 'email', label: '邮件服务', icon: Mail },
           { id: 'phrases', label: '快捷短语', icon: Zap },
-          { id: 'notice', label: '互动与公告', icon: Megaphone },
+          { id: 'notice', label: '公告与更新', icon: Megaphone },
         ]}
       />
 
@@ -472,32 +472,6 @@ const Settings: React.FC = () => {
         <div className="grid gap-4 xl:grid-cols-2">
           <section className="section-panel">
             <SectionHeader
-              title="买家互动"
-              description="这两项会对买家产生实际动作，确认后再开启。"
-              icon={ShieldCheck}
-            />
-            <SettingToggle
-              title="允许提交买家评价"
-              description="开启后订单页可给买家评价。评价提交后无法撤销。"
-              checked={toBool(settings.auto_rate_enabled, false)}
-              onChange={() => setSettings({
-                ...settings,
-                auto_rate_enabled: !toBool(settings.auto_rate_enabled, false),
-              })}
-            />
-            <SettingToggle
-              title="允许索要小红花"
-              description="开启后订单页可发起求花，会向买家发送一条消息。"
-              checked={toBool(settings.auto_flower_enabled, false)}
-              onChange={() => setSettings({
-                ...settings,
-                auto_flower_enabled: !toBool(settings.auto_flower_enabled, false),
-              })}
-            />
-          </section>
-
-          <section className="section-panel">
-            <SectionHeader
               title="公告与更新"
               description="填入你的公网 JSON 地址后，系统会定时拉取公告并检查新版本。"
               icon={Megaphone}
@@ -509,6 +483,24 @@ const Settings: React.FC = () => {
               onChange={() => setSettings({
                 ...settings,
                 announcement_enabled: settings.announcement_enabled === 'false' ? 'true' : 'false',
+              })}
+            />
+            <SettingToggle
+              title="展示公告"
+              description="关闭后顶部横幅和「关于」页都不再显示公告内容，仍会正常检查新版本。"
+              checked={toBool(settings.announcement_show_notice, true)}
+              onChange={() => setSettings({
+                ...settings,
+                announcement_show_notice: !toBool(settings.announcement_show_notice, true),
+              })}
+            />
+            <SettingToggle
+              title="展示版本更新提示"
+              description="关闭后不再弹出新版本横幅，公告照常显示。适合不希望团队成员自行升级的场景。"
+              checked={toBool(settings.announcement_show_update, true)}
+              onChange={() => setSettings({
+                ...settings,
+                announcement_show_update: !toBool(settings.announcement_show_update, true),
               })}
             />
             <div className="px-4 py-3">

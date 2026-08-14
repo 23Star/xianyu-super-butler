@@ -509,10 +509,15 @@ export interface SystemSettings {
   auto_polish_interval?: number;
   // 对买家产生实际动作，默认关闭
   auto_rate_enabled?: boolean;
+  // 订单页评价框的预填文案，避免每单重复手打
+  auto_rate_template?: string;
   auto_flower_enabled?: boolean;
   // 公告与更新：地址存为字符串，开关也用字符串以复用通用设置接口
   announcement_source_url?: string;
   announcement_enabled?: string;
+  // 公告与版本提示分开控制展示，未设置时按展示处理
+  announcement_show_notice?: boolean;
+  announcement_show_update?: boolean;
   smtp_server?: string;
   [key: string]: any;
 }

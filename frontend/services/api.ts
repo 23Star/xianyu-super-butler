@@ -368,8 +368,9 @@ export const requireOrderFlower = async (orderId: string): Promise<any> => {
 export const getSellerFeatureFlags = async (): Promise<{
   auto_rate_enabled: boolean;
   auto_flower_enabled: boolean;
+  auto_rate_template?: string;
 }> => {
-  return get('/api/orders/seller-features');
+  return get('/api/seller-features');
 };
 
 // 评价提交后不可撤销，需先在设置中开启

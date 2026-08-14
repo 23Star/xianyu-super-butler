@@ -7381,6 +7381,21 @@ def get_user_orders(
         raise HTTPException(status_code=500, detail=f"查询订单失败: {str(e)}")
 
 
+@app.get('/api/seller-features')
+@app.get('/api/orders/seller-features')  # 兼容旧前端缓存
+async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """返回买家互动类功能的开关状态。
+
+    这两项会对买家产生不可撤销的实际动作，订单页需要据此决定是否展示入口，
+    避免用户点了才发现被后端拒绝。
+    """
+    return {
+        'auto_rate_enabled': _seller_feature_enabled(AUTO_RATE_SETTING_KEY),
+        'auto_flower_enabled': _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY),
+        'auto_rate_template': _rate_template(),
+    }
+
+
 @app.get('/api/orders/{order_id}')
 def get_order_detail(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取订单详情"""
@@ -8454,6 +8469,9 @@ API_ROOTS = {
 # 评价和求花都会产生不可撤销的对外动作，默认关闭，需显式开启后才允许调用
 AUTO_RATE_SETTING_KEY = 'auto_rate_enabled'
 AUTO_FLOWER_SETTING_KEY = 'auto_flower_enabled'
+# 默认评价文案。订单页打开评价框时预填，避免每单重复手打，仍可逐单改。
+RATE_TEMPLATE_SETTING_KEY = 'auto_rate_template'
+DEFAULT_RATE_TEMPLATE = '宝贝收到了，很满意，感谢老板，欢迎下次再来！'
 
 
 def _seller_feature_enabled(key: str) -> bool:
@@ -8475,17 +8493,10 @@ async def get_announcement(
     return await get_announcement_payload(force=force)
 
 
-@app.get('/api/orders/seller-features')
-async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """返回买家互动类功能的开关状态。
-
-    这两项会对买家产生不可撤销的实际动作，订单页需要据此决定是否展示入口，
-    避免用户点了才发现被后端拒绝。
-    """
-    return {
-        'auto_rate_enabled': _seller_feature_enabled(AUTO_RATE_SETTING_KEY),
-        'auto_flower_enabled': _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY),
-    }
+def _rate_template() -> str:
+    """默认评价文案，没配过就用内置的一条。"""
+    from app.db_manager import db_manager
+    return str(db_manager.get_system_setting(RATE_TEMPLATE_SETTING_KEY) or '').strip() or DEFAULT_RATE_TEMPLATE
 
 
 def _resolve_order_cookie(order_id: str, user_cookies: Dict[str, str]) -> tuple:

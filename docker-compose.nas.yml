@@ -11,7 +11,7 @@
 #   3. 内存上限给到 3G。Chromium 冷启动峰值就要 300~500M，2G 容易被 OOM
 #      杀掉，配合 restart 策略会变成反复重启、CPU 一直满。
 #
-# 使用前必须修改：ADMIN_PASSWORD 和 JWT_SECRET_KEY（下面两处 CHANGE_ME）。
+# 使用前请注意：默认账号是 admin / admin123，登录后立刻改密码。
 #
 # 启动：docker compose -f docker-compose.nas.yml up -d
 
@@ -31,10 +31,10 @@ services:
       DB_PATH: /app/data/xianyu_data.db
       LOG_LEVEL: INFO
 
-      # ⚠️ 部署前务必改掉这两项
+      # 默认账号 admin / admin123，登录后请在「设置 → 账号与同步 → 修改登录密码」改掉。
+      # 只在首次创建数据库时生效；数据库已存在时改这里不会改密码。
       ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: CHANGE_ME_到少8位的强密码
-      JWT_SECRET_KEY: CHANGE_ME_到至少32位的随机字符串
+      ADMIN_PASSWORD: admin123
 
       AUTO_REPLY_ENABLED: "true"
       AUTO_DELIVERY_ENABLED: "true"

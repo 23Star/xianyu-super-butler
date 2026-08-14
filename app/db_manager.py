@@ -989,13 +989,19 @@ class DBManager:
             admin_exists = cursor.fetchone()[0] > 0
 
             if not admin_exists:
-                # 首次创建admin用户，设置默认密码
-                default_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
+                # 首次创建 admin 用户。密码取环境变量 ADMIN_PASSWORD，没配才用 admin123。
+                # 此前这里写死 admin123，而 docker-compose 又强制要求填 ADMIN_PASSWORD，
+                # 结果是部署方以为自己设了强密码，实际登录的还是默认密码。
+                initial_password = (os.getenv('ADMIN_PASSWORD') or '').strip() or 'admin123'
+                default_password_hash = hashlib.sha256(initial_password.encode()).hexdigest()
                 cursor.execute('''
                 INSERT INTO users (username, email, password_hash) VALUES
                 ('admin', 'admin@localhost', ?)
                 ''', (default_password_hash,))
-                logger.info("创建默认admin用户，密码: admin123")
+                if initial_password == 'admin123':
+                    logger.warning("创建默认 admin 用户，密码为默认的 admin123，请登录后立即修改")
+                else:
+                    logger.info("创建 admin 用户，密码取自 ADMIN_PASSWORD 环境变量")
 
             # 获取admin用户ID，用于历史数据绑定
             self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
