@@ -3082,6 +3082,9 @@ class XianyuSliderStealth:
         Returns:
             dict: Cookie字典，失败返回None
         """
+        # 槽位是否已占用。在 try 之前定义，确保后面任何异常路径的 finally
+        # 都能安全读到它。
+        password_login_slot_held = False
         try:
             # 检查日期有效性
             if not self._check_date_validity():
@@ -3142,7 +3145,10 @@ class XianyuSliderStealth:
                             logger.info(f"【{self.pure_user_id}】使用浏览器版本: {chromium_dir.name}")
                             break
             
-            # 启动浏览器
+            # 启动浏览器。先占槽位：这条路径由用户手动触发，但后台的 Cookie
+            # 刷新、滑块验证同样在抢 CPU，弱机上并存会让登录变得更慢更易失败。
+            browser_limit.acquire_slot("密码登录")
+            password_login_slot_held = True
             playwright = sync_playwright().start()
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir,
@@ -3979,6 +3985,10 @@ class XianyuSliderStealth:
                         playwright.stop()
                     except:
                         pass
+                finally:
+                    if password_login_slot_held:
+                        password_login_slot_held = False
+                        browser_limit.release_slot("密码登录")
         
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】密码登录流程异常: {e}")

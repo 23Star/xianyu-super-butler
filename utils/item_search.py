@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from loguru import logger
+from utils import browser_limit
 
 # 修复Docker环境中的asyncio事件循环策略问题
 if sys.platform.startswith('linux') or os.getenv('DOCKER_ENV'):
@@ -48,6 +49,8 @@ class XianyuSearcher:
         self.page = None
         self.api_responses = []
         self.user_id = "default"  # 默认用户ID
+        # 是否已占用浏览器槽位，避免重复获取或漏还
+        self._browser_slot_held = False
 
     async def _handle_scratch_captcha_manual(self, page, max_retries=3, wait_for_completion=True):
         """人工处理刮刮乐滑块（远程控制 + 截图备份）
@@ -688,6 +691,12 @@ class XianyuSearcher:
             raise Exception("Playwright 未安装，无法使用真实搜索功能")
 
         if not self.browser:
+            # 取一个浏览器槽位，close_browser 时归还。搜索通常由用户手动触发，
+            # 但后台的 Cookie 刷新等任务同样在抢 CPU，弱机上并存会互相拖慢。
+            if not self._browser_slot_held:
+                await asyncio.to_thread(browser_limit.acquire_slot, "商品搜索")
+                self._browser_slot_held = True
+
             playwright = await async_playwright().start()
             
             # 设置持久化数据目录（保存缓存、cookies等）
@@ -764,6 +773,10 @@ class XianyuSearcher:
             logger.debug("商品搜索器浏览器已关闭（缓存已保存）")
         except Exception as e:
             logger.warning(f"关闭商品搜索器浏览器时出错: {e}")
+        finally:
+            if self._browser_slot_held:
+                self._browser_slot_held = False
+                browser_limit.release_slot("商品搜索")
     
     async def search_items(self, keyword: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         """

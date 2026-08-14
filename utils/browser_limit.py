@@ -35,14 +35,23 @@ _limit: Optional[int] = None
 _ACQUIRE_TIMEOUT = 300
 
 
+def _detect_total_memory_gb() -> Optional[float]:
+    """物理内存（GB）。取不到时返回 None，由调用方只按 CPU 判断。"""
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:
+        return None
+
+
 def get_limit() -> int:
     """允许同时运行的浏览器数量。
 
-    默认只放行一个。浏览器是这里最重的资源消耗方，一个 headless Chromium
-    冷启动就要吃满一个核数十秒；并发拉起既拖慢彼此，也让滑块验证更容易失败。
-    排队只是慢一点，挤爆了整机卡死，连正常的消息收发都会受影响。
+    浏览器是这里最重的资源消耗方，一个 headless Chromium 冷启动就要吃满一个核
+    数十秒；并发拉起既拖慢彼此，也让滑块验证更容易失败。所以按机器实际配置放行，
+    弱机一律单开——排队只是慢一点，挤爆了整机卡死，连正常的消息收发都会受影响。
 
-    确有富余算力时可用环境变量 MAX_CONCURRENT_BROWSERS 调高。
+    推算不准时可用环境变量 MAX_CONCURRENT_BROWSERS 覆盖。
     """
     global _limit
     if _limit is not None:
@@ -55,9 +64,22 @@ def get_limit() -> int:
             logger.info(f"浏览器并发上限由 {_ENV_KEY} 指定为 {_limit}")
             return _limit
         except ValueError:
-            logger.warning(f"{_ENV_KEY} 取值无效: {forced!r}，改用默认值")
+            logger.warning(f"{_ENV_KEY} 取值无效: {forced!r}，改用自动推算")
 
-    _limit = 1
+    cpu_count = os.cpu_count() or 2
+    memory_gb = _detect_total_memory_gb()
+
+    # 双核或 4G 以内：只能单开。这类配置多见于低价 NAS 和入门小主机，
+    # 同时跑两个浏览器就会明显卡顿，甚至把整机拖到无法响应。
+    if cpu_count <= 2 or (memory_gb is not None and memory_gb <= 4.5):
+        _limit = 1
+    elif cpu_count <= 4 or (memory_gb is not None and memory_gb <= 8.5):
+        _limit = 2
+    else:
+        _limit = 3
+
+    memory_desc = f"{memory_gb:.1f}G" if memory_gb is not None else "未知"
+    logger.info(f"浏览器并发上限: {_limit}（CPU {cpu_count} 核，内存 {memory_desc}）")
     return _limit
 
 

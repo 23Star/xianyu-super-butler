@@ -4,6 +4,7 @@
 """
 from typing import Any
 from loguru import logger
+from utils import browser_limit
 from datetime import datetime, timedelta
 import time
 import random
@@ -1669,15 +1670,17 @@ def patch_login_with_password_headful():
             """
             重写的密码登录方法
             使用 Playwright 实现更稳定的登录流程（整合test_slider_login.py的完整逻辑）
-            
+
             Args:
                 account: 账号
                 password: 密码
                 show_browser: 是否显示浏览器
-            
+
             Returns:
                 dict: Cookie字典，失败返回None或空字典
             """
+            # 槽位是否已占用，供下方 finally 安全判断
+            patch_slot_held = False
             user_id = getattr(self, 'user_id', account)
             
             logger.info("开始密码登录流程...")
@@ -1720,6 +1723,8 @@ def patch_login_with_password_headful():
                     ]
                     
                     # 启动浏览器（使用持久化上下文）
+                    browser_limit.acquire_slot("密码登录(patch)")
+                    patch_slot_held = True
                     context = playwright.chromium.launch_persistent_context(
                         user_data_dir,  # 第一个参数就是用户数据目录
                         headless=not show_browser,
@@ -2146,6 +2151,12 @@ def patch_login_with_password_headful():
                             playwright.stop()
                         except:
                             pass
+                    finally:
+                        # 有头模式下浏览器留给用户手动关闭，这里也要归还槽位：
+                        # 否则那扇窗口不关，后续所有浏览器任务都会一直排队到超时。
+                        if patch_slot_held:
+                            patch_slot_held = False
+                            browser_limit.release_slot("密码登录(patch)")
             
             except Exception as e:
                 logger.error(f"【{user_id}】密码登录流程异常: {e}")
