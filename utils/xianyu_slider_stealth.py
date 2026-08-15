@@ -86,6 +86,10 @@ def find_chromium_executable() -> Optional[str]:
 # 拖动末段（回弹 + 稳定）决定松手瞬间的位置，性能再差也不能丢
 PROTECTED_TAIL_POINTS = 8
 
+# 单次滑块流程的整体上限（秒）。正常一轮在 10-40 秒内结束，3 次重试也够用；
+# 超过说明卡在了没有超时保护的 CDP 调用上，此时宁可强制收尾也不能一直占着槽位。
+SLIDER_RUN_TIMEOUT = float(os.getenv('SLIDER_RUN_TIMEOUT', '180'))
+
 # 阿里 nc 滑块自己给出的失败文案。必须是完整短语：只写「重试」「失败」这类单字词，
 # 会把闲鱼页面本身的「哎哟喂，被挤爆啦，请稍后重试」和页面 JS 里的任意提示一起命中，
 # 从而把正在处理中的验证误判为失败。
@@ -4526,15 +4530,46 @@ class XianyuSliderStealth:
             except Exception as e:
                 logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
     
-    def run(self, url: str, cookies_str: str = None):
+    def _start_watchdog(self, timeout: float):
+        """超时仍未结束就强制关掉浏览器，返回可取消的定时器。
+
+        Playwright 的 mouse.move / bounding_box 这类调用没有超时参数：页面无响应时
+        会无限期阻塞在 CDP 往返上，既不抛错也不返回。此时浏览器不会关、全局槽位也
+        不会归还，而槽位只有一个 —— 后面每个浏览器任务都要先卡满等待超时。
+        关闭浏览器会让阻塞中的调用因连接断开而抛错，流程得以走进 finally 正常收尾。
+        """
+        def on_timeout():
+            logger.error(
+                f"【{self.pure_user_id}】滑块流程超过 {timeout:.0f} 秒未结束，"
+                "强制终止以释放浏览器槽位"
+            )
+            # 不能直接调 close_browser：它内部的 page.close()/context.close() 同样是
+            # Playwright 调用，页面无响应时会跟着一起挂住。先停掉 Playwright driver，
+            # 它会连带结束浏览器进程，并让所有阻塞中的 CDP 调用立刻抛错 ——
+            # 主流程于是能走进 finally，由那里的 close_browser 归还槽位。
+            try:
+                if self.playwright is not None:
+                    self.playwright.stop()
+                    logger.info(f"【{self.pure_user_id}】已停止 Playwright driver")
+            except Exception as exc:
+                logger.warning(f"【{self.pure_user_id}】超时终止 Playwright 失败: {exc}")
+
+        timer = threading.Timer(timeout, on_timeout)
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def run(self, url: str, cookies_str: str = None, timeout: float = None):
         """运行主流程，返回(成功状态, cookie数据)
 
         Args:
             url: 滑块惩罚页地址
             cookies_str: 账号 Cookie。必须注入，否则验证通过后拿到的
                          x5sec 不绑定该账号，风控不会解除。
+            timeout: 整体超时（秒），超时强制关闭浏览器。默认 SLIDER_RUN_TIMEOUT。
         """
         cookies = None
+        watchdog = self._start_watchdog(timeout or SLIDER_RUN_TIMEOUT)
         try:
             # 检查日期有效性
             if not self._check_date_validity():
@@ -4641,6 +4676,7 @@ class XianyuSliderStealth:
             logger.error(f"【{self.pure_user_id}】执行过程中出错: {str(e)}")
             return False, None
         finally:
+            watchdog.cancel()
             # 关闭浏览器
             self.close_browser()
 
