@@ -14,11 +14,22 @@ import threading
 import tempfile
 import shutil
 from datetime import datetime
+from pathlib import Path
 from playwright.sync_api import sync_playwright, ElementHandle
 from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
 from utils import browser_limit
+
+# 滑块优先用 Patchright —— Playwright 的反检测分支，修掉了 CDP 层面的自动化痕迹。
+# 实测同一份 Chromium：Playwright 下 navigator.webdriver 为 true（最基础也最致命的
+# 自动化标志），Patchright 下为 false。API 与 Playwright 完全兼容，装不上就回退。
+try:
+    from patchright.sync_api import sync_playwright as patchright_sync_playwright
+    PATCHRIGHT_AVAILABLE = True
+except ImportError:
+    patchright_sync_playwright = None
+    PATCHRIGHT_AVAILABLE = False
 
 # 导入配置
 try:
@@ -31,6 +42,46 @@ except ImportError:
     SLIDER_WAIT_TIMEOUT = 60
 
 # 使用loguru日志库，与主程序保持一致
+
+
+def find_chromium_executable() -> Optional[str]:
+    """找出已安装的 Chromium 可执行文件路径。
+
+    Patchright 与 Playwright 各自绑定不同的 Chromium revision，让 Patchright 自己
+    去下载会平白多出几百 MB 且国内经常拉不动。这里把现成的那份显式指给它，
+    既省体积也省一次下载失败的排查。
+    """
+    roots: List[Path] = []
+    env_path = os.getenv('PLAYWRIGHT_BROWSERS_PATH')
+    if env_path:
+        # 显式指定了就只认这里 —— 与 Playwright 自身的语义一致。继续翻别的目录
+        # 可能挑到版本不匹配的浏览器，反而更难排查。
+        roots.append(Path(env_path))
+    else:
+        roots.append(Path('/ms-playwright'))                       # 容器镜像内的默认位置
+        roots.append(Path.home() / '.cache' / 'ms-playwright')      # Linux
+        roots.append(Path.home() / 'Library' / 'Caches' / 'ms-playwright')  # macOS
+
+    # 只认完整版 Chromium：headless shell 缺少滑块页面需要的渲染能力
+    candidates = (
+        'chrome-linux/chrome',
+        'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        'chrome-win/chrome.exe',
+    )
+    for root in roots:
+        try:
+            if not root.is_dir():
+                continue
+            for browser_dir in sorted(root.glob('chromium-*'), reverse=True):
+                for suffix in candidates:
+                    executable = browser_dir / suffix
+                    if executable.exists():
+                        return str(executable)
+        except Exception:
+            continue
+    return None
+
 
 # 拖动末段（回弹 + 稳定）决定松手瞬间的位置，性能再差也不能丢
 PROTECTED_TAIL_POINTS = 8
@@ -313,6 +364,7 @@ class XianyuSliderStealth:
         self.context = None
         self.playwright = None
         self._browser_slot_held = False  # 是否占用着全局浏览器槽位
+        self._stealth_engine = 'patchright' if PATCHRIGHT_AVAILABLE else 'playwright'
         
         # 提取纯用户ID（移除时间戳部分）
         self.pure_user_id = concurrency_manager._extract_pure_user_id(user_id)
@@ -379,10 +431,17 @@ class XianyuSliderStealth:
                 browser_limit.acquire_slot("滑块验证")
                 self._browser_slot_held = True
 
-            # 启动 Playwright
-            logger.info(f"【{self.pure_user_id}】启动Playwright...")
-            self.playwright = sync_playwright().start()
-            logger.info(f"【{self.pure_user_id}】Playwright启动成功")
+            # 启动 Playwright。优先 Patchright：同一份 Chromium 下它能把
+            # navigator.webdriver 从 true 变成 false，少掉一个最容易被查的标志。
+            if PATCHRIGHT_AVAILABLE:
+                self.playwright = patchright_sync_playwright().start()
+                self._stealth_engine = 'patchright'
+                logger.info(f"【{self.pure_user_id}】Patchright 启动成功（反检测内核）")
+            else:
+                logger.info(f"【{self.pure_user_id}】启动Playwright...")
+                self.playwright = sync_playwright().start()
+                self._stealth_engine = 'playwright'
+                logger.info(f"【{self.pure_user_id}】Playwright启动成功")
             
             # 随机选择浏览器特征
             browser_features = self._get_random_browser_features()
@@ -444,18 +503,44 @@ class XianyuSliderStealth:
                 self.browser = None  # 持久化模式下无独立 browser 句柄
                 logger.info(f"【{self.pure_user_id}】已启动系统 Chrome（持久化目录）")
             except Exception as chrome_error:
-                # 机器上没装 Chrome 时退回自带 Chromium，虽然大概率过不了，
-                # 但至少不让整个流程直接崩掉。
+                # 容器里通常没有系统 Chrome，这条回退才是 Docker/NAS 的实际路径。
+                # 仍用持久化上下文：一次性 context 没有历史 profile，指纹更假。
+                # Patchright 在这里尤其重要 —— 它补上了 Chromium 相对正式版
+                # Chrome 缺失的那部分伪装。
                 logger.warning(
                     f"【{self.pure_user_id}】系统 Chrome 不可用（{chrome_error}），"
-                    "退回 Chromium —— 滑块通过率会显著下降"
+                    f"回退 Chromium（引擎: {getattr(self, '_stealth_engine', 'playwright')}）"
                 )
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless, args=launch_args
-                )
-                self.context = self.browser.new_context(
-                    user_agent=browser_features['user_agent'], **context_options
-                )
+                fallback_options = dict(context_options)
+                fallback_options['user_agent'] = browser_features['user_agent']
+                executable_path = find_chromium_executable()
+                if executable_path:
+                    fallback_options['executable_path'] = executable_path
+                    logger.info(f"【{self.pure_user_id}】使用 Chromium: {executable_path}")
+                try:
+                    self.context = self.playwright.chromium.launch_persistent_context(
+                        user_data_dir,
+                        headless=self.headless,
+                        args=launch_args,
+                        **fallback_options,
+                    )
+                    self.browser = None
+                except Exception as persistent_error:
+                    # 持久化目录被占用等情况下退到普通上下文，至少别让流程崩掉
+                    logger.warning(
+                        f"【{self.pure_user_id}】持久化上下文不可用（{persistent_error}），"
+                        "改用普通上下文"
+                    )
+                    launch_kwargs: Dict[str, Any] = {
+                        'headless': self.headless,
+                        'args': launch_args,
+                    }
+                    if executable_path:
+                        launch_kwargs['executable_path'] = executable_path
+                    self.browser = self.playwright.chromium.launch(**launch_kwargs)
+                    self.context = self.browser.new_context(
+                        user_agent=browser_features['user_agent'], **context_options
+                    )
 
             # 验证上下文已创建
             if not self.context:

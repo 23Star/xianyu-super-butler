@@ -44,6 +44,10 @@ qrcode[pil]>=7.4.2
 # 扫码登录、账号资料抓取会全部静默失效。
 # 升级时必须同步执行：python -m playwright install chromium
 playwright==1.60.0
+# Playwright 的反检测分支，滑块验证优先用它：同一份 Chromium 下，Playwright 会把
+# navigator.webdriver 暴露成 true（最容易被查的自动化标志），Patchright 则是 false。
+# API 完全兼容，复用上面那份 Chromium（代码里显式传 executable_path），不额外下载。
+patchright>=1.52.0
 DrissionPage>=4.0.0
 
 # ==================== 加密和安全 ====================
