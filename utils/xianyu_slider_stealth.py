@@ -32,6 +32,66 @@ except ImportError:
 
 # 使用loguru日志库，与主程序保持一致
 
+# 拖动末段（回弹 + 稳定）决定松手瞬间的位置，性能再差也不能丢
+PROTECTED_TAIL_POINTS = 8
+
+
+def replay_trajectory(trajectory, start_x, start_y, move, sleep=time.sleep):
+    """按轨迹设计的时间轴回放拖动，返回 (终点x, 终点y, 统计信息)。
+
+    拖动的时间轴必须由代码控制，不能被机器性能决定。
+
+    ``move`` 通常是 ``page.mouse.move``，每次调用是一次同步 CDP 往返：高配机
+    1-3ms，低配机或 CPU 被占满时可能到 20-80ms。原实现「move 完再 sleep(delay)」，
+    每步实际间隔是「往返耗时 + delay」，只控制住了后一半 —— 设计 2.5-4 秒的甩动
+    在低配机上被摊成 8-15 秒，最小急动度的钟形速度包络被拉成锯齿。阿里滑块判的
+    正是采样点的时间序列，落点误差再小也会被判成机器，这就是「同样的代码，配置
+    低的机器过不去」。
+
+    这里改为 deadline 驱动：每步补齐到预定时间点。若某步开销已经超出预算（这台
+    机器跑不动当前采样率），就丢弃后续采样点来追回时间轴，而不是让整条轨迹越拖
+    越长。丢点等价于降低采样率（真实鼠标本就有 125/500/1000Hz 之分），速度曲线
+    的形状保持不变，远比拉长时间安全。
+    """
+    drag_clock = time.monotonic()
+    planned_elapsed = 0.0   # 轨迹设计到当前点为止应经过的时间
+    skipped_points = 0      # 因性能不足被丢弃的采样点数
+    peak_lag = 0.0          # 最大滞后，用于事后判断机器是否吃得消
+
+    total_points = len(trajectory)
+    protected_from = max(1, total_points - PROTECTED_TAIL_POINTS)
+
+    current_x, current_y = start_x, start_y
+    index = 0
+    while index < total_points:
+        x, y, delay = trajectory[index]
+        current_x = start_x + x
+        current_y = start_y + y
+
+        move(current_x, current_y)
+        planned_elapsed += delay * random.uniform(0.9, 1.1)
+        index += 1
+
+        now = time.monotonic() - drag_clock
+        if now < planned_elapsed:
+            sleep(planned_elapsed - now)
+            continue
+
+        # 已经落后于设计时间轴：跳过后面若干采样点把时间追回来
+        peak_lag = max(peak_lag, now - planned_elapsed)
+        while index < protected_from and planned_elapsed < now:
+            planned_elapsed += trajectory[index][2]
+            index += 1
+            skipped_points += 1
+
+    return current_x, current_y, {
+        "total_points": total_points,
+        "planned_elapsed": planned_elapsed,
+        "skipped_points": skipped_points,
+        "peak_lag": peak_lag,
+    }
+
+
 # 全局并发控制
 class SliderConcurrencyManager:
     """滑块验证并发管理器"""
@@ -455,6 +515,13 @@ class XianyuSliderStealth:
                 self.playwright = None
         except Exception as e:
             logger.warning(f"【{self.pure_user_id}】清理Playwright时出错: {e}")
+
+        # 归还槽位。init_browser 是先占槽再启动浏览器，启动失败时若只清理进程
+        # 不还槽位，就要等调用方记得调 close_browser 才归还 —— 只要有一条路径
+        # 忘了，这个全局唯一的槽位就永久漏掉。
+        if self._browser_slot_held:
+            self._browser_slot_held = False
+            browser_limit.release_slot("滑块验证")
     
     def _load_success_history(self) -> List[Dict[str, Any]]:
         """加载历史成功数据"""
@@ -1344,41 +1411,33 @@ class XianyuSliderStealth:
                 start_time = time.time()
                 current_x = start_x
                 current_y = start_y
-                last_x = start_x  # 用于按位移量拆分移动步数
-                
-                # 执行拖动轨迹
-                for i, (x, y, delay) in enumerate(trajectory):
-                    # 更新当前位置
-                    current_x = start_x + x
-                    current_y = start_y + y
-                    
-                    # 移动鼠标。
+
+                current_x, current_y, stats = replay_trajectory(
+                    trajectory,
+                    start_x,
+                    start_y,
                     # 轨迹本身已有 70-95 个密集采样点，相邻点间距仅几 px，
                     # movementX 天然落在真人区间，无需再用 steps 细分 ——
                     # steps=N 会产生 N 次独立 CDP 往返，把 1.3 秒的甩动拖成 4 秒。
-                    self.page.mouse.move(current_x, current_y)
-                    last_x = current_x
-                    
-                    # 延迟（添加微小随机变化）
-                    actual_delay = delay * random.uniform(0.9, 1.1)
-                    time.sleep(actual_delay)
-                    
-                    # 记录最终位置
-                    if i == len(trajectory) - 1:
-                        try:
-                            current_style = slider_button.get_attribute("style")
-                            if current_style and "left:" in current_style:
-                                import re
-                                left_match = re.search(r'left:\s*([^;]+)', current_style)
-                                if left_match:
-                                    left_value = left_match.group(1).strip()
-                                    left_px = float(left_value.replace('px', ''))
-                                    if hasattr(self, 'current_trajectory_data'):
-                                        self.current_trajectory_data["final_left_px"] = left_px
-                                    logger.info(f"【{self.pure_user_id}】滑动完成: {len(trajectory)}步 - 最终位置: {left_value}")
-                        except:
-                            pass
-                
+                    lambda x, y: self.page.mouse.move(x, y),
+                )
+                total_points = stats["total_points"]
+
+                # 记录最终位置
+                try:
+                    current_style = slider_button.get_attribute("style")
+                    if current_style and "left:" in current_style:
+                        import re
+                        left_match = re.search(r'left:\s*([^;]+)', current_style)
+                        if left_match:
+                            left_value = left_match.group(1).strip()
+                            left_px = float(left_value.replace('px', ''))
+                            if hasattr(self, 'current_trajectory_data'):
+                                self.current_trajectory_data["final_left_px"] = left_px
+                            logger.info(f"【{self.pure_user_id}】滑动完成: {total_points}步 - 最终位置: {left_value}")
+                except Exception:
+                    pass
+
                 # 🎨 刮刮乐特殊处理：在目标位置停顿观察
                 is_scratch = self.is_scratch_captcha()
                 if is_scratch:
@@ -1396,7 +1455,21 @@ class XianyuSliderStealth:
                 # 而 mouse.up() 本身已由 CDP 产生可信的原生事件序列。
 
                 elapsed_time = time.time() - start_time
-                logger.info(f"【{self.pure_user_id}】滑动完成: 耗时={elapsed_time:.2f}秒, 最终位置=({current_x:.1f}, {current_y:.1f})")
+                logger.info(
+                    f"【{self.pure_user_id}】滑动完成: 耗时={elapsed_time:.2f}秒"
+                    f"(轨迹设计{stats['planned_elapsed']:.2f}秒), "
+                    f"最终位置=({current_x:.1f}, {current_y:.1f})"
+                )
+                # 丢点或滞后明显，说明这台机器发不出设计的采样率。时间轴已被
+                # 补偿，但仍要让用户看到 —— 「配置低的机器过不了滑块」的根因就在这。
+                if stats["skipped_points"] or stats["peak_lag"] > 0.05:
+                    logger.warning(
+                        f"【{self.pure_user_id}】机器性能不足以维持滑动采样率: "
+                        f"丢弃{stats['skipped_points']}/{total_points}个采样点, "
+                        f"最大滞后{stats['peak_lag'] * 1000:.0f}ms。"
+                        f"已自动降采样补偿；若滑块持续失败，请降低同时运行的账号数或提高机器配置"
+                    )
+
                 
                 return True
                 
@@ -3994,6 +4067,14 @@ class XianyuSliderStealth:
             import traceback
             logger.error(traceback.format_exc())
             return None
+        finally:
+            # 兜底归还槽位。占槽在浏览器启动之前，而正常释放它的 finally 属于
+            # 更靠后的内层 try —— 浏览器启动本身失败时（弱机启动超时、内存不足、
+            # Chromium 未安装）会直接跳到上面的 except，槽位就漏了。全局只有一个
+            # 槽位，漏一次之后所有浏览器任务都要卡满 300 秒超时才动得了。
+            if password_login_slot_held:
+                password_login_slot_held = False
+                browser_limit.release_slot("密码登录")
     
     def login_with_password_headful(self, account: str = None, password: str = None, show_browser: bool = False):
         """通过浏览器进行密码登录并获取Cookie (使用DrissionPage)

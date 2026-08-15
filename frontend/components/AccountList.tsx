@@ -443,11 +443,19 @@ const AccountList: React.FC = () => {
               setQrMessage(statusRes.message || '二维码已失效，请重试');
               return;
             } else if (statusRes.status === 'verification_required') {
-              qrSessionRef.current = '';
+              // 不能在这里停止轮询：用户正要去手机上完成人脸验证，
+              // 验证走完后状态才会变成 success。原实现清掉 session 直接 return，
+              // 于是验证做完页面永远停在「请完成验证」，只能关掉重来。
               setQrStatus('verification_required');
               setQrMessage(statusRes.message || '请使用手机扫描二维码完成安全验证');
-              setVerificationQrUrl(statusRes.verification_qr_code_url || '');
-              setVerificationUrl(statusRes.verification_url || '');
+              if (statusRes.verification_qr_code_url) {
+                setVerificationQrUrl(statusRes.verification_qr_code_url);
+              }
+              if (statusRes.verification_url) {
+                setVerificationUrl(statusRes.verification_url);
+              }
+              // 验证要花上一两分钟，放慢轮询节奏即可
+              qrPollTimerRef.current = setTimeout(pollStatus, 2000);
               return;
             }
 
@@ -524,6 +532,10 @@ const AccountList: React.FC = () => {
           </button>
         )}
       />
+
+      <p className="text-xs leading-5 text-gray-400">
+        提示：挂 VPN、代理或部署在海外服务器时，闲鱼风控会明显收紧，滑块和人脸验证的通过率大幅下降，建议使用国内网络环境登录与运行。
+      </p>
 
       {/* Account Grid */}
       <div className="grid grid-cols-1 gap-3">
@@ -724,6 +736,7 @@ const AccountList: React.FC = () => {
                                         <ShieldCheck className="mb-3 h-12 w-12 text-amber-600" />
                                       )}
                                       <span className="mt-1 text-sm font-bold text-amber-800">手机扫码完成人脸验证</span>
+                                      <span className="mt-1 text-xs text-gray-500">验证通过后本页会自动继续，请勿关闭</span>
                                       {verificationUrl && (
                                         <a href={verificationUrl} target="_blank" rel="noreferrer" className="mt-2 text-xs text-blue-600 underline">在当前设备打开验证页</a>
                                       )}

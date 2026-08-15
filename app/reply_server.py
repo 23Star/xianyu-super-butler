@@ -2610,16 +2610,6 @@ async def check_qr_code_status(session_id: str, current_user: Dict[str, Any] = D
 
             qr_login_manager.cleanup_expired_sessions()
             status_info = qr_login_manager.get_session_status(session_id)
-            if status_info.get('status') == 'verification_required' and status_info.get('verification_url'):
-                import base64
-                import qrcode
-
-                qr_image = qrcode.make(status_info['verification_url'])
-                qr_buffer = io.BytesIO()
-                qr_image.save(qr_buffer, format='PNG')
-                status_info['verification_qr_code_url'] = (
-                    'data:image/png;base64,' + base64.b64encode(qr_buffer.getvalue()).decode('ascii')
-                )
             log_with_user(
                 'debug',
                 f"扫码登录会话状态: session={session_id}, status={status_info['status']}",

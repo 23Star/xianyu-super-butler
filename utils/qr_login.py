@@ -49,6 +49,9 @@ class NotLoginError(Exception):
 class QRLoginSession:
     """二维码登录会话"""
 
+    # 人脸验证需要用户掏手机、扫码、刷脸，二维码原本的 5 分钟往往不够
+    VERIFICATION_EXTRA_SECONDS = 300
+
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.status = 'waiting'  # waiting, scanned, success, expired, cancelled, verification_required
@@ -60,7 +63,16 @@ class QRLoginSession:
         self.expire_time = 300  # 5分钟过期
         self.params = {}  # 存储登录参数
         self.verification_url = None  # 风控验证URL
+        self.verification_qr_code_url = None  # 验证URL的二维码，生成一次后复用
+        self.verification_extended = False
         self.last_remote_status = None
+
+    def extend_for_verification(self) -> None:
+        """进入手机验证后延长会话寿命，只延一次。"""
+        if self.verification_extended:
+            return
+        self.verification_extended = True
+        self.expire_time += self.VERIFICATION_EXTRA_SECONDS
 
     def is_expired(self) -> bool:
         """检查是否过期"""
@@ -312,11 +324,11 @@ class QRLoginManager:
 
             logger.info(f"开始监控二维码状态: {session_id}")
 
-            # 监控登录状态
-            max_wait_time = 300  # 5分钟
+            # 监控时长跟随会话有效期 —— 进入人脸验证后 expire_time 会被延长，
+            # 两处必须一致，否则监控先退出、会话还活着，状态就永远不再推进。
             start_time = time.time()
 
-            while time.time() - start_time < max_wait_time:
+            while time.time() - start_time < session.expire_time:
                 try:
                     # 检查会话是否还存在
                     if session_id not in self.sessions:
@@ -339,48 +351,61 @@ class QRLoginManager:
                         session.last_remote_status = qrcode_status
 
                     if qrcode_status == "CONFIRMED":
-                        # 登录确认
-                        if (
+                        data = (
                             resp.json()
                             .get("content", {})
                             .get("data", {})
-                            .get("iframeRedirect")
-                            is True
-                        ):
-                            # 账号被风控，需要手机验证
-                            session.status = 'verification_required'
-                            iframe_url = (
-                                resp.json()
-                                .get("content", {})
-                                .get("data", {})
-                                .get("iframeRedirectUrl")
-                            )
-                            session.verification_url = iframe_url
-                            logger.warning(f"账号被风控，需要手机验证: {session_id}, URL: {iframe_url}")
-                            break
-                        else:
-                            # 登录成功
-                            session.status = 'success'
+                        )
 
-                            # 保存Cookie
-                            for k, v in resp.cookies.items():
-                                session.cookies[k] = v
-                                if k == 'unb':
-                                    session.unb = v
+                        # 先收 Cookie —— 人脸/短信验证走完的那一轮响应里就带着登录态
+                        for k, v in resp.cookies.items():
+                            session.cookies[k] = v
+                            if k == 'unb':
+                                session.unb = v
 
-                            cookie_names = sorted(session.cookies.keys())
-                            logger.info(
-                                f"扫码确认成功: {session_id}, UNB: {session.unb or '缺失'}, "
-                                f"Cookie字段数: {len(cookie_names)}, 字段: {cookie_names}"
-                            )
-                            if not session.unb:
-                                logger.error(
-                                    f"扫码确认响应未包含unb，无法创建账号: {session_id}"
+                        if data.get("iframeRedirect") is True and not session.unb:
+                            # 账号被风控，需要手机验证。
+                            #
+                            # 这里绝不能 break：用户在手机上完成人脸验证后，只有
+                            # 继续轮询 query.do 才会拿到带登录态的 CONFIRMED。
+                            # 原实现一进验证态就结束监控协程，于是用户验证走完，
+                            # 页面永远停在「请完成验证」—— 这就是「验证做完不跳回」。
+                            iframe_url = data.get("iframeRedirectUrl")
+                            if session.status != 'verification_required':
+                                session.status = 'verification_required'
+                                session.verification_url = iframe_url
+                                # 人脸验证要用户掏手机、扫码、刷脸，原本的 5 分钟
+                                # 从二维码生成起算，往往不够用
+                                session.extend_for_verification()
+                                logger.warning(
+                                    f"账号被风控，需要手机验证: {session_id}, URL: {iframe_url}"
                                 )
-                            break
+                            elif iframe_url and iframe_url != session.verification_url:
+                                # 验证链路中途换 URL，跟上以免二维码失效
+                                session.verification_url = iframe_url
+                                session.verification_qr_code_url = None
+                            await asyncio.sleep(1.5)
+                            continue
+
+                        # 登录成功
+                        session.status = 'success'
+                        cookie_names = sorted(session.cookies.keys())
+                        logger.info(
+                            f"扫码确认成功: {session_id}, UNB: {session.unb or '缺失'}, "
+                            f"Cookie字段数: {len(cookie_names)}, 字段: {cookie_names}"
+                        )
+                        if not session.unb:
+                            logger.error(
+                                f"扫码确认响应未包含unb，无法创建账号: {session_id}"
+                            )
+                        break
 
                     elif qrcode_status == "NEW":
-                        # 二维码未被扫描，继续轮询
+                        # 二维码未被扫描，继续轮询。
+                        # 这里必须自己 sleep：原实现直接 continue 跳过了循环底部的
+                        # 节流，未扫码期间会对 passport 接口无间隔空转轮询，既吃 CPU
+                        # 又容易把 IP 送进风控。
+                        await asyncio.sleep(0.8)
                         continue
 
                     elif qrcode_status == "EXPIRED":
@@ -394,6 +419,13 @@ class QRLoginManager:
                         if session.status == 'waiting':
                             session.status = 'scanned'
                             logger.info(f"二维码已扫描，等待确认: {session_id}")
+                    elif session.status == 'verification_required':
+                        # 验证期间远端可能短暂返回空状态，此时不能当成"用户取消"
+                        # 把会话打死 —— 用户正在手机上刷脸，等下一轮即可。
+                        logger.debug(
+                            f"验证期间收到非预期状态，继续等待: {session_id}, "
+                            f"status={qrcode_status or 'EMPTY'}"
+                        )
                     else:
                         # 用户取消确认
                         session.status = 'cancelled'
@@ -406,8 +438,11 @@ class QRLoginManager:
                     logger.error(f"监控二维码状态异常: {e}")
                     await asyncio.sleep(2)
 
-            # 超时处理
-            if session.status not in ['success', 'expired', 'cancelled', 'verification_required']:
+            # 超时处理。验证态超时同样要收口，否则前端会一直等一个不会再变的状态。
+            if session.status == 'verification_required':
+                session.status = 'expired'
+                logger.info(f"手机验证超时未完成，标记为过期: {session_id}")
+            elif session.status not in ['success', 'expired', 'cancelled']:
                 session.status = 'expired'
                 logger.info(f"二维码监控超时，标记为过期: {session_id}")
 
@@ -415,6 +450,20 @@ class QRLoginManager:
             logger.error(f"监控二维码状态失败: {e}")
             if session_id in self.sessions:
                 self.sessions[session_id].status = 'expired'
+        finally:
+            # 监控结束后自清。原先只有 check 接口会调 cleanup_expired_sessions()，
+            # 用户扫完码直接关掉弹窗就没人再触发，会话连同整份登录 Cookie 会一直
+            # 留在内存里。留一段窗口期让前端取走最终状态，再删。
+            asyncio.create_task(self._discard_session_later(session_id))
+
+    async def _discard_session_later(self, session_id: str, delay: float = 60.0) -> None:
+        """延迟丢弃会话，给前端留出读取最终状态的时间。"""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        if self.sessions.pop(session_id, None) is not None:
+            logger.debug(f"扫码会话已释放: {session_id}")
     
     def get_session_status(self, session_id: str) -> Dict[str, Any]:
         """获取会话状态"""
@@ -433,10 +482,11 @@ class QRLoginManager:
             f"获取扫码会话状态: session={session_id}, status={session.status}, "
             f"cookie_count={len(session.cookies)}, has_unb={bool(session.unb)}"
         )
-        # 如果需要验证，返回验证URL
+        # 如果需要验证，返回验证URL和对应二维码
         if session.status == 'verification_required' and session.verification_url:
             result['verification_url'] = session.verification_url
-            result['message'] = '账号被风控，需要手机验证'
+            result['verification_qr_code_url'] = self._verification_qr_code(session)
+            result['message'] = '账号被风控，请用手机完成验证，本页会自动继续'
 
         # 如果登录成功，返回Cookie信息
         if session.status == 'success' and session.cookies and session.unb:
@@ -444,6 +494,30 @@ class QRLoginManager:
             result['unb'] = session.unb
 
         return result
+
+    def _verification_qr_code(self, session: QRLoginSession) -> Optional[str]:
+        """把验证 URL 画成二维码供手机扫描，按会话缓存。
+
+        前端每秒都在轮询状态，每次重画一张 PNG 纯属浪费；URL 不变时直接复用。
+        """
+        if session.verification_qr_code_url:
+            return session.verification_qr_code_url
+        if not session.verification_url:
+            return None
+
+        try:
+            from io import BytesIO
+            import base64
+
+            buffer = BytesIO()
+            qrcode.make(session.verification_url).save(buffer, format='PNG')
+            session.verification_qr_code_url = (
+                'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+            )
+            return session.verification_qr_code_url
+        except Exception as e:
+            logger.warning(f"生成验证二维码失败: {session.session_id}, {e}")
+            return None
 
     def cleanup_expired_sessions(self):
         """清理过期会话"""
