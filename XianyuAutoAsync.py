@@ -40,6 +40,14 @@ class ConnectionState(Enum):
     CLOSED = "closed"  # 已关闭
 
 
+class ItemListTransientError(Exception):
+    """商品列表接口的临时故障（网关 5xx、响应不是 JSON 等）。
+
+    与业务错误区分开：这类故障重试就可能好，不该被写成“未返回在售分组”
+    之类的数据结论，否则用户会以为是账号或商品的问题。
+    """
+
+
 class AutoReplyPauseManager:
     """自动回复暂停管理器"""
     def __init__(self):
@@ -10701,7 +10709,24 @@ class XianyuLive:
                 params=params,
                 data={'data': data_val}
             ) as response:
-                res_json = await response.json()
+                # 网关故障要当场认出来。502/503 返回的是 HTML 错误页，
+                # 直接 response.json() 要么抛解析异常、要么拿到不含 ret 的结构，
+                # 最后被当成业务问题报成“未返回在售分组”，把临时抖动说成数据异常。
+                if response.status >= 500:
+                    raise ItemListTransientError(
+                        f"闲鱼接口返回 HTTP {response.status}"
+                    )
+                try:
+                    res_json = await response.json(content_type=None)
+                except Exception as parse_error:
+                    body = (await response.text())[:200]
+                    raise ItemListTransientError(
+                        f"闲鱼接口响应无法解析（HTTP {response.status}）: {parse_error}；响应片段: {body}"
+                    )
+                if not isinstance(res_json, dict):
+                    raise ItemListTransientError(
+                        f"闲鱼接口响应结构异常（HTTP {response.status}）"
+                    )
                 if 'set-cookie' in response.headers:
                     new_cookies = {}
                     for cookie in response.headers.getall('set-cookie', []):
@@ -10752,10 +10777,37 @@ class XianyuLive:
                 )
                 item_group = self._select_item_group(groups)
                 if not item_group:
-                    return {
-                        'error': '闲鱼接口未返回“在售”分组，无法确认商品列表',
-                        'response_fields': sorted(discovery_response.get('data', {}).keys())
-                    }
+                    # 没匹配到“在售”不代表拿不到商品：闲鱼可能改了分组文案，
+                    # 账号也可能只有自定义分组。这里退回“按商品数最多的分组”，
+                    # 真的一件商品都没有才如实返回空列表，而不是报成接口异常。
+                    fallback_group = None
+                    for group in groups:
+                        if not isinstance(group, dict):
+                            continue
+                        if int(group.get('itemNumber') or 0) <= 0:
+                            continue
+                        if fallback_group is None or int(group.get('itemNumber') or 0) > int(
+                            fallback_group.get('itemNumber') or 0
+                        ):
+                            fallback_group = group
+
+                    if fallback_group:
+                        logger.warning(
+                            f"【{self.cookie_id}】未找到“在售”分组，改用"
+                            f"“{fallback_group.get('groupName')}”"
+                            f"（{fallback_group.get('itemNumber')} 件）继续同步"
+                        )
+                        item_group = fallback_group
+                    elif groups:
+                        logger.info(
+                            f"【{self.cookie_id}】账号所有分组均为 0 件商品，按空列表处理"
+                        )
+                        return {'items': [], 'totalCount': 0, 'nextPage': False}
+                    else:
+                        return {
+                            'error': '闲鱼接口未返回任何商品分组，请稍后重试或检查账号登录状态',
+                            'response_fields': sorted(discovery_response.get('data', {}).keys())
+                        }
                 self._item_list_group = item_group
 
             group_id = item_group.get('groupId')
@@ -10830,6 +10882,19 @@ class XianyuLive:
                 'account_id': self.myid,
                 'response_fields': response_fields
             }
+        except ItemListTransientError as e:
+            # 网关抖动：退避重试，比固定 0.5 秒更有机会等到恢复。
+            # 重试用尽后如实说明是接口临时故障，不要让用户去查账号和商品。
+            if retry_count + 1 >= 4:
+                logger.error(f"【{self.cookie_id}】商品列表接口持续异常: {self._safe_str(e)}")
+                return {'error': f"闲鱼接口暂时不可用（{self._safe_str(e)}），请稍后重试"}
+            backoff = min(2 ** retry_count, 8)
+            logger.warning(
+                f"【{self.cookie_id}】商品列表接口异常，{backoff}秒后重试"
+                f"（第{retry_count + 1}次）: {self._safe_str(e)}"
+            )
+            await asyncio.sleep(backoff)
+            return await self.get_item_list_info(page_number, page_size, retry_count + 1)
         except Exception as e:
             logger.error(f"商品信息API请求异常: {self._safe_str(e)}")
             await asyncio.sleep(0.5)

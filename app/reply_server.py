@@ -1276,8 +1276,20 @@ async def get_chat_messages(
     manager = cookie_manager.manager
     instance = manager.instances.get(cookie_id) if manager else None
     my_id = str(getattr(instance, "myid", "") or "")
+
+    # 这个接口的响应结构有两种：消息可能直接挂在 body 下，也可能包在 body.data 里。
+    # 只读一层时另一种结构会永远拿到空列表，表现为「点开会话看不到任何消息」。
+    payload = body if isinstance(body, dict) else {}
+    inner = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+
+    def pick(field, default=None):
+        value = inner.get(field)
+        if value is None:
+            value = payload.get(field)
+        return default if value is None else value
+
     messages = []
-    for model in body.get("userMessageModels", []) if isinstance(body, dict) else []:
+    for model in pick("userMessageModels", []) or []:
         parsed = parse_message(model, my_id)
         if parsed:
             messages.append(parsed)
@@ -1286,8 +1298,8 @@ async def get_chat_messages(
         "success": True,
         "data": {
             "messages": messages,
-            "hasMore": bool(body.get("hasMore", False)) if isinstance(body, dict) else False,
-            "nextCursor": body.get("nextCursor") if isinstance(body, dict) else None,
+            "hasMore": bool(pick("hasMore", False)),
+            "nextCursor": pick("nextCursor"),
         },
     }
 

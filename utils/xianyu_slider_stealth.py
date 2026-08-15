@@ -86,6 +86,18 @@ def find_chromium_executable() -> Optional[str]:
 # 拖动末段（回弹 + 稳定）决定松手瞬间的位置，性能再差也不能丢
 PROTECTED_TAIL_POINTS = 8
 
+# 阿里 nc 滑块自己给出的失败文案。必须是完整短语：只写「重试」「失败」这类单字词，
+# 会把闲鱼页面本身的「哎哟喂，被挤爆啦，请稍后重试」和页面 JS 里的任意提示一起命中，
+# 从而把正在处理中的验证误判为失败。
+SLIDER_FAILURE_KEYWORDS = (
+    "验证失败",
+    "点击框体重试",
+    "滑动验证失败",
+    "验证码错误",
+    "哎呀，出错了",
+    "换一换",
+)
+
 
 def replay_trajectory(trajectory, start_x, start_y, move, sleep=time.sleep):
     """按轨迹设计的时间轴回放拖动，返回 (终点x, 终点y, 统计信息)。
@@ -2315,81 +2327,74 @@ class XianyuSliderStealth:
             return False
     
     def check_verification_failure(self):
-        """检查验证失败提示"""
+        """检查滑块是否给出了明确的失败提示。
+
+        只认验证组件自己的失败文案，且只在组件范围内找。原实现拿
+        ``page.content()`` 去匹配「重试」「失败」这类单字词 —— 整页 HTML 源码里
+        的 JS 字符串、类名，以及闲鱼自己的「哎哟喂，被挤爆啦，请稍后重试」都会命中，
+        于是一次**正在处理中**的验证被判成失败，还会顺带触发风控熔断。
+
+        Returns:
+            tuple: (是否确认失败, 重试按钮元素 or None)
+        """
         try:
             logger.info(f"【{self.pure_user_id}】检查验证失败提示...")
-            
+
             # 等待一下让失败提示出现（由于调用前已经等待了，这里等待时间缩短）
             time.sleep(1.5)
-            
-            # 检查页面内容中是否包含验证失败相关文字
-            page_content = self.page.content()
-            failure_keywords = [
-                "验证失败",
-                "点击框体重试", 
-                "重试",
-                "失败",
-                "请重试",
-                "验证码错误",
-                "滑动验证失败"
-            ]
-            
-            found_failure = False
-            for keyword in failure_keywords:
-                if keyword in page_content:
-                    logger.info(f"【{self.pure_user_id}】页面内容包含失败关键词: {keyword}")
-                    found_failure = True
-                    break
-            
-            if found_failure:
-                logger.info(f"【{self.pure_user_id}】检测到验证失败关键词，验证失败")
+
+            frame = getattr(self, '_detected_slider_frame', None) or self.page
+
+            # 只在滑块组件内部取可见文本。取不到组件就说明它已经不在了，
+            # 那是成功的信号，不该在这里判失败。
+            container_text = ""
+            for selector in (".nc-container", "#nocaptcha", ".nc_wrapper"):
+                try:
+                    container = frame.query_selector(selector)
+                    if container:
+                        container_text = container.text_content() or ""
+                        if container_text.strip():
+                            break
+                except Exception:
+                    continue
+
+            if not container_text.strip():
+                logger.info(f"【{self.pure_user_id}】滑块组件内无文本，未发现失败提示")
+                return False, None
+
+            found_keyword = next(
+                (kw for kw in SLIDER_FAILURE_KEYWORDS if kw in container_text),
+                None,
+            )
+            if found_keyword:
+                logger.info(
+                    f"【{self.pure_user_id}】滑块组件提示失败: {found_keyword}"
+                    f"（文本: {container_text.strip()[:60]}）"
+                )
                 # 必须返回二元组：调用方按 (has_failure, retry_element) 解包。
                 # 此处若返回裸 True 会抛 unpack 异常，导致重试按钮丢失、滑块无法重置，
                 # 后续尝试便会因控件停留在失败态而找不到轨道。
-                # 关键词命中时尚未定位元素，重试按钮交由 click_retry_button 自行查找。
-                return True, None
-            
-            # 检查各种可能的验证失败提示元素
-            failure_selectors = [
-                "text=验证失败，点击框体重试",
-                "text=验证失败",
-                "text=点击框体重试", 
-                "text=重试",
-                ".nc-lang-cnt",
-                "[class*='retry']",
-                "[class*='fail']",
-                "[class*='error']",
-                ".captcha-tips",
-                "#captcha-loading",
-                ".nc_1_nocaptcha",
-                ".nc_wrapper",
-                ".nc-container"
-            ]
-            
-            retry_button = None
-            for selector in failure_selectors:
-                try:
-                    element = self.page.query_selector(selector)
-                    if element and element.is_visible():
-                        # 获取元素文本内容
-                        element_text = ""
-                        try:
-                            element_text = element.text_content()
-                        except:
-                            pass
-                        
-                        logger.info(f"【{self.pure_user_id}】找到验证失败提示: {selector}, 文本: {element_text}")
-                        retry_button = element
-                        break
-                except:
-                    continue
-            
-            if retry_button:
-                logger.info(f"【{self.pure_user_id}】检测到验证失败提示元素，验证失败")
-                return True, retry_button  # 返回找到的重试按钮元素
-            else:
-                logger.info(f"【{self.pure_user_id}】未找到验证失败提示，可能验证成功了")
-                return False, None
+                retry_button = None
+                for selector in (
+                    "text=点击框体重试",
+                    "text=验证失败",
+                    ".nc-lang-cnt",
+                    "[class*='retry']",
+                ):
+                    try:
+                        element = frame.query_selector(selector)
+                        if element and element.is_visible():
+                            retry_button = element
+                            break
+                    except Exception:
+                        continue
+                return True, retry_button
+
+            logger.info(
+                f"【{self.pure_user_id}】滑块组件未提示失败"
+                f"（文本: {container_text.strip()[:60]}）"
+            )
+            return False, None
 
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】检查验证失败时出错: {e}")

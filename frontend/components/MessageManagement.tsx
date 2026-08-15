@@ -97,6 +97,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [items, setItems] = useState<Item[]>([]);
   const [activeAccountId, setActiveAccountId] = useState('');
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  // 按图片地址记录加载失败的头像，避免反复请求同一个取不到的外部地址
+  const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
   const [activeCid, setActiveCid] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [query, setQuery] = useState('');
@@ -350,12 +352,24 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
   const renderAvatar = (url: string | undefined, label: string, className: string) => {
     const normalized = normalizeImageUrl(url);
-    return normalized ? (
-      <img src={normalized} alt="" className={`${className} object-cover`} />
-    ) : (
+    const placeholder = (
       <div className={`${className} flex items-center justify-center bg-[#252525] text-sm font-bold text-white`}>
         {label.trim().slice(0, 1) || <UserRound className="h-4 w-4" />}
       </div>
+    );
+    // 买家头像由 DiceBear 生成，属于外部服务；加载不出来时回落到首字母，
+    // 而不是让列表挂一排破图。
+    return normalized && !failedAvatars.has(normalized) ? (
+      <img
+        src={normalized}
+        alt=""
+        className={`${className} object-cover`}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailedAvatars((previous) => new Set(previous).add(normalized))}
+      />
+    ) : (
+      placeholder
     );
   };
 

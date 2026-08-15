@@ -19,6 +19,26 @@ def _strip_domain(value: Any) -> str:
     return str(value or "").split("@", 1)[0]
 
 
+# 闲鱼的会话接口不返回买家头像（avatar / avatarUrl / senderAvatar 都是空），
+# 会话列表里就会是一片灰色占位。用 DiceBear 按用户 ID 生成确定性头像补上：
+# 同一个买家每次都是同一张图，便于在列表里区分。
+DICEBEAR_STYLE = "thumbs"
+DICEBEAR_ENDPOINT = f"https://api.dicebear.com/9.x/{DICEBEAR_STYLE}/svg"
+
+
+def make_avatar_url(seed: Any) -> str:
+    """按 seed 生成确定性的占位头像地址，seed 为空时返回空串。
+
+    走的是第三方服务，图片由浏览器直接请求；网络不通时前端会回落到首字母占位。
+    """
+    from urllib.parse import quote
+
+    key = str(seed or "").strip()
+    if not key:
+        return ""
+    return f"{DICEBEAR_ENDPOINT}?seed={quote(key, safe='')}"
+
+
 def _load_content(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, str) or not raw:
         return None
@@ -103,6 +123,19 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
         if sender_id != other_id or sender_name.isdigit():
             sender_name = ""
 
+        # reminderTitle 经常缺失或是纯数字，再从消息体里找一次昵称，
+        # 否则会话列表只能显示「闲鱼用户 123456」。
+        if not sender_name and sender_id == other_id:
+            for candidate in (
+                last_extension.get("senderNick"),
+                last_extension.get("senderNickName"),
+                last_message_wrapper.get("senderNick"),
+            ):
+                text = str(candidate or "").strip()
+                if text and not text.isdigit():
+                    sender_name = text
+                    break
+
         return {
             "cid": cid,
             "rawCid": raw_cid,
@@ -112,7 +145,7 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
                 extension.get("avatar")
                 or extension.get("avatarUrl")
                 or last_extension.get("senderAvatar")
-                or ""
+                or make_avatar_url(other_id)
             ),
             "itemId": str(extension.get("itemId") or ""),
             "itemTitle": str(extension.get("itemTitle") or ""),
