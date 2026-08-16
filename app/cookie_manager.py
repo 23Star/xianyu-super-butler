@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
 from app.db_manager import db_manager
@@ -202,33 +203,6 @@ class CookieManager:
             save_to_db=True,
         )
 
-    async def _remove_cookie_async(self, cookie_id: str):
-        # 获取或创建该cookie_id的锁
-        if cookie_id not in self._task_locks:
-            self._task_locks[cookie_id] = asyncio.Lock()
-        
-        async with self._task_locks[cookie_id]:
-            task = self.tasks.pop(cookie_id, None)
-            if task:
-                task.cancel()
-                try:
-                    # 等待任务完全清理，确保资源释放
-                    await asyncio.wait_for(task, timeout=10.0)
-                except asyncio.TimeoutError:
-                    logger.warning(f"【{cookie_id}】等待任务停止超时（10秒），强制继续")
-                except asyncio.CancelledError:
-                    # 任务被取消是预期行为
-                    pass
-                except Exception as e:
-                    logger.error(f"等待任务清理时出错: {cookie_id}, {e}")
-            
-            self.cookies.pop(cookie_id, None)
-            self.keywords.pop(cookie_id, None)
-            # 清理锁
-            self._task_locks.pop(cookie_id, None)
-            # 从数据库删除
-            db_manager.delete_cookie(cookie_id)
-            logger.info(f"已移除账号: {cookie_id}")
 
     # ------------------------ 对外线程安全接口 ------------------------
     def add_cookie(self, cookie_id: str, cookie_value: str, kw_list: Optional[List[Tuple[str, str]]] = None, user_id: int = None):
@@ -247,19 +221,41 @@ class CookieManager:
             return self.loop.create_task(self._add_cookie_async(cookie_id, cookie_value, user_id))
         else:
             fut = asyncio.run_coroutine_threadsafe(self._add_cookie_async(cookie_id, cookie_value, user_id), self.loop)
-            return fut.result()
+            # 同 remove_cookie：这里也要抢账号任务锁，不设超时会让请求永久挂起
+            try:
+                return fut.result(timeout=30)
+            except FuturesTimeoutError:
+                logger.error(f"【{cookie_id}】添加账号超时（30秒）")
+                raise TimeoutError(f"添加账号超时，请稍后重试：{cookie_id}")
 
     def remove_cookie(self, cookie_id: str):
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
+        """移除账号。删除必须成功，不能被卡住的事件循环拖住。
 
-        if current_loop and current_loop == self.loop:
-            return self.loop.create_task(self._remove_cookie_async(cookie_id))
-        else:
-            fut = asyncio.run_coroutine_threadsafe(self._remove_cookie_async(cookie_id), self.loop)
-            return fut.result()
+        事件循环里仍有大量同步 SQLite 调用，一旦某个账号卡在那里，通过
+        run_coroutine_threadsafe 提交的协程就得不到调度 —— 删除会一路等到超时，
+        用户看到的就是「点删除没反应」。
+        所以这里先在当前线程完成必须做的事（摘注册表 + 落库删除），
+        再把任务取消丢给事件循环，成不成功都不影响删除结果。
+        """
+        task = self.tasks.pop(cookie_id, None)
+        self.cookies.pop(cookie_id, None)
+        self.keywords.pop(cookie_id, None)
+        self.instances.pop(cookie_id, None)
+        self._task_locks.pop(cookie_id, None)
+
+        # 同步落库：db_manager 自带线程锁，可以安全地在 HTTP 线程里调用
+        db_manager.delete_cookie(cookie_id)
+        logger.info(f"已移除账号: {cookie_id}")
+
+        if task is not None:
+            # 取消动作交给事件循环，不等结果。事件循环忙时会稍后处理，
+            # 账号此刻已从注册表和数据库消失，不会再被调度。
+            try:
+                self.loop.call_soon_threadsafe(task.cancel)
+            except Exception as exc:
+                logger.warning(f"【{cookie_id}】提交任务取消失败（已忽略）: {exc}")
+
+        return True
 
     def ensure_cookie_task(
         self,
@@ -298,6 +294,23 @@ class CookieManager:
             return "cancelled"
         if task.done():
             return "failed" if task.exception() else "stopped"
+
+        # 任务还活着不等于账号可用。被闲鱼风控拦下时，任务会一直在
+        # 「连接 → Token 获取失败 → 等待重连」之间空转，task.done() 始终为假，
+        # 于是界面显示「监听中」，而实际上消息、发货、自动回复全都不通。
+        # 这里把实例的连接状态透出来，避免界面报一个假的健康态。
+        instance = self.instances.get(cookie_id)
+        if instance is not None:
+            # 登录态过期是终态：滑块、等待冷却都救不回来，只能重新扫码。
+            # 必须与普通重连区分开，否则界面只显示「连接中」，用户会一直等。
+            if getattr(instance, 'needs_relogin', False):
+                return "need_relogin"
+            state = getattr(instance, 'connection_state', None)
+            state_value = getattr(state, 'value', state)
+            if state_value in ('failed', 'closed'):
+                return "failed"
+            if state_value in ('reconnecting', 'connecting'):
+                return "connecting"
         return "running"
 
     # 更新 Cookie 值
@@ -380,7 +393,12 @@ class CookieManager:
             return self.loop.create_task(_update())
         else:
             fut = asyncio.run_coroutine_threadsafe(_update(), self.loop)
-            return fut.result()
+            # 更新 Cookie 会重启账号任务，同样需要超时兜底
+            try:
+                return fut.result(timeout=30)
+            except FuturesTimeoutError:
+                logger.error(f"【{cookie_id}】更新账号Cookie超时（30秒）")
+                raise TimeoutError(f"更新账号超时，请稍后重试：{cookie_id}")
 
     def update_keywords(self, cookie_id: str, kw_list: List[Tuple[str, str]]):
         """线程安全更新关键字"""

@@ -9,6 +9,7 @@ import time
 import random
 import json
 import os
+import re
 import math
 import threading
 import tempfile
@@ -83,9 +84,6 @@ def find_chromium_executable() -> Optional[str]:
     return None
 
 
-# 拖动末段（回弹 + 稳定）决定松手瞬间的位置，性能再差也不能丢
-PROTECTED_TAIL_POINTS = 8
-
 # 单次滑块流程的整体上限（秒）。正常一轮在 10-40 秒内结束，3 次重试也够用；
 # 超过说明卡在了没有超时保护的 CDP 调用上，此时宁可强制收尾也不能一直占着槽位。
 SLIDER_RUN_TIMEOUT = float(os.getenv('SLIDER_RUN_TIMEOUT', '180'))
@@ -100,6 +98,15 @@ SLIDER_FAILURE_KEYWORDS = (
     "验证码错误",
     "哎呀，出错了",
     "换一换",
+)
+
+# punish 页 URL 的特征片段。取回凭证前若 URL 仍命中其中任一项，说明服务端没有
+# 把我们放行走，页面上的 x5* 只是挑战态残留，不能当成通行凭证。
+PUNISH_URL_MARKERS = (
+    "punish",
+    "x5step=2",
+    "action=captcha",
+    "pureCaptcha",
 )
 
 
@@ -122,11 +129,9 @@ def replay_trajectory(trajectory, start_x, start_y, move, sleep=time.sleep):
     """
     drag_clock = time.monotonic()
     planned_elapsed = 0.0   # 轨迹设计到当前点为止应经过的时间
-    skipped_points = 0      # 因性能不足被丢弃的采样点数
     peak_lag = 0.0          # 最大滞后，用于事后判断机器是否吃得消
 
     total_points = len(trajectory)
-    protected_from = max(1, total_points - PROTECTED_TAIL_POINTS)
 
     current_x, current_y = start_x, start_y
     index = 0
@@ -136,25 +141,25 @@ def replay_trajectory(trajectory, start_x, start_y, move, sleep=time.sleep):
         current_y = start_y + y
 
         move(current_x, current_y)
-        planned_elapsed += delay * random.uniform(0.9, 1.1)
         index += 1
 
-        now = time.monotonic() - drag_clock
-        if now < planned_elapsed:
-            sleep(planned_elapsed - now)
-            continue
-
-        # 已经落后于设计时间轴：跳过后面若干采样点把时间追回来
-        peak_lag = max(peak_lag, now - planned_elapsed)
-        while index < protected_from and planned_elapsed < now:
-            planned_elapsed += trajectory[index][2]
-            index += 1
-            skipped_points += 1
+        # 按轨迹设计的间隔走就够了。
+        #
+        # 这里曾经有一套「deadline 补偿」：落后于设计时间轴时丢弃后续采样点来
+        # 追赶。但它的追赶循环每次只把 planned_elapsed 加一个点的 delay（约 12ms），
+        # 而落后量常常是几秒，且 index 一到保护段就停 —— 永远追不上，
+        # 于是每一步都在做无效的追赶计算，实测把 1.15 秒的拖动拖成 175 秒，
+        # 滑块必然判失败。实测直接回放只需 1.1 秒，补偿纯属帮倒忙。
+        elapsed = time.monotonic() - drag_clock
+        planned_elapsed += delay
+        if planned_elapsed > elapsed:
+            sleep(planned_elapsed - elapsed)
+        else:
+            peak_lag = max(peak_lag, elapsed - planned_elapsed)
 
     return current_x, current_y, {
         "total_points": total_points,
         "planned_elapsed": planned_elapsed,
-        "skipped_points": skipped_points,
         "peak_lag": peak_lag,
     }
 
@@ -473,6 +478,7 @@ class XianyuSliderStealth:
                 os.getcwd(), 'browser_data', f'slider_{self.pure_user_id}'
             )
             os.makedirs(user_data_dir, exist_ok=True)
+            self._clean_singleton_lock_files(user_data_dir)
 
             launch_args = [
                 "--no-sandbox",
@@ -528,7 +534,10 @@ class XianyuSliderStealth:
                     f"回退 Chromium（引擎: {getattr(self, '_stealth_engine', 'playwright')}）"
                 )
                 fallback_options = dict(context_options)
-                fallback_options['user_agent'] = browser_features['user_agent']
+                # user_agent 为 None 时不要传给 Playwright：传 None 会被当成
+                # 「显式覆盖为空」，反而抹掉 Chromium 的原生 UA。
+                if browser_features.get('user_agent'):
+                    fallback_options['user_agent'] = browser_features['user_agent']
                 executable_path = find_chromium_executable()
                 if executable_path:
                     fallback_options['executable_path'] = executable_path
@@ -554,9 +563,9 @@ class XianyuSliderStealth:
                     if executable_path:
                         launch_kwargs['executable_path'] = executable_path
                     self.browser = self.playwright.chromium.launch(**launch_kwargs)
-                    self.context = self.browser.new_context(
-                        user_agent=browser_features['user_agent'], **context_options
-                    )
+                    if browser_features.get('user_agent'):
+                        context_options['user_agent'] = browser_features['user_agent']
+                    self.context = self.browser.new_context(**context_options)
 
             # 验证上下文已创建
             if not self.context:
@@ -781,57 +790,78 @@ class XianyuSliderStealth:
             return self.trajectory_params
     
     def _get_cookies_after_success(self):
-        """滑块验证成功后获取cookie"""
+        """取回验证通过后的 x5 系列 Cookie，取不到有效凭证时返回 None。
+
+        两道关卡，缺一不可：
+
+        1. URL 还停在 punish 路径上，说明服务端根本没放行，此刻页面上的
+           cookie 只是挑战态残留。
+        2. 必须含 x5sec —— 它才是通行凭证。x5secdata / x5sectag / x5step 是我们
+           导航进 punish 页时自己带进去的挑战标记，永远存在；只要拿「有没有
+           x5* 」当成功判据，就等于无条件判成功，然后把一堆挑战 cookie 写回
+           账号，token 刷新永远返回 FAIL_SYS_USER_VALIDATE，形成死循环。
+        """
         try:
             logger.info(f"【{self.pure_user_id}】开始获取滑块验证成功后的页面cookie...")
-            
-            # 检查当前页面URL
-            current_url = self.page.url
+
+            current_url = ""
+            try:
+                current_url = self.page.url or ""
+            except Exception:
+                pass
             logger.info(f"【{self.pure_user_id}】当前页面URL: {current_url}")
-            
-            # 检查页面标题
-            page_title = self.page.title()
-            logger.info(f"【{self.pure_user_id}】当前页面标题: {page_title}")
-            
-            # 等待一下确保cookie完全更新
+
+            try:
+                logger.info(f"【{self.pure_user_id}】当前页面标题: {self.page.title()}")
+            except Exception:
+                pass
+
+            # 从 punish 跳走后留个窗口，让 set-cookie 落盘
             time.sleep(1)
-            
-            # 获取浏览器中的所有cookie
+
+            if any(k in current_url for k in PUNISH_URL_MARKERS):
+                logger.error(
+                    f"【{self.pure_user_id}】❌ 取 cookie 前发现 URL 仍在 punish，"
+                    f"验证未真正通过: {current_url[:120]}"
+                )
+                return None
+
             cookies = self.context.cookies()
-            
-            if cookies:
-                # 将cookie转换为字典格式
-                new_cookies = {}
-                for cookie in cookies:
-                    new_cookies[cookie['name']] = cookie['value']
-                
-                logger.info(f"【{self.pure_user_id}】滑块验证成功后已获取cookie，共{len(new_cookies)}个cookie")
-                
-                # 记录所有cookie的详细信息
-                logger.info(f"【{self.pure_user_id}】获取到的所有cookie: {list(new_cookies.keys())}")
-                
-                # 只提取x5sec相关的cookie
-                filtered_cookies = {}
-                
-                # 筛选出x5相关的cookies（包括x5sec, x5step等）
-                for cookie_name, cookie_value in new_cookies.items():
-                    cookie_name_lower = cookie_name.lower()
-                    if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
-                        filtered_cookies[cookie_name] = cookie_value
-                        logger.info(f"【{self.pure_user_id}】x5相关cookie已获取: {cookie_name} = {cookie_value}")
-                
-                logger.info(f"【{self.pure_user_id}】找到{len(filtered_cookies)}个x5相关cookies: {list(filtered_cookies.keys())}")
-                
-                if filtered_cookies:
-                    logger.info(f"【{self.pure_user_id}】返回过滤后的x5相关cookie: {list(filtered_cookies.keys())}")
-                    return filtered_cookies
-                else:
-                    logger.warning(f"【{self.pure_user_id}】未找到x5相关cookie")
-                    return None
-            else:
+            if not cookies:
                 logger.warning(f"【{self.pure_user_id}】未获取到任何cookie")
                 return None
-                
+
+            new_cookies = {c['name']: c['value'] for c in cookies}
+            logger.info(
+                f"【{self.pure_user_id}】滑块验证成功后已获取cookie，"
+                f"共{len(new_cookies)}个cookie"
+            )
+            logger.info(f"【{self.pure_user_id}】获取到的所有cookie: {list(new_cookies.keys())}")
+
+            filtered_cookies = {}
+            for cookie_name, cookie_value in new_cookies.items():
+                if cookie_name.lower().startswith('x5'):
+                    filtered_cookies[cookie_name] = cookie_value
+
+            logger.info(
+                f"【{self.pure_user_id}】找到{len(filtered_cookies)}个x5相关cookies: "
+                f"{list(filtered_cookies.keys())}"
+            )
+
+            if 'x5sec' not in filtered_cookies:
+                logger.error(
+                    f"【{self.pure_user_id}】❌ x5 cookie 中没有 x5sec，"
+                    f"滑块视觉通过但服务端并未放行。已有key: "
+                    f"{list(filtered_cookies.keys())}"
+                )
+                return None
+
+            logger.info(
+                f"【{self.pure_user_id}】返回过滤后的x5相关cookie: "
+                f"{list(filtered_cookies.keys())}"
+            )
+            return filtered_cookies
+
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】获取滑块验证成功后的cookie失败: {str(e)}")
             return None
@@ -854,467 +884,76 @@ class XianyuSliderStealth:
             logger.error(f"【{self.pure_user_id}】保存cookie到文件失败: {str(e)}")
     
     def _get_random_browser_features(self):
-        """获取随机浏览器特征"""
-        # 随机选择窗口大小（使用更大的尺寸以适应最大化）
-        window_sizes = [
-            "1920,1080", "1920,1200", "2560,1440", "1680,1050", "1600,900"
-        ]
-        
-        # 随机选择语言
-        languages = [
-            ("zh-CN", "zh-CN,zh;q=0.9,en;q=0.8"),
-            ("zh-CN", "zh-CN,zh;q=0.9"),
-            ("zh-CN", "zh-CN,zh;q=0.8,en;q=0.6")
-        ]
-        
-        # 随机选择用户代理
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-        ]
-        
-        window_size = random.choice(window_sizes)
-        lang, accept_lang = random.choice(languages)
-        user_agent = random.choice(user_agents)
-        
-        # 解析窗口大小
-        width, height = map(int, window_size.split(','))
-        
+        """返回与启动上下文一致的稳定特征配置。
+
+        这里原本会随机挑窗口尺寸、缩放比和 UA —— 而 UA 池里同时混着
+        Windows 和 Mac，注入脚本又把 navigator.platform 写死 Win32，凑出的是
+        一组自相矛盾的指纹。更麻烦的是伪造 UA 只改 JS/请求头里的字符串，
+        Client Hints 和真实内核版本对不上，反而是明确的机器人特征。
+
+        所以 user_agent 现在返回 None：让 Chromium 报自己真实的 UA，与
+        Client Hints 天然一致。调用方需按 falsy 跳过覆盖。
+        """
         return {
-            'window_size': window_size,
-            'lang': lang,
-            'accept_lang': accept_lang,
-            'user_agent': user_agent,
-            'locale': lang,
-            'viewport_width': width,
-            'viewport_height': height,
-            'device_scale_factor': random.choice([1.0, 1.25, 1.5]),
+            'window_size': '1920,1080',
+            'lang': 'zh-CN',
+            'accept_lang': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'user_agent': None,
+            'locale': 'zh-CN',
+            'viewport_width': 1920,
+            'viewport_height': 1080,
+            'device_scale_factor': 1.0,
             'is_mobile': False,
             'has_touch': False,
             'timezone_id': 'Asia/Shanghai'
         }
     
     def _get_stealth_script(self, browser_features):
-        """获取增强反检测脚本"""
-        return f"""
-            // 隐藏webdriver属性
-            Object.defineProperty(navigator, 'webdriver', {{
-                get: () => undefined,
-            }});
-            
-            // 隐藏自动化相关属性
-            delete navigator.__proto__.webdriver;
-            delete window.navigator.webdriver;
-            delete window.navigator.__proto__.webdriver;
-            
-            // 模拟真实浏览器环境
-            window.chrome = {{
-                runtime: {{}},
-                loadTimes: function() {{}},
-                csi: function() {{}},
-                app: {{}}
-            }};
-            
-            // 覆盖plugins - 随机化
-            const pluginCount = {random.randint(3, 8)};
-            Object.defineProperty(navigator, 'plugins', {{
-                get: () => Array.from({{length: pluginCount}}, (_, i) => ({{
-                    name: 'Plugin' + i,
-                    description: 'Plugin ' + i
-                }})),
-            }});
-            
-            // 覆盖languages
-            Object.defineProperty(navigator, 'languages', {{
-                get: () => ['{browser_features['locale']}', 'zh', 'en'],
-            }});
-            
-            // 模拟真实的屏幕信息
-            Object.defineProperty(screen, 'availWidth', {{ get: () => {browser_features['viewport_width']} }});
-            Object.defineProperty(screen, 'availHeight', {{ get: () => {browser_features['viewport_height'] - 40} }});
-            Object.defineProperty(screen, 'width', {{ get: () => {browser_features['viewport_width']} }});
-            Object.defineProperty(screen, 'height', {{ get: () => {browser_features['viewport_height']} }});
-            
-            // 隐藏自动化检测 - 随机化硬件信息
-            Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {random.choice([2, 4, 6, 8])} }});
-            Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {random.choice([4, 8, 16])} }});
-            
-            // 模拟真实的时区
-            Object.defineProperty(Intl.DateTimeFormat.prototype, 'resolvedOptions', {{
-                value: function() {{
-                    return {{ timeZone: '{browser_features['timezone_id']}' }};
-                }}
-            }});
-            
-            // 隐藏自动化痕迹
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-            
-            // 模拟有头模式的特征
-            Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => 0 }});
-            Object.defineProperty(navigator, 'platform', {{ get: () => 'Win32' }});
-            Object.defineProperty(navigator, 'vendor', {{ get: () => 'Google Inc.' }});
-            Object.defineProperty(navigator, 'vendorSub', {{ get: () => '' }});
-            Object.defineProperty(navigator, 'productSub', {{ get: () => '20030107' }});
-            
-            // 模拟真实的连接信息
-            Object.defineProperty(navigator, 'connection', {{
-                get: () => ({{
-                    effectiveType: "{random.choice(['3g', '4g', '5g'])}",
-                    rtt: {random.randint(20, 100)},
-                    downlink: {round(random.uniform(1, 10), 2)}
-                }})
-            }});
-            
-            // 隐藏无头模式特征
-            Object.defineProperty(navigator, 'headless', {{ get: () => undefined }});
-            Object.defineProperty(window, 'outerHeight', {{ get: () => {browser_features['viewport_height']} }});
-            Object.defineProperty(window, 'outerWidth', {{ get: () => {browser_features['viewport_width']} }});
-            
-            // 模拟真实的媒体设备
-            Object.defineProperty(navigator, 'mediaDevices', {{
-                get: () => ({{
-                    enumerateDevices: () => Promise.resolve([])
-                }}),
-            }});
-            
-            // 隐藏自动化检测特征
-            Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__webdriver_script_fn', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__webdriver_evaluate', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__webdriver_unwrapped', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__fxdriver_evaluate', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__driver_evaluate', {{ get: () => undefined }});
-            Object.defineProperty(navigator, '__webdriver_script_func', {{ get: () => undefined }});
-            
-            // 隐藏Playwright特定的对象
-            delete window.playwright;
-            delete window.__playwright;
-            delete window.__pw_manual;
-            delete window.__pw_original;
-            
-            // 模拟真实的用户代理
-            Object.defineProperty(navigator, 'userAgent', {{
-                get: () => '{browser_features['user_agent']}'
-            }});
-            
-            // 隐藏自动化相关的全局变量
-            delete window.webdriver;
-            delete window.__webdriver_script_fn;
-            delete window.__webdriver_evaluate;
-            delete window.__webdriver_unwrapped;
-            delete window.__fxdriver_evaluate;
-            delete window.__driver_evaluate;
-            delete window.__webdriver_script_func;
-            delete window._selenium;
-            delete window._phantom;
-            delete window.callPhantom;
-            delete window._phantom;
-            delete window.phantom;
-            delete window.Buffer;
-            delete window.emit;
-            delete window.spawn;
-            
-            // Canvas指纹随机化
-            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-            HTMLCanvasElement.prototype.toDataURL = function() {{
-                const context = this.getContext('2d');
-                if (context) {{
-                    const imageData = context.getImageData(0, 0, this.width, this.height);
-                    const data = imageData.data;
-                    for (let i = 0; i < data.length; i += 4) {{
-                        if (Math.random() < 0.001) {{
-                            data[i] = Math.floor(Math.random() * 256);
-                        }}
-                    }}
-                    context.putImageData(imageData, 0, 0);
-                }}
-                return originalToDataURL.apply(this, arguments);
-            }};
-            
-            // 音频指纹随机化
-            const originalGetChannelData = AudioBuffer.prototype.getChannelData;
-            AudioBuffer.prototype.getChannelData = function(channel) {{
-                const data = originalGetChannelData.call(this, channel);
-                for (let i = 0; i < data.length; i += 1000) {{
-                    if (Math.random() < 0.01) {{
-                        data[i] += Math.random() * 0.0001;
-                    }}
-                }}
-                return data;
-            }};
-            
-            // WebGL指纹随机化
-            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(parameter) {{
-                if (parameter === 37445) {{ // UNMASKED_VENDOR_WEBGL
-                    return 'Intel Inc.';
-                }}
-                if (parameter === 37446) {{ // UNMASKED_RENDERER_WEBGL
-                    return 'Intel Iris OpenGL Engine';
-                }}
-                return originalGetParameter.call(this, parameter);
-            }};
-            
-            // 模拟真实的鼠标事件
-            const originalAddEventListener = EventTarget.prototype.addEventListener;
-            EventTarget.prototype.addEventListener = function(type, listener, options) {{
-                if (type === 'mousedown' || type === 'mouseup' || type === 'mousemove') {{
-                    const originalListener = listener;
-                    listener = function(event) {{
-                        setTimeout(() => originalListener.call(this, event), Math.random() * 10);
-                    }};
-                }}
-                return originalAddEventListener.call(this, type, listener, options);
-            }};
-            
-            // 随机化字体检测
-            Object.defineProperty(document, 'fonts', {{
-                get: () => ({{
-                    ready: Promise.resolve(),
-                    check: () => true,
-                    load: () => Promise.resolve([])
-                }})
-            }});
-            
-            // 隐藏自动化检测的常见特征
-            Object.defineProperty(window, 'chrome', {{
-                get: () => ({{
-                    runtime: {{}},
-                    loadTimes: function() {{}},
-                    csi: function() {{}},
-                    app: {{}}
-                }})
-            }});
-            
-            // 增强鼠标移动轨迹记录
-            let mouseMovements = [];
-            let lastMouseTime = Date.now();
-            document.addEventListener('mousemove', function(e) {{
-                const now = Date.now();
-                const timeDiff = now - lastMouseTime;
-                mouseMovements.push({{
-                    x: e.clientX,
-                    y: e.clientY,
-                    time: now,
-                    timeDiff: timeDiff
-                }});
-                lastMouseTime = now;
-                // 保持最近100个移动记录
-                if (mouseMovements.length > 100) {{
-                    mouseMovements.shift();
-                }}
-            }}, true);
-            
-            // 模拟真实的屏幕触摸点数
-            Object.defineProperty(navigator, 'maxTouchPoints', {{
-                get: () => {random.choice([0, 1, 5, 10])}
-            }});
-            
-            // 模拟真实的电池API
-            if (navigator.getBattery) {{
-                const originalGetBattery = navigator.getBattery;
-                navigator.getBattery = async function() {{
-                    const battery = await originalGetBattery.call(navigator);
-                    Object.defineProperty(battery, 'charging', {{ get: () => {random.choice(['true', 'false'])} }});
-                    Object.defineProperty(battery, 'level', {{ get: () => {random.uniform(0.3, 0.95):.2f} }});
-                    return battery;
-                }};
-            }}
-            
-            // 伪装鼠标移动加速度（反检测关键）
-            let velocityProfile = [];
-            window.addEventListener('mousemove', function(e) {{
-                const now = performance.now();
-                velocityProfile.push({{ x: e.clientX, y: e.clientY, t: now }});
-                if (velocityProfile.length > 50) velocityProfile.shift();
-            }}, true);
-            
-            // 伪装Permission API
-            const originalQuery = Permissions.prototype.query;
-            Permissions.prototype.query = function(parameters) {{
-                if (parameters.name === 'notifications') {{
-                    return Promise.resolve({{ state: 'denied' }});
-                }}
-                return originalQuery.apply(this, arguments);
-            }};
-            
-            // 伪装Performance API
-            const originalNow = Performance.prototype.now;
-            Performance.prototype.now = function() {{
-                return originalNow.call(this) + Math.random() * 0.1;
-            }};
-            
-            // 伪装Date API（添加微小随机偏移）
-            const OriginalDate = Date;
-            Date = function(...args) {{
-                if (args.length === 0) {{
-                    const date = new OriginalDate();
-                    const offset = Math.floor(Math.random() * 3) - 1; // -1到1毫秒
-                    return new OriginalDate(date.getTime() + offset);
-                }}
-                return new OriginalDate(...args);
-            }};
-            Date.prototype = OriginalDate.prototype;
-            Date.now = function() {{
-                return OriginalDate.now() + Math.floor(Math.random() * 3) - 1;
-            }};
-            
-            // 伪装RTCPeerConnection（WebRTC指纹）
-            if (window.RTCPeerConnection) {{
-                const originalRTC = window.RTCPeerConnection;
-                window.RTCPeerConnection = function(...args) {{
-                    const pc = new originalRTC(...args);
-                    const originalCreateOffer = pc.createOffer;
-                    pc.createOffer = function(...args) {{
-                        return originalCreateOffer.apply(this, args).then(offer => {{
-                            // 修改SDP指纹
-                            offer.sdp = offer.sdp.replace(/a=fingerprint:.*\\r\\n/g, 
-                                `a=fingerprint:sha-256 ${{Array.from({{length:64}}, ()=>Math.floor(Math.random()*16).toString(16)).join('')}}\\r\\n`);
-                            return offer;
-                        }});
-                    }};
-                    return pc;
-                }};
-            }}
-            
-            // 伪装 Notification 权限（防止被检测为自动化）
-            Object.defineProperty(Notification, 'permission', {{
-                get: function() {{
-                    return ['default', 'granted', 'denied'][Math.floor(Math.random() * 3)];
-                }}
-            }});
-            
-            // 伪装 Connection API（添加网络信息变化）
-            if (navigator.connection) {{
-                const connection = navigator.connection;
-                const originalEffectiveType = connection.effectiveType;
-                Object.defineProperty(connection, 'effectiveType', {{
-                    get: function() {{
-                        const types = ['slow-2g', '2g', '3g', '4g'];
-                        return types[Math.floor(Math.random() * types.length)];
-                    }}
-                }});
-                Object.defineProperty(connection, 'rtt', {{
-                    get: function() {{
-                        return Math.floor(Math.random() * 100) + 50; // 50-150ms
-                    }}
-                }});
-                Object.defineProperty(connection, 'downlink', {{
-                    get: function() {{
-                        return Math.random() * 10 + 1; // 1-11 Mbps
-                    }}
-                }});
-            }}
-            
-            // 伪装 DeviceMemory（设备内存）
-            Object.defineProperty(navigator, 'deviceMemory', {{
-                get: function() {{
-                    const memories = [2, 4, 8, 16];
-                    return memories[Math.floor(Math.random() * memories.length)];
-                }}
-            }});
-            
-            // 伪装 HardwareConcurrency（CPU核心数）
-            Object.defineProperty(navigator, 'hardwareConcurrency', {{
-                get: function() {{
-                    const cores = [2, 4, 6, 8, 12, 16];
-                    return cores[Math.floor(Math.random() * cores.length)];
-                }}
-            }});
-            
-            // 伪装 maxTouchPoints（触摸点数量）
-            Object.defineProperty(navigator, 'maxTouchPoints', {{
-                get: function() {{
-                    return Math.floor(Math.random() * 5) + 1; // 1-5个触摸点
-                }}
-            }});
-            
-            // 伪装 DoNotTrack
-            Object.defineProperty(navigator, 'doNotTrack', {{
-                get: function() {{
-                    return ['1', '0', 'unspecified', null][Math.floor(Math.random() * 4)];
-                }}
-            }});
-            
-            // 伪装 Geolocation（添加微小延迟和误差）
-            if (navigator.geolocation) {{
-                const originalGetCurrentPosition = navigator.geolocation.getCurrentPosition;
-                navigator.geolocation.getCurrentPosition = function(success, error, options) {{
-                    const wrappedSuccess = function(position) {{
-                        // 添加微小的位置偏移（模拟真实GPS误差）
-                        const offset = Math.random() * 0.001;
-                        position.coords.latitude += offset;
-                        position.coords.longitude += offset;
-                        success(position);
-                    }};
-                    // 添加随机延迟
-                    setTimeout(() => {{
-                        originalGetCurrentPosition.call(this, wrappedSuccess, error, options);
-                    }}, Math.random() * 100);
-                }};
-            }}
-            
-            // 伪装 Clipboard API（防止检测剪贴板访问模式）
-            if (navigator.clipboard) {{
-                const originalReadText = navigator.clipboard.readText;
-                navigator.clipboard.readText = async function() {{
-                    // 添加微小延迟
-                    await new Promise(resolve => setTimeout(resolve, Math.random() * 50));
-                    return originalReadText.call(this);
-                }};
-            }}
-            
-            // 🔑 关键优化：隐藏CDP运行时特征
-            Object.defineProperty(navigator, 'webdriver', {{
-                get: () => undefined
-            }});
-            
-            // 🔑 隐藏自动化控制特征
-            window.navigator.chrome = {{
-                runtime: {{}},
-                loadTimes: function() {{}},
-                csi: function() {{}},
-                app: {{}}
-            }};
-            
-            // 🔑 隐藏Playwright特征
-            delete window.__playwright;
-            delete window.__pw_manual;
-            delete window.__PW_inspect;
-            
-            // 🔑 伪装chrome对象（防止检测headless）
-            if (!window.chrome) {{
-                window.chrome = {{}};
-            }}
-            window.chrome.runtime = {{
-                id: undefined,
-                sendMessage: function() {{}},
-                connect: function() {{}}
-            }};
-            
-            // 🔑 伪装Permissions API
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({{ state: Notification.permission }}) :
-                    originalQuery(parameters)
-            );
-            
-            // 🔑 覆盖Function.prototype.toString以隐藏代理
-            const oldToString = Function.prototype.toString;
-            Function.prototype.toString = function() {{
-                if (this === navigator.permissions.query) {{
-                    return 'function query() {{ [native code] }}';
-                }}
-                return oldToString.call(this);
-            }};
+        """最小化隐藏脚本：只抹掉明确的自动化标记，其余一律保留原生值。
+
+        这里曾经是一段 17.5KB 的「全家桶」伪装：改 UA、屏幕、插件、Canvas、
+        WebGL、AudioBuffer、Date、Performance，还把 mousemove 监听塞进
+        setTimeout。它有两个致命问题：
+
+        1. 顶层重复声明了 `const originalQuery`（伪装 Permissions API 的代码
+           被复制粘贴了两遍）。这是解析期 SyntaxError —— 整段脚本一行都没
+           执行过，navigator.webdriver 始终是 true。而 add_init_script 的
+           解析失败只会冒一个 pageerror，日志里看不见，于是「已添加反检测
+           脚本」的日志骗了我们很久。
+        2. 即使语法修好，它也跑不完：webdriver 和 maxTouchPoints 各被
+           Object.defineProperty 定义了两次，而默认 configurable 为 false，
+           第二次必然抛 TypeError 再次中断。
+
+        更根本的是方向错了：伪造 UA（还随机在 Windows/Mac 之间跳，同时把
+        navigator.platform 写死 Win32）、伪造屏幕和时间 API，产生的是一组
+        互相矛盾的指纹 —— 比只藏自动化标记更容易被风控识破。所以现在只做
+        两件确定有收益的事，并且每段独立 try/catch，一处失败不拖垮其余。
+
+        Args:
+            browser_features: 保留入参以兼容调用方，脚本本身不再使用。
+        Returns:
+            注入用的 JS 源码。
         """
-    
+        _ = browser_features
+        return """
+            try {
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                    configurable: true
+                });
+                delete Object.getPrototypeOf(navigator).webdriver;
+            } catch (e) {}
+            try {
+                delete window.playwright;
+                delete window.__playwright;
+                delete window.__pw_manual;
+                delete window.__PW_inspect;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+            } catch (e) {}
+        """
+
     def _bezier_curve(self, p0, p1, p2, p3, t):
         """三次贝塞尔曲线 - 生成更自然的轨迹"""
         return (1-t)**3 * p0 + 3*(1-t)**2*t * p1 + 3*(1-t)*t**2 * p2 + t**3 * p3
@@ -1467,6 +1106,14 @@ class XianyuSliderStealth:
             start_x = button_box["x"] + button_box["width"] / 2
             start_y = button_box["y"] + button_box["height"] / 2
             logger.debug(f"【{self.pure_user_id}】滑块位置: ({start_x}, {start_y})")
+
+            # 滑块类型必须在按下鼠标【之前】判定完。这个检测内部要调
+            # page.content() 序列化整个 DOM，放在拖动过程中会阻塞住整条流程。
+            try:
+                is_scratch = self.is_scratch_captcha()
+            except Exception as exc:
+                logger.warning(f"【{self.pure_user_id}】判定滑块类型失败，按普通滑块处理: {exc}")
+                is_scratch = False
             
             # 第一阶段：移动到滑块附近（模拟人类寻找滑块）
             try:
@@ -1513,6 +1160,18 @@ class XianyuSliderStealth:
                 current_x = start_x
                 current_y = start_y
 
+                # 分段计时：整个流程曾经稳定卡满 180 秒看门狗，而抛出的异常总是
+                # 「Mouse.up: Target page ... closed」—— 那只是浏览器被强杀后的
+                # 表象，真正挂住的是哪一次 CDP 调用无从判断。这里给每段独立记时，
+                # 让日志直接点出阻塞点，不必再靠猜。
+                phase_marks = []
+
+                def mark(label, since):
+                    cost = time.time() - since
+                    phase_marks.append(f"{label}={cost:.2f}s")
+                    return time.time()
+
+                mark_at = start_time
                 current_x, current_y, stats = replay_trajectory(
                     trajectory,
                     start_x,
@@ -1523,32 +1182,46 @@ class XianyuSliderStealth:
                     lambda x, y: self.page.mouse.move(x, y),
                 )
                 total_points = stats["total_points"]
+                mark_at = mark("回放", mark_at)
 
-                # 记录最终位置
+                # 落点必须在【松手之前】读：松手后 nc 会把滑块归位，读到的
+                # left 恒为 0。之前把这段挪到 mouse.up() 之后，导致失败摘要里
+                # 永远是「最终位置0px」，还把 0 写进轨迹学习历史，让学习系统
+                # 以为每条轨迹都没能拖动滑块。
+                # 这里必须给超时：默认 30 秒，且元素可能已被 nc 摘掉。
                 try:
-                    current_style = slider_button.get_attribute("style")
+                    current_style = slider_button.get_attribute("style", timeout=3000)
                     if current_style and "left:" in current_style:
-                        import re
                         left_match = re.search(r'left:\s*([^;]+)', current_style)
                         if left_match:
                             left_value = left_match.group(1).strip()
-                            left_px = float(left_value.replace('px', ''))
                             if hasattr(self, 'current_trajectory_data'):
-                                self.current_trajectory_data["final_left_px"] = left_px
-                            logger.info(f"【{self.pure_user_id}】滑动完成: {total_points}步 - 最终位置: {left_value}")
-                except Exception:
-                    pass
+                                self.current_trajectory_data["final_left_px"] = float(
+                                    left_value.replace('px', '')
+                                )
+                            logger.info(
+                                f"【{self.pure_user_id}】滑动落点: {total_points}步 - {left_value}"
+                            )
+                except Exception as exc:
+                    logger.debug(f"【{self.pure_user_id}】读取滑块落点失败（不影响验证）: {exc}")
+                mark_at = mark("读落点", mark_at)
 
                 # 🎨 刮刮乐特殊处理：在目标位置停顿观察
-                is_scratch = self.is_scratch_captcha()
+                # 注意用的是拖动【开始前】就取好的判定结果。这里绝不能再调
+                # is_scratch_captcha() —— 它内部是 page.content()，会序列化整个 DOM，
+                # 而此刻鼠标还按着、页面正在跑验证动画，该调用极易挂死，
+                # 导致流程卡在 mouse.up() 之前，直到看门狗强杀浏览器才抛
+                # 「Mouse.up: Target page, context or browser has been closed」。
                 if is_scratch:
                     pause_duration = random.uniform(0.3, 0.5)
                     logger.warning(f"【{self.pure_user_id}】🎨 刮刮乐模式：在目标位置停顿{pause_duration:.2f}秒观察...")
                     time.sleep(pause_duration)
-                
+
                 # 释放前停顿：人手到位后会先确认再松开，立即释放是脚本特征
                 time.sleep(random.uniform(0.12, 0.28))
+                mark_at = mark("松手前停顿", mark_at)
                 self.page.mouse.up()
+                mark_at = mark("松手", mark_at)
                 time.sleep(random.uniform(0.05, 0.12))
 
                 # 注意：此处不再补发合成 click 事件。
@@ -1560,28 +1233,35 @@ class XianyuSliderStealth:
                     f"【{self.pure_user_id}】滑动完成: 耗时={elapsed_time:.2f}秒"
                     f"(轨迹设计{stats['planned_elapsed']:.2f}秒), "
                     f"最终位置=({current_x:.1f}, {current_y:.1f})"
+                    f" | 分段: {', '.join(phase_marks)}"
                 )
                 # 丢点或滞后明显，说明这台机器发不出设计的采样率。时间轴已被
                 # 补偿，但仍要让用户看到 —— 「配置低的机器过不了滑块」的根因就在这。
-                if stats["skipped_points"] or stats["peak_lag"] > 0.05:
+                if stats["peak_lag"] > 0.3:
                     logger.warning(
-                        f"【{self.pure_user_id}】机器性能不足以维持滑动采样率: "
-                        f"丢弃{stats['skipped_points']}/{total_points}个采样点, "
-                        f"最大滞后{stats['peak_lag'] * 1000:.0f}ms。"
-                        f"已自动降采样补偿；若滑块持续失败，请降低同时运行的账号数或提高机器配置"
+                        f"【{self.pure_user_id}】拖动比设计节奏慢了 "
+                        f"{stats['peak_lag'] * 1000:.0f}ms，滑块通过率会下降；"
+                        f"若持续如此，请降低同时运行的账号数或提高机器配置"
                     )
 
                 
                 return True
                 
             except Exception as e:
-                logger.error(f"【{self.pure_user_id}】执行滑动轨迹失败: {e}")
+                # 分段耗时在异常路径上同样要打出来：挂死时抛出的总是
+                # 「Mouse.up: Target page ... closed」（浏览器被看门狗强杀后的
+                # 表象），只有分段数据能指出真正阻塞在哪一步。
+                logger.error(
+                    f"【{self.pure_user_id}】执行滑动轨迹失败: {e}"
+                    f" | 已完成分段: {', '.join(phase_marks) or '（无，卡在回放中）'}"
+                    f" | 距本阶段开始 {time.time() - start_time:.2f}秒"
+                )
                 import traceback
                 logger.error(traceback.format_exc())
                 # 确保释放鼠标
                 try:
                     self.page.mouse.up()
-                except:
+                except Exception:
                     pass
                 return False
             
@@ -1695,7 +1375,11 @@ class XianyuSliderStealth:
                     logger.info(f"【{self.pure_user_id}】已知滑块在主页面，直接在主页面查找...")
                     for selector in container_selectors:
                         try:
-                            element = self.page.wait_for_selector(selector, timeout=1000)
+                            # 用 query_selector 立即返回。wait_for_selector 对不存在的
+                            # 元素会死等到超时，12 个候选选择器 × 1 秒 × 走两遍就是 24 秒，
+                            # 加上按钮和轨道查找，单轮要 53 秒 —— 这才是滑块流程的大头。
+                            # 页面此时已经加载完，元素要么在要么不在，没有等待的必要。
+                            element = self.page.query_selector(selector)
                             if element:
                                 logger.info(f"【{self.pure_user_id}】在已知主页面找到滑块容器: {selector}")
                                 slider_container = element
@@ -1709,7 +1393,7 @@ class XianyuSliderStealth:
             if not slider_container:
                 for selector in container_selectors:
                     try:
-                        element = self.page.wait_for_selector(selector, timeout=1000)  # 减少超时时间，快速跳过
+                        element = self.page.query_selector(selector)  # 立即返回，不等待
                         if element:
                             logger.info(f"【{self.pure_user_id}】在主页面找到滑块容器: {selector}")
                             slider_container = element
@@ -2059,7 +1743,7 @@ class XianyuSliderStealth:
                 logger.warning(f"【{self.pure_user_id}】在所有frame中未找到轨道，尝试在主页面查找...")
                 for selector in track_selectors:
                     try:
-                        element = self.page.wait_for_selector(selector, timeout=1000)
+                        element = self.page.query_selector(selector)  # 立即返回，不等待
                         if element:
                             logger.info(f"【{self.pure_user_id}】在主页面找到滑块轨道: {selector}")
                             slider_track = element
@@ -4235,9 +3919,11 @@ class XianyuSliderStealth:
                 # 有头模式窗口最大化
                 co.set_argument('--start-maximized')
             
-            # 设置用户代理
+            # 用户代理：默认保留内核真实 UA（与 Client Hints 一致），
+            # 只有显式配置了才覆盖。
             browser_features = self._get_random_browser_features()
-            co.set_user_agent(browser_features['user_agent'])
+            if browser_features.get('user_agent'):
+                co.set_user_agent(browser_features['user_agent'])
             
             # 设置中文语言
             co.set_argument('--lang=zh-CN')
@@ -4530,29 +4216,117 @@ class XianyuSliderStealth:
             except Exception as e:
                 logger.warning(f"【{self.pure_user_id}】关闭浏览器时出错: {e}")
     
+    def _clean_singleton_lock_files(self, user_data_dir: str) -> None:
+        """清理持久化 profile 里的单例锁与崩溃标记。
+
+        浏览器被强杀（看门狗超时、容器重启）后，profile 里会留下 SingletonLock
+        等锁文件，以及 "exit_type": "Crashed" 的崩溃标记。下次启动时 Chrome 会
+        认为上次异常退出：轻则弹「未正确关闭」的恢复气泡挡住页面，重则新实例
+        拿不到单例锁而行为异常 —— 表现为滑块能找到、一拖就卡死在 Mouse.up，
+        直到看门狗再次强杀，于是每轮验证都白跑。
+        """
+        for name in ('SingletonLock', 'SingletonSocket', 'SingletonCookie'):
+            path = os.path.join(user_data_dir, name)
+            try:
+                if os.path.islink(path) or os.path.exists(path):
+                    os.remove(path)
+                    logger.info(f"【{self.pure_user_id}】已清理残留锁文件: {name}")
+            except Exception as exc:
+                logger.warning(f"【{self.pure_user_id}】清理 {name} 失败: {exc}")
+
+        # 把上次的退出状态改成正常，避免弹出崩溃恢复气泡遮挡滑块
+        for rel in ('Default/Preferences', 'Preferences'):
+            pref_path = os.path.join(user_data_dir, rel)
+            if not os.path.exists(pref_path):
+                continue
+            try:
+                with open(pref_path, 'r', encoding='utf-8') as fp:
+                    prefs = json.load(fp)
+                profile = prefs.get('profile')
+                if not isinstance(profile, dict):
+                    continue
+                if profile.get('exit_type') == 'Normal' and not profile.get('exited_cleanly', True) is False:
+                    continue
+                profile['exit_type'] = 'Normal'
+                profile['exited_cleanly'] = True
+                with open(pref_path, 'w', encoding='utf-8') as fp:
+                    json.dump(prefs, fp, ensure_ascii=False)
+                logger.info(f"【{self.pure_user_id}】已重置浏览器退出状态: {rel}")
+            except Exception as exc:
+                logger.warning(f"【{self.pure_user_id}】重置 {rel} 退出状态失败: {exc}")
+
+    def _kill_browser_process(self) -> bool:
+        """强杀本账号的浏览器进程，返回是否杀掉了至少一个。
+
+        看门狗只能走这条路：Playwright 同步 API 不能跨线程调用，而进程被杀后
+        阻塞中的 CDP 调用会立刻报错返回。
+
+        用 user_data_dir 精确匹配，避免误杀用户自己开的浏览器或其他账号的实例。
+        """
+        marker = f"browser_data{os.sep}slider_{self.pure_user_id}"
+        killed = 0
+
+        try:
+            import psutil
+        except ImportError:
+            psutil = None
+
+        if psutil is not None:
+            for proc in psutil.process_iter(['pid', 'cmdline']):
+                try:
+                    cmdline = ' '.join(proc.info.get('cmdline') or [])
+                    if marker in cmdline:
+                        proc.kill()
+                        killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                    continue
+        else:
+            # 没装 psutil 时退回 pkill，匹配同一个 user_data_dir
+            try:
+                import subprocess
+                subprocess.run(
+                    ['pkill', '-f', marker],
+                    check=False, timeout=10,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                killed = 1
+            except Exception as exc:
+                logger.warning(f"【{self.pure_user_id}】pkill 终止浏览器失败: {exc}")
+
+        if killed:
+            logger.warning(
+                f"【{self.pure_user_id}】已强制结束 {killed} 个浏览器进程以解除阻塞"
+            )
+        return killed > 0
+
     def _start_watchdog(self, timeout: float):
-        """超时仍未结束就强制关掉浏览器，返回可取消的定时器。
+        """超时仍未结束就强制干掉浏览器进程，返回可取消的定时器。
 
         Playwright 的 mouse.move / bounding_box 这类调用没有超时参数：页面无响应时
         会无限期阻塞在 CDP 往返上，既不抛错也不返回。此时浏览器不会关、全局槽位也
         不会归还，而槽位只有一个 —— 后面每个浏览器任务都要先卡满等待超时。
-        关闭浏览器会让阻塞中的调用因连接断开而抛错，流程得以走进 finally 正常收尾。
         """
         def on_timeout():
             logger.error(
                 f"【{self.pure_user_id}】滑块流程超过 {timeout:.0f} 秒未结束，"
                 "强制终止以释放浏览器槽位"
             )
-            # 不能直接调 close_browser：它内部的 page.close()/context.close() 同样是
-            # Playwright 调用，页面无响应时会跟着一起挂住。先停掉 Playwright driver，
-            # 它会连带结束浏览器进程，并让所有阻塞中的 CDP 调用立刻抛错 ——
-            # 主流程于是能走进 finally，由那里的 close_browser 归还槽位。
+            # 不能在这里调任何 Playwright 同步 API（包括 playwright.stop()）：
+            # 同步 API 绑定在创建它的线程上，从定时器线程调用会直接抛
+            # 「Cannot switch to a different thread」，等于看门狗白装。
+            # 改为直接杀浏览器进程 —— 进程一死，阻塞中的 CDP 调用立刻报错返回，
+            # 主流程得以走进 finally，由那里的 close_browser 归还槽位。
+            #
+            # 整体兜住异常：这里跑在定时器线程上，抛出去没人接，只会让线程
+            # 静默崩掉，看门狗就形同虚设。
             try:
-                if self.playwright is not None:
-                    self.playwright.stop()
-                    logger.info(f"【{self.pure_user_id}】已停止 Playwright driver")
+                if not self._kill_browser_process():
+                    logger.warning(
+                        f"【{self.pure_user_id}】未能定位浏览器进程，"
+                        "槽位可能要等到获取超时后才释放"
+                    )
             except Exception as exc:
-                logger.warning(f"【{self.pure_user_id}】超时终止 Playwright 失败: {exc}")
+                logger.error(f"【{self.pure_user_id}】看门狗终止浏览器失败: {exc}")
 
         timer = threading.Timer(timeout, on_timeout)
         timer.daemon = True

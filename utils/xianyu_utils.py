@@ -57,13 +57,45 @@ def trans_cookies(cookies_str: str) -> dict:
     """将cookies字符串转换为字典"""
     if not cookies_str:
         raise ValueError("cookies不能为空")
-        
+
     cookies = {}
     for cookie in cookies_str.split("; "):
         if "=" in cookie:
             key, value = cookie.split("=", 1)
             cookies[key] = value
     return cookies
+
+
+# 人机验证的"挑战标记"。它们表示"这个请求还有一道验证没做完"，
+# 而 x5sec 才是通过凭证。两者同时存在时，闲鱼会认为挑战仍未完成，
+# 继续返回 FAIL_SYS_USER_VALIDATE —— 表现为"滑块明明过了却一直用不了"。
+CAPTCHA_CHALLENGE_COOKIES = ('x5secdata', 'x5sectag', 'x5step')
+
+
+def drop_stale_captcha_challenge(cookies_str: str) -> str:
+    """拿到 x5sec 后清掉遗留的验证挑战标记，返回新的 Cookie 字符串。
+
+    没有 x5sec 时原样返回：此时挑战尚未完成，标记还需要用来定位惩罚页。
+    """
+    if not cookies_str:
+        return cookies_str
+
+    try:
+        cookies = trans_cookies(cookies_str)
+    except ValueError:
+        return cookies_str
+
+    lowered = {name.lower() for name in cookies}
+    if 'x5sec' not in lowered:
+        return cookies_str
+
+    removed = [name for name in cookies if name.lower() in CAPTCHA_CHALLENGE_COOKIES]
+    if not removed:
+        return cookies_str
+
+    for name in removed:
+        cookies.pop(name, None)
+    return "; ".join(f"{key}={value}" for key, value in cookies.items())
 
 
 def generate_mid() -> str:

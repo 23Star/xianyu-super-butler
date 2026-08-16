@@ -9,11 +9,12 @@ import secrets
 import time
 import json
 import os
+import re
 import pandas as pd
 import io
 import asyncio
 import sqlite3
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1156,6 +1157,80 @@ def _get_owned_chat_account(cookie_id: str, current_user: Dict[str, Any]) -> str
     return cookie_id
 
 
+class _AccountRequestDedup:
+    """把短时间内重复的同一账号请求合并成一次。
+
+    消息与会话列表在前端是轮询的，多开标签页、或前后端各自重试时，同一份数据
+    会被反复经 WebSocket 透传到闲鱼，很容易把账号打到限流（429 flow controled）。
+    这里做两件事：
+    1. 正在执行的相同请求直接复用同一个 Future，不再发第二次；
+    2. 结果按 TTL 短暂缓存；命中限流时用更长的 TTL，避免雪上加霜。
+    """
+
+    NORMAL_TTL = 3.0
+    THROTTLED_TTL = 15.0
+    MAX_ENTRIES = 512
+
+    def __init__(self):
+        self._pending: Dict[str, asyncio.Future] = {}
+        self._cache: "OrderedDict[str, Tuple[float, Any]]" = OrderedDict()
+
+    @staticmethod
+    def _looks_throttled(result) -> bool:
+        text = str(result)
+        return 'flow controled' in text or 'FAIL_SYS_FLOW_LIMIT' in text or '429' in text
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        for key in [k for k, (expire_at, _) in self._cache.items() if expire_at <= now]:
+            self._cache.pop(key, None)
+        while len(self._cache) > self.MAX_ENTRIES:
+            self._cache.popitem(last=False)
+
+    async def run(self, key: str, factory):
+        cached = self._cache.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+
+        pending = self._pending.get(key)
+        if pending is not None and not pending.done():
+            return await asyncio.shield(pending)
+
+        task = asyncio.ensure_future(factory())
+        self._pending[key] = task
+        try:
+            result = await task
+        finally:
+            self._pending.pop(key, None)
+
+        ttl = self.THROTTLED_TTL if self._looks_throttled(result) else self.NORMAL_TTL
+        self._cache[key] = (time.monotonic() + ttl, result)
+        self._prune()
+        return result
+
+
+account_request_dedup = _AccountRequestDedup()
+
+
+def _is_account_connection_alive(instance) -> bool:
+    """判断账号的 WebSocket 是否真的可用。
+
+    只看 connection_state 不够：状态是 CONNECTED 但连接对象已被对端关闭时
+    （浏览器标签页长时间挂后台会出现这种"半开"），请求仍会一路等到超时。
+    """
+    state = getattr(instance, 'connection_state', None)
+    state_value = getattr(state, 'value', state)
+    if state_value != 'connected':
+        return False
+
+    ws = getattr(instance, 'ws', None)
+    if ws is None:
+        return False
+    # websockets 的连接对象用 closed 标记；不同版本属性不一致，缺失时按可用处理
+    closed = getattr(ws, 'closed', False)
+    return not closed
+
+
 async def _run_on_account_loop(cookie_id: str, operation):
     manager = cookie_manager.manager
     if manager is None or not manager.loop.is_running():
@@ -1177,6 +1252,31 @@ async def _run_on_account_loop(cookie_id: str, operation):
                 ),
             )
         raise HTTPException(status_code=409, detail="账号未在线，请先启用账号并等待连接成功")
+
+    # 连接不可用时立刻返回，不要走到下面等 25 秒。浏览器标签页切到后台后
+    # WebSocket 会进入"半开"状态（TCP 还连着、应用层已不通），此时发请求会一路
+    # 等到超时：内层 15 秒 + 外层 25 秒，用户要等约 40 秒才看到 504。
+    if not _is_account_connection_alive(instance):
+        # 登录态过期是终态，别让用户以为等一会儿就好
+        if getattr(instance, 'needs_relogin', False):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    getattr(instance, 'relogin_reason', '')
+                    or '闲鱼登录态已过期，请重新扫码登录该账号'
+                ),
+            )
+        await asyncio.sleep(3)  # 给自动重连一点时间
+        if not _is_account_connection_alive(instance):
+            if getattr(instance, 'needs_relogin', False):
+                raise HTTPException(
+                    status_code=409,
+                    detail='闲鱼登录态已过期，请重新扫码登录该账号',
+                )
+            raise HTTPException(
+                status_code=503,
+                detail="账号连接已断开，正在自动重连，请稍后刷新重试",
+            )
 
     try:
         current_loop = asyncio.get_running_loop()
@@ -1225,9 +1325,14 @@ async def get_chat_conversations(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
-    body = await _run_on_account_loop(
-        cookie_id,
-        lambda instance: instance.get_im_conversations(cursor, limit),
+    # 走去重：会话列表是前端轮询的，多标签页并发时同一份数据会被重复
+    # 透传到闲鱼，容易触发账号限流
+    body = await account_request_dedup.run(
+        f"conversations|{cookie_id}|{cursor}|{limit}",
+        lambda: _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.get_im_conversations(cursor, limit),
+        ),
     )
     if isinstance(body, dict) and (body.get("reason") or body.get("code") == "400600001"):
         reason = body.get("developerMessage") or body.get("reason") or body.get("code")
@@ -1263,9 +1368,12 @@ async def get_chat_messages(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
-    body = await _run_on_account_loop(
-        cookie_id,
-        lambda instance: instance.get_im_messages(cid, cursor, limit),
+    body = await account_request_dedup.run(
+        f"messages|{cookie_id}|{cid}|{cursor}|{limit}",
+        lambda: _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.get_im_messages(cid, cursor, limit),
+        ),
     )
     if isinstance(body, dict) and body.get("reason"):
         reason = body.get("developerMessage") or body.get("reason")
@@ -1669,8 +1777,8 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
         cookie_enabled = cookie_manager.manager.get_cookie_status(cookie_id)
         auto_confirm = db_manager.get_auto_confirm(cookie_id)
         # 获取备注信息
-        cookie_details = db_manager.get_cookie_details(cookie_id)
-        remark = cookie_details.get('remark', '') if cookie_details else ''
+        cookie_details = db_manager.get_cookie_details(cookie_id) or {}
+        remark = cookie_details.get('remark', '')
 
         result.append({
             'id': cookie_id,
@@ -1678,15 +1786,21 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'enabled': cookie_enabled,
             'auto_confirm': auto_confirm,
             'remark': remark,
-            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10,
-            'nickname': cookie_details.get('nickname', '') if cookie_details else '',
-            'avatar_url': cookie_details.get('avatar_url', '') if cookie_details else '',
-            'location': cookie_details.get('location', '') if cookie_details else '',
-            'bio': cookie_details.get('bio', '') if cookie_details else '',
-            'followers': cookie_details.get('followers') if cookie_details else None,
-            'following': cookie_details.get('following') if cookie_details else None,
-            'profile_updated_at': cookie_details.get('profile_updated_at') if cookie_details else None,
+            'pause_duration': cookie_details.get('pause_duration', 10),
+            'nickname': cookie_details.get('nickname', ''),
+            'avatar_url': cookie_details.get('avatar_url', ''),
+            'location': cookie_details.get('location', ''),
+            'bio': cookie_details.get('bio', ''),
+            'followers': cookie_details.get('followers'),
+            'following': cookie_details.get('following'),
+            'profile_updated_at': cookie_details.get('profile_updated_at'),
             'runtime_state': cookie_manager.manager.get_task_state(cookie_id),
+            # 登录信息一并返回。这几个字段本来要前端再逐个请求
+            # /cookie/{id}/details 才拿得到，等于对同一份数据做 N+1 查询：
+            # 页面上有 7 处组件各自调用，账号一多首屏就被这些重复请求拖慢。
+            'username': cookie_details.get('username', ''),
+            'login_password': cookie_details.get('password', '') or cookie_details.get('login_password', ''),
+            'show_browser': bool(cookie_details.get('show_browser', False)),
         })
     return result
 
@@ -8729,6 +8843,14 @@ async def start_manual_captcha(
     )
 
     if result['success']:
+        # 拿到 x5sec 后必须清掉 x5secdata 等挑战标记，否则闲鱼会认为验证仍未完成，
+        # 继续返回 FAIL_SYS_USER_VALIDATE —— 表现为"滑块过了但账号还是用不了"
+        from utils.xianyu_utils import drop_stale_captcha_challenge
+        cleaned_cookies = drop_stale_captcha_challenge(result['cookies_str'])
+        if cleaned_cookies != result['cookies_str']:
+            log_with_user('info', f"账号 {cookie_id} 已清除过期的验证挑战标记", current_user)
+        result['cookies_str'] = cleaned_cookies
+
         # 保存新 Cookie 并解除风控熔断，让账号能立刻重连
         db_manager.save_cookie(cookie_id, result['cookies_str'])
 
@@ -8763,6 +8885,11 @@ async def start_manual_captcha(
 
 def classify_verification_event(detail: str, blocked: bool = False, reason: str = '') -> Tuple[str, str]:
     text = str(detail or '')
+    # 已经处理成功的事件不算"当前需要验证"。这里的 detail 里含 processing_result，
+    # 一条「滑块验证成功」的日志同样带着"滑块"二字，只按关键词匹配会让刚恢复的
+    # 账号继续显示需要验证。
+    if '成功' in text and ('滑块验证成功' in text or '验证成功' in text):
+        return ('risk_control', reason or '闲鱼限制了当前账号请求') if blocked else ('none', '')
     if 'action=captcha' in text or 'slider_captcha' in text or '滑块' in text:
         return 'slider', 'Token 刷新被闲鱼重定向到滑块验证页'
     if '人脸' in text or 'face' in text.lower() or 'iframeRedirect' in text:
@@ -8772,6 +8899,107 @@ def classify_verification_event(detail: str, blocked: bool = False, reason: str 
     if blocked:
         return 'risk_control', reason or '闲鱼限制了当前账号请求'
     return 'none', ''
+
+
+@app.post('/api/risk-control/{cookie_id}/fresh-captcha-url')
+async def get_fresh_captcha_url(
+    cookie_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """实时取一个新鲜的滑块验证链接。
+
+    punish 链接里的 x5secdata 只能用一次、且约 1 小时后失效，过期后打开只会看到
+    「抱歉，页面访问出现了问题」。风控日志里存的是历史链接，直接拿来用基本都是死链，
+    所以这里凭账号 Cookie 重新请求一次 Token 接口 —— 仍被风控就拿到新链接，
+    风控已解除则直接返回可用状态，让用户不必白跑一趟验证。
+    """
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    if cookie_id not in user_cookies:
+        raise HTTPException(status_code=403, detail='无权限操作该账号')
+
+    import aiohttp
+    from app.config import API_ENDPOINTS
+    from utils.xianyu_utils import trans_cookies, generate_sign, generate_device_id
+
+    cookies_str = user_cookies[cookie_id]
+    try:
+        cookie_dict = trans_cookies(cookies_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail='账号 Cookie 为空，请重新扫码登录')
+
+    token = (cookie_dict.get('_m_h5_tk') or '').split('_')[0]
+    if not token:
+        raise HTTPException(
+            status_code=409,
+            detail='账号 Cookie 缺少 _m_h5_tk 字段，请重新扫码登录',
+        )
+
+    timestamp = str(int(time.time() * 1000))
+    device_id = generate_device_id(cookie_dict.get('unb', ''))
+    data_value = (
+        '{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"' + device_id + '"}'
+    )
+    params = {
+        'jsv': '2.7.2', 'appKey': '34839810', 't': timestamp,
+        'sign': generate_sign(timestamp, token, data_value),
+        'v': '1.0', 'type': 'originaljson', 'accountSite': 'xianyu',
+        'dataType': 'json', 'timeout': '20000',
+        'api': 'mtop.taobao.idlemessage.pc.login.token',
+        'sessionOption': 'AutoLoginOnly',
+        'dangerouslySetWindvaneParams': '%5Bobject%20Object%5D',
+        'smToken': 'token', 'queryToken': 'sm', 'sm': 'sm',
+        'spm_cnt': 'a21ybx.im.0.0',
+        'spm_pre': 'a21ybx.home.sidebar.1.4c053da6vYwnmf',
+        'log_id': '4c053da6vYwnmf',
+    }
+    headers = {
+        'accept': 'application/json',
+        'content-type': 'application/x-www-form-urlencoded',
+        'user-agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
+        ),
+        'referer': 'https://www.goofish.com/',
+        'origin': 'https://www.goofish.com',
+        'cookie': cookies_str,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                API_ENDPOINTS.get('token'),
+                params=params, data={'data': data_value}, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=25),
+            ) as response:
+                payload = await response.json(content_type=None)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'请求闲鱼接口失败: {exc}') from exc
+
+    data = payload.get('data') if isinstance(payload, dict) else None
+    data = data if isinstance(data, dict) else {}
+
+    if data.get('accessToken'):
+        log_with_user('info', f'账号 {cookie_id} 风控已解除，无需验证', current_user)
+        return {
+            'success': True,
+            'need_verify': False,
+            'message': '该账号风控已解除，无需再做验证',
+        }
+
+    url = data.get('url') or ''
+    if url and ('punish' in url or 'action=captcha' in url):
+        log_with_user('info', f'账号 {cookie_id} 已取得新的验证链接', current_user)
+        return {
+            'success': True,
+            'need_verify': True,
+            'verification_url': url,
+            'message': '已取得新的验证链接，请在浏览器中完成滑块',
+        }
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"闲鱼未返回验证链接: {payload.get('ret') if isinstance(payload, dict) else payload}",
+    )
 
 
 @app.get('/api/risk-control/status')
@@ -8786,6 +9014,7 @@ def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_u
 
     user_cookies = db_manager.get_all_cookies(current_user['user_id'])
     snapshot = risk_control.registry.snapshot()
+    manager = cookie_manager.manager
 
     accounts = []
     for cid in user_cookies.keys():
@@ -8793,21 +9022,80 @@ def get_risk_control_status(current_user: Dict[str, Any] = Depends(get_current_u
             'cookie_id': cid, 'blocked': False,
             'remaining_seconds': 0, 'consecutive_hits': 0, 'reason': '',
         }
+
+        # 账号已经跑起来了就不该再提示需要验证。下面的判定依据是风控日志，
+        # 而那是历史记录 —— 滑块过完、Token 已拿到之后，旧事件仍留在表里，
+        # 只看日志会让恢复正常的账号一直挂着「拿不到令牌」的提示。
+        running = False
+        if manager is not None:
+            try:
+                running = manager.get_task_state(cid) == 'running'
+            except Exception:
+                running = False
+        if running and not state.get('blocked'):
+            accounts.append({
+                **state,
+                'verification_type': 'none',
+                'verification_message': '',
+                'verification_url': '',
+                'latest_event': '',
+                'latest_event_at': None,
+            })
+            continue
+
         recent_logs = db_manager.get_risk_control_logs(
             cookie_id=cid, limit=1, user_id=current_user['user_id']
         )
         latest = recent_logs[0] if recent_logs else {}
+
+        # 风控日志是历史记录，过期的事件不能当成"当前仍需验证"。
+        # punish 链接里的 x5secdata 本身也只有约 1 小时有效期，
+        # 超过这个窗口的事件既没参考价值，链接也打不开了。
+        event_is_fresh = True
+        created_at = latest.get('created_at')
+        if created_at:
+            try:
+                from datetime import datetime
+                text = str(created_at).replace('T', ' ').split('.')[0]
+                event_time = datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
+                event_is_fresh = (datetime.now() - event_time).total_seconds() <= 3600
+            except Exception:
+                event_is_fresh = True
+
+        if not event_is_fresh and not state.get('blocked'):
+            accounts.append({
+                **state,
+                'verification_type': 'none',
+                'verification_message': '',
+                'verification_url': '',
+                'latest_event': latest.get('event_description') or '',
+                'latest_event_at': created_at,
+            })
+            continue
+
         detail = ' '.join(str(latest.get(key) or '') for key in (
             'event_type', 'event_description', 'processing_result', 'error_message'
         ))
         verification_type, verification_message = classify_verification_event(
             detail, blocked=bool(state.get('blocked')), reason=state.get('reason') or ''
         )
+        # 把惩罚页地址单独抽出来。服务器端用 CDP 拖滑块实测通过率很低
+        # （风控查的是合并前子事件密度，自动化派发的事件每帧只有一个），
+        # 让用户在自己浏览器里用真实鼠标过一次要可靠得多。
+        verification_url = ''
+        event_text = latest.get('event_description') or ''
+        url_match = re.search(r'URL:\s*(\S+)', event_text)
+        if url_match:
+            candidate = url_match.group(1)
+            if 'punish' in candidate or 'action=captcha' in candidate:
+                verification_url = candidate
+
         state = {
             **state,
             'verification_type': verification_type,
             'verification_message': verification_message,
-            'latest_event': latest.get('event_description') or '',
+            'verification_url': verification_url,
+            'latest_event': event_text,
             'latest_event_at': latest.get('created_at'),
         }
         accounts.append(state)

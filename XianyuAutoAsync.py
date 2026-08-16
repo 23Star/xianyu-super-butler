@@ -11,7 +11,7 @@ from utils import browser_limit
 import websockets
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
-    generate_device_id, generate_sign
+    generate_device_id, generate_sign, CAPTCHA_CHALLENGE_COOKIES
 )
 from app.config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
@@ -846,6 +846,10 @@ class XianyuLive:
         self.max_connection_failures = 5  # 最大连续失败次数
         self.last_successful_connection = 0  # 上次成功连接时间
         self.last_state_change_time = time.time()  # 上次状态变化时间
+        # 登录态已过期且无法自动续期时置位。与"风控中"要分开：风控能等能过验证，
+        # 会话过期只能重新扫码，界面必须给出不同的指引。
+        self.needs_relogin = False
+        self.relogin_reason = ''
 
         # 后台任务追踪（用于清理未等待的任务）
         self.background_tasks = set()  # 追踪所有后台任务
@@ -2040,6 +2044,9 @@ class XianyuLive:
         """
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
+        # 本轮是否已经记过一次风控熔断。滑块失败分支和后面基于 ret 的通用分支
+        # 都会 trip()，同一次失败记两次会让冷却阶梯跳级、账号被多锁一倍时间。
+        already_tripped = False
         
         try:
             logger.info(f"【{self.cookie_id}】开始刷新token... (滑块验证重试次数: {captcha_retry_count})")
@@ -2087,7 +2094,13 @@ class XianyuLive:
             # await self._execute_cookie_refresh(time.time())
             try:
                 from app.db_manager import db_manager
-                account_info = db_manager.get_cookie_details(self.cookie_id)
+                # 必须走线程池。db_manager 是同步 SQLite 且带全局锁，直接在事件
+                # 循环里调用会把整个循环卡住 —— 此时 HTTP 线程通过
+                # run_coroutine_threadsafe 提交的删除、更新等操作永远得不到调度，
+                # 表现为「点删除账号没反应，最后报超时」。
+                account_info = await asyncio.to_thread(
+                    db_manager.get_cookie_details, self.cookie_id
+                )
                 if account_info and account_info.get('cookie_value'):
                     new_cookies_str = account_info.get('cookie_value')
                     if new_cookies_str != self.cookies_str:
@@ -2180,10 +2193,14 @@ class XianyuLive:
                     response_keys = sorted(res_json.keys()) if isinstance(res_json, dict) else []
                     response_data = res_json.get("data") if isinstance(res_json, dict) else None
                     data_keys = sorted(response_data.keys()) if isinstance(response_data, dict) else []
+                    # ret 是闲鱼说明失败原因的唯一字段（TOKEN 过期、未登录、风控拦截
+                    # 各有不同取值）。原先只记结构不记 ret，日志里只能看到
+                    # 「data_keys=[] / Token获取失败」，等于把唯一的线索丢了。
+                    response_ret = res_json.get("ret") if isinstance(res_json, dict) else None
                     logger.info(
                         f"【{self.cookie_id}】Token刷新响应结构: "
                         f"type={type(res_json).__name__}, keys={response_keys}, "
-                        f"data_keys={data_keys}, "
+                        f"data_keys={data_keys}, ret={response_ret}, "
                         f"has_access_token={isinstance(response_data, dict) and bool(response_data.get('accessToken'))}"
                     )
                     logger.info(f"【{self.cookie_id}】================================")
@@ -2221,6 +2238,17 @@ class XianyuLive:
                                 logger.info(f"【{self.cookie_id}】Token刷新成功")
                                 # 标记为成功
                                 self.last_token_refresh_status = "success"
+                                # 拿到有效 token 就说明登录态是活的，必须清掉
+                                # 「需重新扫码」终态标记。它曾经只置不清，于是账号
+                                # 明明已经连上、订单和消息都在同步，界面还一直挂着
+                                # 「需重新扫码」，把用户引去做一次没必要的扫码。
+                                if self.needs_relogin:
+                                    logger.info(
+                                        f"【{self.cookie_id}】登录态已恢复，"
+                                        f"清除「需重新扫码」标记"
+                                    )
+                                self.needs_relogin = False
+                                self.relogin_reason = ''
                                 risk_control.registry.get(self.cookie_id).reset()
                                 return new_token
 
@@ -2286,6 +2314,10 @@ class XianyuLive:
                                 risk_control.registry.get(self.cookie_id).trip(
                                     "滑块自动验证失败，需人工处理"
                                 )
+                                # 本轮已经熔断过，后面基于 ret 的通用风控分支不要再记一次：
+                                # 同一次失败连续 trip 两次会让冷却阶梯跳级
+                                # （300 秒直接跳到 600 秒），账号被多锁一倍时间。
+                                already_tripped = True
 
                                 # 更新风控日志为失败状态
                                 if 'log_id' in locals() and log_id:
@@ -2338,19 +2370,54 @@ class XianyuLive:
                             # 标记已发送通知（通知已在_handle_captcha_verification中发送）
                             notification_sent = True
 
-                    # 检查是否包含"令牌过期"或"Session过期"
+                    # 「令牌过期」和「Session过期」必须分开处理 —— 它们不是一回事：
+                    #
+                    #   FAIL_SYS_TOKEN_EXOIRED::令牌过期
+                    #       mtop 的签名令牌 _m_h5_tk 过时了。失败响应本身就会
+                    #       set-cookie 下发新令牌，重签一次即可，属可恢复。
+                    #   FAIL_SYS_SESSION_EXPIRED::Session过期
+                    #       登录会话（cookie2 / unb）真的死了，滑块和等待都救不回来，
+                    #       只能重新扫码。
+                    #
+                    # 原来一个 if 把两者一起打上「需重新扫码」终态，于是仅仅令牌
+                    # 过期也会让界面提示重扫；而实测紧接着的下一次刷新就返回
+                    # SUCCESS，账号完全正常。
                     if isinstance(res_json, dict):
                         res_json_str = json.dumps(res_json, ensure_ascii=False, separators=(',', ':'))
-                        if '令牌过期' in res_json_str or 'Session过期' in res_json_str:
+                        session_expired = 'Session过期' in res_json_str
+                        token_expired = '令牌过期' in res_json_str
+
+                        if token_expired and not session_expired:
+                            # 令牌已随本次响应更新，直接带新令牌重试。必须递增计数：
+                            # 递归上限由 refresh_token 开头的
+                            # max_captcha_verification_count 统一把关。
+                            logger.warning(
+                                f"【{self.cookie_id}】签名令牌过期（可恢复），"
+                                f"带新令牌重试第 {captcha_retry_count + 1} 次"
+                            )
+                            return await self.refresh_token(captcha_retry_count + 1)
+
+                        if session_expired:
                             # 调用统一的密码登录刷新方法
-                            refresh_success = await self._try_password_login_refresh("令牌/Session过期")
-                            
+                            refresh_success = await self._try_password_login_refresh("Session过期")
+
                             if not refresh_success:
+                                # 会话过期和风控是两回事：滑块过了也救不回来，只能重新登录。
+                                # 打上终态标记，让界面能明确提示"请重新扫码"，
+                                # 否则用户只看到「连接中/重连」，会一直等一个不会好的状态。
+                                self.needs_relogin = True
+                                self.relogin_reason = '闲鱼登录态已过期，请重新扫码登录'
+                                logger.error(
+                                    f"【{self.cookie_id}】登录态已过期且无法自动续期"
+                                    f"（未配置账号密码或密码登录失败），需要重新扫码登录"
+                                )
                                 # 标记已发送通知，避免重复通知
                                 notification_sent = True
                                 # 返回None，让调用者知道刷新失败
                                 return None
                             else:
+                                self.needs_relogin = False
+                                self.relogin_reason = ''
                                 # 刷新成功后重新获取 token。必须递增计数，否则上限判断
                                 # 永远不成立，会形成无限递归重试并持续加剧平台风控。
                                 return await self.refresh_token(captcha_retry_count + 1)
@@ -2363,7 +2430,8 @@ class XianyuLive:
 
                     # 平台风控：立刻熔断，避免重试风暴反复触发验证
                     if risk_control.is_risk_control_error(json.dumps(ret_value, ensure_ascii=False)):
-                        guard.trip(str(ret_value[:2]))
+                        if not already_tripped:
+                            guard.trip(str(ret_value[:2]))
                         self.last_token_refresh_status = "risk_control"
                         return None
 
@@ -2526,6 +2594,19 @@ class XianyuLive:
                     )
 
                 if success and cookies:
+                    # 边界防御：只有 x5sec 才是通行凭证。x5secdata / x5sectag 是挑战
+                    # 标记，必然存在，不能拿它们当验证通过的证据 —— 否则会把一堆
+                    # 挑战 cookie 写回账号，token 刷新永远 FAIL_SYS_USER_VALIDATE。
+                    if 'x5sec' not in {k.lower() for k in cookies}:
+                        logger.error(
+                            f"【{self.cookie_id}】滑块返回的 cookie 中没有 x5sec，"
+                            f"视觉通过但服务端未放行，按失败处理。"
+                            f"已有key: {list(cookies.keys())}"
+                        )
+                        success = False
+                        cookies = None
+
+                if success and cookies:
                     logger.info(f"【{self.cookie_id}】滑块验证成功，获取到新的cookies")
 
                     # 只提取x5sec相关的cookie值进行更新
@@ -2555,6 +2636,21 @@ class XianyuLive:
                             logger.warning(f"【{self.cookie_id}】新增x5 cookie: {cookie_name}")
                             updated_cookies[cookie_name] = cookie_value
                             new_cookie_count += 1
+
+                    # 拿到 x5sec 就必须清掉挑战标记。x5secdata / x5sectag 表示"这个请求
+                    # 还有一道未完成的人机验证"，而 x5sec 才是通过凭证。
+                    # 原来只做新增和覆盖、从不删除，于是滑块过了以后 Cookie 里
+                    # x5sec 和旧的 x5secdata 同时存在 —— 闲鱼据此认为挑战仍未完成，
+                    # 继续返回 FAIL_SYS_USER_VALIDATE，表现为"滑块过了却一直用不了"。
+                    if 'x5sec' in {k.lower() for k in x5sec_cookies}:
+                        for stale in CAPTCHA_CHALLENGE_COOKIES:
+                            for name in [k for k in updated_cookies if k.lower() == stale]:
+                                # 本次滑块响应又下发了同名值时以新值为准，不要删
+                                if name not in x5sec_cookies:
+                                    updated_cookies.pop(name, None)
+                                    logger.warning(
+                                        f"【{self.cookie_id}】已清除过期的验证挑战标记: {name}"
+                                    )
 
                     # 将合并后的cookies字典转换为字符串格式
                     cookies_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items()])
