@@ -25,3 +25,10 @@ entrypoint.sh text eol=lf
 *.db binary
 *.sqlite binary
 *.sqlite3 binary
+
+# 不计入 GitHub 首页的语言占比。
+# tests/ 是回归测试，前端 static/assets 是构建产物 —— 两者都不代表项目本身的
+# 技术构成，混进语言条会让占比失真。linguist-vendored 只影响统计展示，
+# 文件照常参与版本管理和 CI。
+tests/** linguist-vendored
+static/assets/** linguist-vendored

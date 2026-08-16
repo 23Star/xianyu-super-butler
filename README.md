@@ -3,14 +3,25 @@
 面向闲鱼卖家的账号、商品、订单、消息、自动回复与自动发货一体化管理系统。
 
 [![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
-[![Version](https://img.shields.io/badge/Version-3.0.0--beta-ff7a45)](https://github.com/23Star/xianyu-super-butler/releases)
+[![Version](https://img.shields.io/badge/Version-3.1.0-52c41a)](https://github.com/23Star/xianyu-super-butler/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
 
-本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发并持续维护，保留原项目核心能力，同时重构管理端、账号监听、商品同步、订单处理和发货规则。
+**一个人，把几十个闲鱼账号做成一门自动运转的生意。**
 
-![闲鱼超级管家营收总览](docs/screenshots/revenue-overview.png)
+多账号统一托管，买家下单自动发卡密、自动确认收货、自动评价、自动求小红花、收货后自动致谢。
+关键词和 AI 双层自动回复接住每一句咨询，商品与订单自动同步，滑块与人机验证自动处理。
+从「盯着手机一个个回」变成「打开网页看数据」。
+
+- 🏪 **多账号管理** — 扫码即接入，一个后台管完所有小号，逐账号独立配置策略
+- 📦 **自动发货** — 卡密自动发出，支持多规格、多数量，发货前风险拦截
+- 💬 **自动回复** — 关键词精确命中 + AI 议价，可设最低价与议价轮数，绝不越线让价
+- ⭐ **买家互动** — 确认收货后自动评价、自动求小红花、自动发送致谢文本
+- 🤖 **商品自动化** — 商品同步、素材库、定时擦亮、自动上下架
+- 📊 **经营看板** — 成交额、到账、退款、订单和库存一屏掌握，**历史订单可一次性拉回**
+
+![闲鱼超级管家运营概览](docs/screenshots/revenue-overview.png)
 
 ## 核心功能
 
@@ -20,7 +31,7 @@
 | 账号 | 扫码、密码或 Cookie 登录，资料同步，监听任务状态，暂停和自动回复配置 |
 | 商品 | 从闲鱼同步商品，维护本地详情、图片、规格、数量和商品回复 |
 | 商品自动化 | 商品筛选、素材库、发布记录、定时删除、短链修复和补偿任务 |
-| 订单 | 订单同步、状态判定、详情补全、批量刷新、手动发货和异常保护 |
+| 订单 | 一键拉取闲鱼历史卖出订单，状态判定、详情补全、批量刷新、手动发货和异常保护 |
 | 卡密 | 卡券分组、库存导入、状态管理、多规格和多数量发货 |
 | 自动回复 | 账号关键词回复、默认回复和回复一次控制 |
 | 人工智能回复 | 兼容 OpenAI 协议的大模型配置、上下文对话和测试 |
@@ -30,21 +41,65 @@
 | 设置 | 管理员账号与改密、注册与邮箱验证开关、服务、备份及系统配置 |
 | 公告与更新 | 从自建地址拉取公告与版本信息，首页横幅提示，「关于」页手动检查更新 |
 
+## 界面预览
+
+### 账号管理：一个后台管完所有小号
+
+扫码添加账号，实时显示监听状态。每个账号可独立设置自动确认、人工接入暂停时长、
+是否启用 AI 回复，互不干扰。
+
+![账号管理](docs/screenshots/accounts.png)
+
+### 商品与发货：卡密自动发到买家手上
+
+同步在售商品，逐个商品绑定发货内容，支持多规格和多数量。已下架的商品会被标记出来
+并默认隐藏，不和在售的混在一起。
+
+![商品与发货](docs/screenshots/items-delivery.png)
+
+### 订单管理：接入前的历史订单也能一次拉回来
+
+「拉取卖出订单」会把闲鱼上的历史订单整批同步进来，不只是接入之后的新单，
+所以刚部署就能看到完整的经营数据。状态、买家、实付金额和发货情况一目了然，
+支持按账号和状态筛选，也能手动发货或补发。
+
+![订单管理](docs/screenshots/orders.png)
+
+### 买家互动：确认收货后的动作全部自动完成
+
+评价买家、索要小红花、发送收货致谢，三项都能逐账号开关。买家一确认收货，
+致谢立即发出，评价和求花在订单状态就绪后自动执行。
+
+![买家互动](docs/screenshots/buyer-interaction.png)
+
+### 消息中心：所有账号的会话在一个页面里
+
+跨账号会话列表，支持搜索和筛选，可以直接接管对话。自动回复的每一次决策都有日志，
+能查到为什么回了、为什么没回。
+
+![消息中心](docs/screenshots/message-center.png)
+
 ## 如何部署
 
-### NAS 与低配设备（推荐，飞牛 fnOS、群晖、威联通、软路由）
+### Docker 一键部署（推荐，绝大多数人用这个）
 
-这类设备**不要本地构建**：`npm ci`、前端打包、Python 依赖编译和 Chromium 下载会同时抢占
-CPU 和内存，轻则卡十几分钟，重则内存不足被杀，反复重启表现为「装不上、机器卡死」。
-直接拉预构建的多架构镜像（amd64 / arm64）：
+拉官方预构建镜像，不在本机编译任何东西，一条命令起服务。支持 amd64 / arm64。
 
 ```bash
+git clone https://github.com/23Star/xianyu-super-butler.git
+cd xianyu-super-butler
 docker compose -f docker-compose.nas.yml up -d
 ```
 
-该配置不依赖 `.env`（NAS 的 Docker 图形界面通常没地方放），账号密码在文件里的 `CHANGE_ME` 处直接改。
+浏览器打开 `http://服务器IP:8080`，默认 **admin / admin123**，登录后立刻改密码。
 
-### Docker 本地构建
+该配置不依赖 `.env`，管理员账号密码在 `docker-compose.nas.yml` 里的 `CHANGE_ME` 处直接改。
+
+> NAS（飞牛 fnOS、群晖、威联通）、软路由和低配 VPS 都用这个命令。
+> 这类设备**千万不要本地构建**：`npm ci`、前端打包、Python 依赖编译和 Chromium 下载会同时
+> 抢占 CPU 和内存，轻则卡十几分钟，重则内存不足被杀，反复重启表现为「装不上、机器卡死」。
+
+### Docker 本地构建（需要改代码时）
 
 ```bash
 cp .env.example .env          # 不改也能启动，此时使用默认密码
@@ -59,7 +114,7 @@ docker compose -f docker-compose-cn.yml up -d --build
 
 可选 Nginx：`docker compose --profile with-nginx up -d --build`
 
-### 源码运行
+### 源码运行（开发调试）
 
 需要 Python 3.11+、Node.js 20+、npm。
 
@@ -89,7 +144,7 @@ python Start.py
 ### 更新
 
 ```bash
-# 预构建镜像
+# 预构建镜像（推荐方式对应的更新命令）
 docker compose -f docker-compose.nas.yml pull && docker compose -f docker-compose.nas.yml up -d
 
 # 本地构建
@@ -119,6 +174,8 @@ git pull && docker compose up -d --build
 缺陷和功能建议请提交到 [GitHub Issues](https://github.com/23Star/xianyu-super-butler/issues)。
 
 ## 许可与声明
+
+本项目基于 [zhinianboke/xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) 二次开发并持续维护，保留原项目核心能力，同时重构管理端、账号监听、商品同步、订单处理和发货规则。感谢原作者的开源工作。
 
 项目使用 [GNU Affero General Public License v3.0](LICENSE)。修改、部署或通过网络提供服务时，请遵守 AGPL-3.0 的源代码公开义务。
 
