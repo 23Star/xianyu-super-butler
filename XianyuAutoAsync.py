@@ -10907,6 +10907,37 @@ class XianyuLive:
         if not self.session:
             await self.create_session()
 
+        def empty_result(group_name='在售', confirmed=False, response_fields=None):
+            """一件商品都没有，但这次同步是成功的。
+
+            这里必须带上 success 和调用方要读的全部字段。只有正常路径设了
+            `'success': True`，早期返回如果只给 {'items': []}，get_all_items 会按
+            `not result.get('success')` 判成失败并抛 502 —— 表现为新加的空账号
+            同步时只弹一句「Request failed with status code 502」。
+
+            confirmed 表示「确认这个账号真的没有商品」。它会让上层把库里已有商品
+            全标成已下架，所以只有在闲鱼明确回了分组、且分组商品数都是 0 时才置
+            True；分组列表整个为空这种可疑情况一律留 False。
+            """
+            return {
+                'success': True,
+                'page_number': page_number,
+                'page_size': page_size,
+                'current_count': 0,
+                'total_count': 0,
+                'api_total_count': 0,
+                'group_declared_count': 0,
+                'count_reconciled': False,
+                'items': [],
+                'saved_count': 0,
+                'next_page': False,
+                'confirmed_empty': confirmed,
+                'group_name': group_name,
+                'group_id': None,
+                'account_id': self.myid,
+                'response_fields': response_fields or [],
+            }
+
         async def request_item_api(data):
             params = {
                 'jsv': '2.7.2',
@@ -10987,7 +11018,10 @@ class XianyuLive:
                         return await self.get_item_list_info(page_number, page_size, retry_count + 1)
                     return {'error': f"商品分组发现失败: {error_msg}"}
 
-                groups = discovery_response.get('data', {}).get('itemGroupList', [])
+                # 用 `or []` 兜住显式 None：闲鱼对无分组账号有时省略这个键
+                # （get 拿到默认的 []），有时又明确回 null（get 拿到 None）。
+                # 后者会让下面的遍历直接抛 TypeError，被外层吞成一句同步失败。
+                groups = discovery_response.get('data', {}).get('itemGroupList') or []
                 group_summary = [
                     {
                         'name': group.get('groupName'),
@@ -11028,12 +11062,55 @@ class XianyuLive:
                         logger.info(
                             f"【{self.cookie_id}】账号所有分组均为 0 件商品，按空列表处理"
                         )
-                        return {'items': [], 'totalCount': 0, 'nextPage': False}
+                        return empty_result(confirmed=True)
                     else:
-                        return {
-                            'error': '闲鱼接口未返回任何商品分组，请稍后重试或检查账号登录状态',
-                            'response_fields': sorted(discovery_response.get('data', {}).keys())
-                        }
+                        # 分组列表为空，但发现请求本身返回了 SUCCESS —— 登录态是好的。
+                        # 关键在于：这次请求的响应里往往已经带着商品（cardList），
+                        # 只是没有分组信息。实测某账号 itemGroupList=None、
+                        # totalCount=0，而 cardList 里就有它的 4 件商品。
+                        #
+                        # 原先这里直接报错，接口以 502 返回，用户只看到一句
+                        # 「Request failed with status code 502」，而商品明明已经
+                        # 在手里。所以先尝试直接解析这次响应，解析不到才按空处理。
+                        discovery_data = discovery_response.get('data', {}) or {}
+                        discovered_items = self._extract_items_from_response(discovery_data)
+                        if discovered_items:
+                            logger.warning(
+                                f"【{self.cookie_id}】账号无商品分组，改用分组发现响应里的"
+                                f"商品列表：解析到 {len(discovered_items)} 件"
+                            )
+                            saved = await self.save_items_list_to_db(discovered_items)
+                            return {
+                                'success': True,
+                                'page_number': page_number,
+                                'page_size': page_size,
+                                'current_count': len(discovered_items),
+                                'total_count': len(discovered_items),
+                                'api_total_count': int(discovery_data.get('totalCount') or 0),
+                                'group_declared_count': 0,
+                                'count_reconciled': int(discovery_data.get('totalCount') or 0)
+                                != len(discovered_items),
+                                'items': discovered_items,
+                                'saved_count': saved,
+                                'next_page': bool(discovery_data.get('nextPage')),
+                                'confirmed_empty': False,
+                                'group_name': '全部',
+                                'group_id': None,
+                                'account_id': self.myid,
+                                'response_fields': sorted(discovery_data.keys()),
+                            }
+
+                        # 连商品也解析不到：可能真的没上架，也可能是接口抖动。
+                        # 按空列表处理但不置 confirmed_empty —— 后者会让上层把库里
+                        # 已有商品全标成已下架，不能凭一次可疑的空响应就清空状态。
+                        logger.info(
+                            f"【{self.cookie_id}】闲鱼未返回商品分组，响应里也没有商品，"
+                            f"按空列表处理（字段: {sorted(discovery_data.keys())}）"
+                        )
+                        return empty_result(
+                            confirmed=False,
+                            response_fields=sorted(discovery_data.keys()),
+                        )
                 self._item_list_group = item_group
 
             group_id = item_group.get('groupId')

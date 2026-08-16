@@ -81,9 +81,28 @@
 
 ## 如何部署
 
-### Docker 一键部署（推荐，绝大多数人用这个）
+### 一条命令直接启动（最快，不用克隆仓库）
 
-拉官方预构建镜像，不在本机编译任何东西，一条命令起服务。支持 amd64 / arm64。
+有 Docker 就能跑，不需要下载源码：
+
+```bash
+docker run -d --name xianyu-butler \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/backups:/app/backups \
+  -e ADMIN_USERNAME=admin \
+  -e ADMIN_PASSWORD=改成你自己的密码 \
+  --restart unless-stopped \
+  ghcr.io/23star/xianyu-super-butler:latest
+```
+
+浏览器打开 `http://服务器IP:8080` 即可。数据都在当前目录的 `data` / `logs` / `backups` 里，
+升级只需 `docker pull` 后重建容器，数据不丢。
+
+Windows PowerShell 把 `$(pwd)` 换成 `${PWD}`，续行的 `\` 换成反引号 `` ` ``。
+
+### Docker Compose（推荐长期使用）
 
 ```bash
 git clone https://github.com/23Star/xianyu-super-butler.git
@@ -91,7 +110,8 @@ cd xianyu-super-butler
 docker compose -f docker-compose.nas.yml up -d
 ```
 
-浏览器打开 `http://服务器IP:8080`，默认 **admin / admin123**，登录后立刻改密码。
+同样是预构建镜像，不在本机编译任何东西，支持 amd64 / arm64。相比上面一条命令，
+Compose 的好处是配置写在文件里、改起来清楚，升级也只有一行命令。
 
 该配置不依赖 `.env`，管理员账号密码在 `docker-compose.nas.yml` 里的 `CHANGE_ME` 处直接改。
 
