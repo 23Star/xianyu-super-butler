@@ -95,9 +95,20 @@ docker compose -f docker-compose.nas.yml up -d
 
 该配置不依赖 `.env`，管理员账号密码在 `docker-compose.nas.yml` 里的 `CHANGE_ME` 处直接改。
 
-> NAS（飞牛 fnOS、群晖、威联通）、软路由和低配 VPS 都用这个命令。
-> 这类设备**千万不要本地构建**：`npm ci`、前端打包、Python 依赖编译和 Chromium 下载会同时
-> 抢占 CPU 和内存，轻则卡十几分钟，重则内存不足被杀，反复重启表现为「装不上、机器卡死」。
+### NAS 与低配设备（飞牛 fnOS、群晖、威联通、软路由、低配 VPS）
+
+**用上面那条命令，不要本地构建。**
+
+`npm ci`、前端打包、Python 依赖编译和 Chromium 下载会同时抢占 CPU 和内存，
+轻则卡十几分钟，重则内存不足被杀，反复重启表现为「装不上、机器卡死」。
+预构建镜像已同时提供 amd64 和 arm64，绕开全部编译步骤。
+
+```bash
+docker compose -f docker-compose.nas.yml up -d
+```
+
+飞牛 fnOS、群晖等图形界面的 Docker 通常没地方放 `.env`，所以这份配置把变量直接写在
+compose 文件里，改完 `CHANGE_ME` 就能用。
 
 ### Docker 本地构建（需要改代码时）
 
