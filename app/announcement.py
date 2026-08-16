@@ -55,7 +55,7 @@ FETCH_TIMEOUT = 8
 # 本软件版本号。发布新版时改这里，并同步更新公网服务器上 JSON 的 latest_version。
 # 注意不要复用 global_config.yml 里的 APP_CONFIG.app_version —— 那是伪装成闲鱼
 # 客户端时上报给平台的协议版本，与本软件版本无关。
-APP_VERSION = '3.0.0-beta'
+APP_VERSION = '3.1.0'
 
 
 def get_local_version() -> str:

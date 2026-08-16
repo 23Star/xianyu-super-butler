@@ -21,6 +21,14 @@ from openai import OpenAI
 from app.db_manager import db_manager
 
 
+class ReasoningBudgetExhausted(RuntimeError):
+    """推理模型把 max_tokens 全花在思维链上，没给正文留下额度。
+
+    单独立一个类型，是为了让 _generate_with_retry 能把它和限流、网络抖动区分开：
+    这类失败换时间重试没用，得加大预算再试。
+    """
+
+
 class AIReplyEngine:
     """AI回复引擎"""
     
@@ -222,7 +230,14 @@ class AIReplyEngine:
         已知会返回 None 的场景：
           - finish_reason='length'，回复被 max_tokens 截断；
           - 命中服务端内容过滤；
-          - 推理类模型（deepseek-r1、qwq 等）把正文放在 reasoning_content。
+          - 推理类模型（deepseek-r1、qwq 等）把预算全花在思维链上。
+
+        绝对不能拿 reasoning_content 当正文兜底。它装的是思维链而非答案，
+        答案永远在 content 里。曾经这里有一句「content 为空就取
+        reasoning_content」，结果推理模型把 token 预算吃光、content 为空时，
+        原始思维链被当成回复直接发给了买家 —— 买家看到的是
+        「我们需要理解这个对话场景。用户是卖家，我们是客服助手…」，
+        连议价底价和最大优惠都一并泄露了出去。
         """
         choices = getattr(response, 'choices', None)
         if not choices:
@@ -232,34 +247,41 @@ class AIReplyEngine:
         message = getattr(choice, 'message', None)
         content = getattr(message, 'content', None) if message else None
 
-        # 推理模型的正文可能只在 reasoning_content 里
-        if not content and message is not None:
-            content = getattr(message, 'reasoning_content', None)
-
         if not content:
             finish_reason = getattr(choice, 'finish_reason', None)
             if finish_reason == 'length':
-                raise RuntimeError("AI 回复被 max_tokens 截断且未返回内容，请调大回复长度上限")
+                raise ReasoningBudgetExhausted(
+                    "AI 回复被 max_tokens 截断且未返回正文"
+                    "（推理模型把预算用在思维链上）"
+                )
             if finish_reason == 'content_filter':
                 raise RuntimeError("AI 回复被服务端内容过滤拦截")
             raise RuntimeError(f"AI 返回内容为空（finish_reason={finish_reason}）")
 
         return content.strip()
 
+    # 预算上限。推理模型的思维链动辄上千 token，卡太死就只剩思考、没有正文。
+    MAX_TOKENS_FLOOR = 200
+    MAX_TOKENS_CEILING = 8000
+
     def _resolve_max_tokens(self, settings: dict) -> int:
         """回复长度上限。
 
         原先三处调用都写死 100，中文大约只有 50~70 字，稍长一点的客服回复就会
-        撞上 finish_reason='length'，模型可能连内容都不返回。正文本身在
-        _normalize_reply 里按 300 字符截断，这里给够额度即可。
+        撞上 finish_reason='length'，模型可能连内容都不返回。
+
+        默认值后来提到 400，对普通模型够用，但推理模型（deepseek-v4-flash、
+        deepseek-r1、qwq 等）光思维链就能吃掉几百上千 token，400 的额度下
+        content 恒为空 —— 表现为「AI 配好了却一条都不回」。所以默认给到 2000，
+        上限放宽到 8000；正文本身在 _normalize_reply 里按 300 字符截断，
+        多出来的额度只是给思考留空间，不会让回复变长。
         """
-        raw = settings.get('max_tokens') or os.getenv('AI_MAX_TOKENS') or 400
+        raw = settings.get('max_tokens') or os.getenv('AI_MAX_TOKENS') or 2000
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            return 400
-        # 太小必然截断，太大既费钱也没意义（正文只保留 300 字符）
-        return min(max(value, 200), 2000)
+            return 2000
+        return min(max(value, self.MAX_TOKENS_FLOOR), self.MAX_TOKENS_CEILING)
 
     def _dispatch_api_call(self, settings: dict, messages: list, cookie_id: str, max_tokens: int) -> Optional[str]:
         """按配置选择具体的 AI 服务并发起一次调用。"""
@@ -299,6 +321,9 @@ class AIReplyEngine:
 
         没有重试是此前失败率偏高的主因：一次限流或网络抖动就直接放弃，
         买家那边看到的就是"这条消息没人回"。
+
+        「思维链吃光预算」是另一类失败：换时间重试没有意义，必须加大额度再试。
+        碰到就把 max_tokens 翻三倍重来，直到触到上限。
         """
         max_tokens = self._resolve_max_tokens(settings)
         attempts = 3
@@ -307,6 +332,18 @@ class AIReplyEngine:
         for attempt in range(1, attempts + 1):
             try:
                 return self._dispatch_api_call(settings, messages, cookie_id, max_tokens)
+            except ReasoningBudgetExhausted as exc:
+                last_exc = exc
+                escalated = min(max_tokens * 3, self.MAX_TOKENS_CEILING)
+                if attempt >= attempts or escalated <= max_tokens:
+                    break
+                logger.warning(
+                    f"AI 正文被思维链挤掉，max_tokens {max_tokens} → {escalated} 重试 "
+                    f"[{attempt}/{attempts}] 账号={cookie_id}"
+                )
+                max_tokens = escalated
+                # 这不是限流，无需退避
+                continue
             except Exception as exc:
                 last_exc = exc
                 if attempt >= attempts or not self._is_retryable(exc):
@@ -339,14 +376,51 @@ class AIReplyEngine:
                 return selected.strip()
         return base_prompt
 
+    # 部分服务端（vLLM、OpenRouter 转发的推理模型等）不走 reasoning_content，
+    # 而是把思维链内联进 content，用 <think>…</think> 包裹。截断时可能只有开标签。
+    _THINK_BLOCK = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
+    _THINK_OPEN = re.compile(r'<think>.*\Z', re.DOTALL | re.IGNORECASE)
+
+    # 思维链泄露的特征：这些词只会出现在模型对任务本身的分析里，正常客服回复
+    # 不可能提到。命中就整条丢弃，让调用方回落到关键词/默认回复 ——
+    # 把内部推理发给买家，等于同时暴露了「这是机器人」和议价底价。
+    _REASONING_MARKERS = (
+        '议价设置',
+        '最大议价轮数',
+        '最大优惠',
+        '最低可接受价格',
+        '安全边界',
+        '系统提示',
+        '我们需要理解',
+        '我们需要根据',
+        '让我们梳理',
+        '以卖家身份',
+        '我们是客服助手',
+        '对话历史',
+    )
+
     def _normalize_reply(self, reply: object) -> Optional[str]:
-        """清理模型输出，拒绝空内容并限制自动发送长度。"""
+        """清理模型输出，拒绝空内容、思维链泄露，并限制自动发送长度。"""
         if not isinstance(reply, str):
             return None
-        normalized = re.sub(r'\s+', ' ', reply).strip()
+
+        # 先剥掉内联思维链，再做空白归一
+        stripped = self._THINK_BLOCK.sub(' ', reply)
+        stripped = self._THINK_OPEN.sub(' ', stripped)
+
+        normalized = re.sub(r'\s+', ' ', stripped).strip()
         normalized = normalized.strip('"\'`')
         if not normalized:
             return None
+
+        hit = next((m for m in self._REASONING_MARKERS if m in normalized), None)
+        if hit:
+            logger.error(
+                f"AI 回复疑似思维链泄露（命中「{hit}」），已丢弃并回落到其他回复策略。"
+                f"原文前 120 字: {normalized[:120]}"
+            )
+            return None
+
         return normalized[:300]
 
     @staticmethod
@@ -399,13 +473,23 @@ class AIReplyEngine:
             # 价格相关关键词
             price_keywords = [
                 '便宜', '优惠', '刀', '降价', '包邮', '价格', '多少钱', '能少', '还能', '最低', '底价',
-                '实诚价', '到100', '能到', '包个邮', '给个价', '什么价' # <-- 增加这些“口语化”的词
+                '实诚价', '到100', '能到', '包个邮', '给个价', '什么价', # <-- 增加这些“口语化”的词
+                '一口价', '出价', '砍价', '少点', '让点', '成交'
             ]
-            
-            # 同样，你也可以通过正则表达式来匹配纯数字，比如 "100" "80"
-            # 但那可能有点复杂，先加关键词是最小改动
+
             if any(kw in msg_lower for kw in price_keywords):
                 logger.debug("本地意图检测: price")
+                return 'price'
+
+            # 纯数字的还价必须算议价。原先这里只匹配关键词，买家直接回「167」
+            # 「166」这种报价会落到 default，于是 get_bargain_count 数不到，
+            # max_bargain_rounds 上限永远不成立 —— 实测 AI 从 196 一路让到 168，
+            # 议价了十几轮而计数只有 3。
+            #
+            # 只认「整条消息基本就是一个数字」和「数字紧跟钱的单位」两种形态，
+            # 避免误吞尺码（2XL）、体重（120-150斤）、算式（1+1=？）这类消息。
+            if self._looks_like_price_offer(msg_lower):
+                logger.debug("本地意图检测: price（纯数字报价）")
                 return 'price'
 
             # 技术相关关键词
@@ -421,6 +505,90 @@ class AIReplyEngine:
             logger.error(f"本地意图检测失败 {cookie_id}: {e}")
             return 'default'
     
+    # 整条消息基本就是一个数字（可带钱的单位和语气词），例如「167」「170元」
+    # 「165吧」「1块钱」「¥180，」。末尾只放宽到语气词与标点，不含「斤」「码」
+    # 这类量词，免得把体重、尺码当成报价。
+    _BARE_PRICE = re.compile(
+        r'^\s*[¥￥]?\s*\d{1,6}(?:\.\d{1,2})?\s*'
+        r'(?:元|块钱|块|米)?\s*[吧嘛呢啊哈呀~～!！?？.。,，、]*\s*$'
+    )
+    # 数字紧跟钱的单位，出现在任何位置，例如「给你170块」「180元包邮」
+    _PRICE_WITH_UNIT = re.compile(r'\d{1,6}(?:\.\d{1,2})?\s*(?:元|块钱|块)')
+
+    @classmethod
+    def _looks_like_price_offer(cls, message: str) -> bool:
+        """判断一条消息是否是买家在报价。"""
+        text = (message or '').strip()
+        if not text:
+            return False
+        if cls._PRICE_WITH_UNIT.search(text):
+            return True
+        return bool(cls._BARE_PRICE.match(text))
+
+    # 议价被拒时的统一话术，轮数超限和跌破底价共用一套，避免前后不一致。
+    PRICE_REFUSE_REPLY = "抱歉，这个价格已经是最优惠的了，不能再便宜了哦！"
+
+    # 回复里出现的价格。带单位的优先，纯数字兜底。
+    _PRICE_IN_TEXT = re.compile(r'(\d{1,6}(?:\.\d{1,2})?)\s*(?:元|块钱|块)?')
+
+    @staticmethod
+    def _resolve_price_floor(item_info: dict, settings: dict) -> Optional[float]:
+        """按百分比与固定额度算出最低可接受价，两者取更严格的那个。
+
+        两个配置同时存在时不能任选：196 元的商品，10% 只让 19.6 元，而固定额度
+        100 元会让到 96 元。放行更宽松的那个等于让另一个配置形同虚设，所以取
+        让价更少的一个。
+
+        Returns:
+            底价；商品价格无法解析时返回 None（此时不做校验，宁可不管也不能误拦）。
+        """
+        raw_price = str(item_info.get('price') or '').strip()
+        match = re.search(r'\d{1,7}(?:\.\d{1,2})?', raw_price)
+        if not match:
+            return None
+        try:
+            price = float(match.group())
+        except ValueError:
+            return None
+        if price <= 0:
+            return None
+
+        discounts = []
+        try:
+            percent = float(settings.get('max_discount_percent') or 0)
+            if percent > 0:
+                discounts.append(price * percent / 100)
+        except (TypeError, ValueError):
+            pass
+        try:
+            amount = float(settings.get('max_discount_amount') or 0)
+            if amount > 0:
+                discounts.append(amount)
+        except (TypeError, ValueError):
+            pass
+
+        if not discounts:
+            return None
+        return max(0.0, price - min(discounts))
+
+    @classmethod
+    def _lowest_price_in(cls, text: str) -> Optional[float]:
+        """取回复里最低的那个价格数字。
+
+        只看最低值：一句话里可能同时出现原价和让价（「196 现在给你 170」），
+        真正会被买家当成承诺的是低的那个。
+        """
+        values = []
+        for raw in cls._PRICE_IN_TEXT.findall(text or ''):
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            # 一位数多半是件数、尺码或「1 元不行哦」里的举例，不当成报价
+            if value >= 10:
+                values.append(value)
+        return min(values) if values else None
+
     def _get_chat_lock(self, chat_id: str) -> threading.Lock:
         """获取指定chat_id的锁，如果不存在则创建"""
         with self._chat_locks_lock:
@@ -502,7 +670,7 @@ class AIReplyEngine:
                     max_bargain_rounds = settings.get('max_bargain_rounds', 3)
                     if bargain_count >= max_bargain_rounds:
                         logger.info(f"议价次数已达上限 ({bargain_count}/{max_bargain_rounds})，拒绝继续议价")
-                        refuse_reply = f"抱歉，这个价格已经是最优惠的了，不能再便宜了哦！"
+                        refuse_reply = self.PRICE_REFUSE_REPLY
                         self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", refuse_reply, intent)
                         return refuse_reply
 
@@ -556,6 +724,19 @@ class AIReplyEngine:
                 if not reply:
                     logger.warning(f"AI服务返回空回复，账号={cookie_id}, intent={intent}")
                     return None
+
+                # 10.5 议价底价硬校验。底价原先只写在提示词里，模型不照做就没人管 ——
+                # 实测 196 元的商品被一路让到 168，而按 max_discount_percent=10
+                # 算出的底价是 176.4。钱的事不能只靠模型自觉。
+                if intent == "price":
+                    floor = self._resolve_price_floor(item_info, settings)
+                    offered = self._lowest_price_in(reply) if floor is not None else None
+                    if floor is not None and offered is not None and offered < floor:
+                        logger.warning(
+                            f"AI 报价 {offered} 低于底价 {floor:.2f}（账号={cookie_id}），"
+                            f"改用拒绝话术。原回复: {reply[:80]}"
+                        )
+                        reply = self.PRICE_REFUSE_REPLY
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)

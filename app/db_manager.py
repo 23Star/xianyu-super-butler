@@ -165,7 +165,7 @@ class DBManager:
                 ai_enabled BOOLEAN DEFAULT FALSE,
                 model_name TEXT DEFAULT 'qwen-plus',
                 api_key TEXT,
-                base_url TEXT DEFAULT 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                base_url TEXT DEFAULT 'https://ai.corleom.com/v1',
                 max_discount_percent INTEGER DEFAULT 10,
                 max_discount_amount INTEGER DEFAULT 100,
                 max_bargain_rounds INTEGER DEFAULT 3,
@@ -1175,11 +1175,143 @@ class DBManager:
                 # 由于SQLite不支持直接修改约束，我们需要重建表
                 self._migrate_keywords_table_constraints(cursor)
 
+            self._migrate_item_listing_status(cursor)
+            self._migrate_buyer_interaction_per_account(cursor)
+
             self.conn.commit()
             logger.info(f"admin用户ID更新完成")
         except Exception as e:
             logger.error(f"更新admin用户ID失败: {e}")
             raise
+
+    def _migrate_buyer_interaction_per_account(self, cursor):
+        """把「评价/求花」开关从全局系统设置改成按账号存。
+
+        这两个动作对买家有实际影响（评价不可撤销、求花会发消息），而不同账号的
+        经营策略未必一致 —— 全局开关意味着一开就是所有账号一起开，用户没法只对
+        部分账号启用。
+
+        迁移时用原来的全局值给所有已有账号做初值，避免升级后行为突变；之后新增
+        的账号默认关闭（与「有实际影响的动作默认关闭」保持一致）。
+        """
+        added = []
+        for column in ('auto_rate_enabled', 'auto_flower_enabled', 'auto_thanks_enabled'):
+            try:
+                self._execute_sql(cursor, f"SELECT {column} FROM cookies LIMIT 1")
+            except sqlite3.OperationalError:
+                self._execute_sql(
+                    cursor,
+                    f"ALTER TABLE cookies ADD COLUMN {column} INTEGER DEFAULT 0"
+                )
+                added.append(column)
+
+        if not added:
+            return
+
+        for column in added:
+            legacy = str(self.get_system_setting(column) or '').strip().lower()
+            if legacy in ('1', 'true', 'yes'):
+                self._execute_sql(cursor, f"UPDATE cookies SET {column} = 1")
+                logger.info(f"为cookies表添加{column}字段，并继承原全局开启状态")
+            else:
+                logger.info(f"为cookies表添加{column}字段（默认关闭）")
+
+    # 读不到账号时的安全默认：三项都关。这些动作都会作用到买家身上
+    # （评价不可撤销、求花与致谢都会发消息），拿不准时一律不做。
+    BUYER_INTERACTION_OFF = {
+        'auto_rate_enabled': False,
+        'auto_flower_enabled': False,
+        'auto_thanks_enabled': False,
+    }
+
+    def get_buyer_interaction_settings(self, cookie_id: str) -> dict:
+        """读取指定账号的买家互动开关（评价 / 求花 / 确认收货致谢）。"""
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    "SELECT auto_rate_enabled, auto_flower_enabled, auto_thanks_enabled "
+                    "FROM cookies WHERE id = ?",
+                    [cookie_id]
+                )
+                row = cursor.fetchone()
+            if not row:
+                return dict(self.BUYER_INTERACTION_OFF)
+            return {
+                'auto_rate_enabled': bool(row[0]),
+                'auto_flower_enabled': bool(row[1]),
+                'auto_thanks_enabled': bool(row[2]),
+            }
+        except Exception as e:
+            logger.error(f"读取账号买家互动开关失败 {cookie_id}: {e}")
+            # 读不到就按关闭处理：这些动作都会作用到买家身上，不能靠猜
+            return dict(self.BUYER_INTERACTION_OFF)
+
+    def update_buyer_interaction_settings(
+        self, cookie_id: str, auto_rate_enabled=None, auto_flower_enabled=None,
+        auto_thanks_enabled=None
+    ) -> bool:
+        """更新指定账号的买家互动开关，未传的字段保持不变。"""
+        updates = []
+        params = []
+        for column, value in (
+            ('auto_rate_enabled', auto_rate_enabled),
+            ('auto_flower_enabled', auto_flower_enabled),
+            ('auto_thanks_enabled', auto_thanks_enabled),
+        ):
+            if value is not None:
+                updates.append(f"{column} = ?")
+                params.append(1 if value else 0)
+        if not updates:
+            return True
+
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    f"UPDATE cookies SET {', '.join(updates)} WHERE id = ?",
+                    [*params, cookie_id]
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"更新账号买家互动开关失败 {cookie_id}: {e}")
+            return False
+
+    def _migrate_item_listing_status(self, cursor):
+        """给 item_info 补上上下架状态。
+
+        商品同步原先只做 upsert，从不处理「闲鱼接口已经不再返回」的商品，
+        表里也没有状态字段。于是下架或删除的商品会永久留在列表里，和在售的
+        长得一模一样，用户既分不清也筛不掉。
+
+        用两列表达：listing_status 是判定结果，last_seen_at 是最后一次被接口
+        返回的时间 —— 后者能在误判时提供依据，也方便排查。
+        """
+        try:
+            self._execute_sql(cursor, "SELECT listing_status FROM item_info LIMIT 1")
+        except sqlite3.OperationalError:
+            self._execute_sql(
+                cursor,
+                "ALTER TABLE item_info ADD COLUMN listing_status TEXT DEFAULT 'on_sale'"
+            )
+            logger.info("为item_info表添加listing_status字段")
+
+        try:
+            self._execute_sql(cursor, "SELECT last_seen_at FROM item_info LIMIT 1")
+        except sqlite3.OperationalError:
+            self._execute_sql(
+                cursor,
+                "ALTER TABLE item_info ADD COLUMN last_seen_at TIMESTAMP"
+            )
+            # 已有数据没有历史记录，用 updated_at 兜底，避免全部显示"从未见过"
+            self._execute_sql(
+                cursor,
+                "UPDATE item_info SET last_seen_at = updated_at WHERE last_seen_at IS NULL"
+            )
+            logger.info("为item_info表添加last_seen_at字段")
             
     def upgrade_notification_channels_table(self, cursor):
         """升级notification_channels表的type字段约束"""
@@ -2318,7 +2450,7 @@ class DBManager:
                     settings.get('ai_enabled', False),
                     settings.get('model_name', 'qwen-plus'),
                     settings.get('api_key', ''),
-                    settings.get('base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
+                    settings.get('base_url', 'https://ai.corleom.com/v1'),
                     settings.get('max_discount_percent', 10),
                     settings.get('max_discount_amount', 100),
                     settings.get('max_bargain_rounds', 3),
@@ -2342,7 +2474,7 @@ class DBManager:
         则从系统设置中读取全局AI配置作为默认值
         """
         # 默认值常量，用于判断是否使用系统设置
-        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        DEFAULT_BASE_URL = 'https://ai.corleom.com/v1'
         DEFAULT_MODEL = 'qwen-plus'
         
         with self.lock:
@@ -2408,7 +2540,7 @@ class DBManager:
                     'ai_enabled': False,
                     'model_name': 'qwen-plus',
                     'api_key': '',
-                    'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                    'base_url': 'https://ai.corleom.com/v1',
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,
@@ -5667,6 +5799,69 @@ class DBManager:
             except:
                 pass
             return success_count
+
+    def reconcile_item_listing_status(self, cookie_id: str, on_sale_item_ids) -> dict:
+        """按一次完整同步的结果校准上下架状态。
+
+        接口返回的记为在售并刷新 last_seen_at；库里有、接口没返回的记为已下架。
+        不删除任何行 —— 专属发货配置挂在商品上，删掉就一起丢了，而且闲鱼接口
+        偶发少返回时会造成不可恢复的误删。
+
+        调用方必须自己保证这是一次「完整且成功」的同步（没有分页失败、没有被
+        max_pages 截断），否则会把在售商品误标成下架。空列表尤其危险，交由
+        调用方用 confirmed_empty 判断后再决定是否调用。
+
+        Args:
+            cookie_id: 账号 ID。
+            on_sale_item_ids: 本次接口返回的商品 ID 集合。
+        Returns:
+            {'on_sale': 标为在售的行数, 'off_shelf': 新标为下架的行数}
+        """
+        ids = {str(i) for i in (on_sale_item_ids or []) if i}
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+
+                if ids:
+                    placeholders = ','.join('?' * len(ids))
+                    self._execute_sql(
+                        cursor,
+                        f"UPDATE item_info SET listing_status = 'on_sale', "
+                        f"last_seen_at = CURRENT_TIMESTAMP "
+                        f"WHERE cookie_id = ? AND item_id IN ({placeholders})",
+                        [cookie_id, *ids]
+                    )
+                    on_sale = cursor.rowcount or 0
+
+                    self._execute_sql(
+                        cursor,
+                        f"UPDATE item_info SET listing_status = 'off_shelf' "
+                        f"WHERE cookie_id = ? AND item_id NOT IN ({placeholders}) "
+                        f"AND listing_status != 'off_shelf'",
+                        [cookie_id, *ids]
+                    )
+                    off_shelf = cursor.rowcount or 0
+                else:
+                    on_sale = 0
+                    self._execute_sql(
+                        cursor,
+                        "UPDATE item_info SET listing_status = 'off_shelf' "
+                        "WHERE cookie_id = ? AND listing_status != 'off_shelf'",
+                        [cookie_id]
+                    )
+                    off_shelf = cursor.rowcount or 0
+
+                self.conn.commit()
+
+            if off_shelf:
+                logger.info(
+                    f"【{cookie_id}】商品状态校准: 在售 {on_sale} 件，"
+                    f"本次未返回而标记为已下架 {off_shelf} 件"
+                )
+            return {'on_sale': on_sale, 'off_shelf': off_shelf}
+        except Exception as e:
+            logger.error(f"校准商品上下架状态失败 {cookie_id}: {e}")
+            return {'on_sale': 0, 'off_shelf': 0}
 
     def delete_item_info(self, cookie_id: str, item_id: str) -> bool:
         """删除商品信息

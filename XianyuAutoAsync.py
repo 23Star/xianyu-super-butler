@@ -829,6 +829,10 @@ class XianyuLive:
         self.buyer_interaction_task = None
         self._auto_rated_orders = set()
         self._auto_flowered_orders = set()
+        # 已发过确认收货致谢的会话/订单，避免同一笔交易的多条系统消息各发一次
+        self._thanked_receipts = set()
+        # 买家互动即时触发的去重标记
+        self._buyer_interaction_triggering = False
 
         # 扫码登录Cookie刷新标志
         self.last_qr_cookie_refresh_time = 0  # 记录上次扫码登录Cookie刷新时间
@@ -7515,14 +7519,20 @@ class XianyuLive:
                         break
 
                     from app.db_manager import db_manager
-                    rate_on = str(db_manager.get_system_setting('auto_rate_enabled') or '').strip().lower() in ('1', 'true', 'yes')
-                    flower_on = str(db_manager.get_system_setting('auto_flower_enabled') or '').strip().lower() in ('1', 'true', 'yes')
+                    # 开关按账号存：不同账号经营策略不同，全局开关意味着一开就是
+                    # 所有账号一起开，用户没法只对部分账号启用。
+                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+                    rate_on = interaction['auto_rate_enabled']
+                    flower_on = interaction['auto_flower_enabled']
                     interval_str = db_manager.get_system_setting('buyer_interaction_interval')
                     try:
                         interval = int(interval_str) if interval_str else 7200
                     except (TypeError, ValueError):
                         interval = 7200
-                    interval = max(1800, interval)
+                    # 下限从 30 分钟放宽到 5 分钟：确认收货现在由消息事件即时触发，
+                    # 轮询退化成兜底（漏收消息、服务重启期间完成的订单）。但仍要有
+                    # 下限 —— 这条循环每轮都拉一次卖出订单列表，太频繁会招来风控。
+                    interval = min(max(300, interval), 86400)
 
                     if (not rate_on and not flower_on) or not self.cookies_str:
                         await self._interruptible_sleep(180)
@@ -7564,6 +7574,111 @@ class XianyuLive:
             raise
         finally:
             logger.info(f"【{self.cookie_id}】买家互动任务已退出")
+
+    # 确认收货致谢的默认文案。留空则不发。
+    DEFAULT_THANKS_TEMPLATE = '亲，感谢支持！有任何问题随时找我~'
+
+    async def send_post_receipt_thanks(self, websocket, chat_id, to_user_id, order_id=None):
+        """确认收货后给买家发一条致谢文本。
+
+        和评价/求花不同，这条只是发消息，不依赖卖出订单接口的状态流转，所以直接
+        在收到「交易成功」消息时就地发出 —— 此时 chat_id 和买家 ID 都在手上，
+        不必再查订单。
+
+        同一个会话只发一次：确认收货往往伴随多条系统消息（交易成功、评价提醒、
+        小红花提醒），逐条发会连着骚扰买家。
+        """
+        from app.db_manager import db_manager
+
+        if not db_manager.get_buyer_interaction_settings(
+            self.cookie_id
+        )['auto_thanks_enabled']:
+            return False
+
+        key = str(order_id or chat_id)
+        if key in self._thanked_receipts:
+            logger.debug(f"【{self.cookie_id}】{key} 已发过确认收货致谢，跳过")
+            return False
+
+        template = (
+            db_manager.get_system_setting('auto_thanks_template')
+            or self.DEFAULT_THANKS_TEMPLATE
+        ).strip()
+        if not template:
+            return False
+
+        # 先登记再发送：发送失败也不重试，避免异常时反复打扰买家
+        self._thanked_receipts.add(key)
+        try:
+            await self.send_msg(websocket, chat_id, to_user_id, template)
+            logger.info(f"【{self.cookie_id}】确认收货致谢已发送: chat_id={chat_id}")
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"【{self.cookie_id}】确认收货致谢发送失败: {self._safe_str(exc)}"
+            )
+            return False
+
+    # 交易成功后触发前的等待秒数。闲鱼推送「交易成功」消息时，卖出订单接口未必
+    # 已经把该单切到 TRADE_SUCCESS，立刻去查会查不到；等一小会儿再查。
+    BUYER_INTERACTION_TRIGGER_DELAY = float(
+        os.getenv('BUYER_INTERACTION_TRIGGER_DELAY', '20')
+    )
+
+    async def trigger_buyer_interactions_now(self, reason: str = '交易成功'):
+        """收到交易成功消息后立即执行一次买家互动，不必等下一轮轮询。
+
+        轮询间隔最短也有几十分钟，买家确认收货后要等很久才评价/求花，时机上
+        已经偏晚。这里由消息事件驱动，做成「尽快执行一次」。
+
+        同一时刻只允许一个触发在跑：确认收货往往伴随多条系统消息（交易成功、
+        评价提醒、小红花提醒），每条都触发一次会连着打同一个接口。
+        """
+        if getattr(self, '_buyer_interaction_triggering', False):
+            logger.debug(f"【{self.cookie_id}】买家互动已在触发中，忽略重复的「{reason}」")
+            return
+
+        from app.db_manager import db_manager
+        interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+        if not interaction['auto_rate_enabled'] and not interaction['auto_flower_enabled']:
+            return
+        if not self.cookies_str:
+            return
+
+        self._buyer_interaction_triggering = True
+
+        async def run():
+            try:
+                await asyncio.sleep(self.BUYER_INTERACTION_TRIGGER_DELAY)
+
+                from utils import risk_control
+                guard = risk_control.registry.get(self.cookie_id)
+                if guard.is_blocked:
+                    logger.info(
+                        f"【{self.cookie_id}】{reason}触发买家互动，但正处风控冷却，"
+                        f"交由定时轮询稍后处理"
+                    )
+                    return
+
+                logger.info(f"【{self.cookie_id}】{reason}，立即执行买家互动")
+                result = await self._run_buyer_interactions(
+                    interaction['auto_rate_enabled'], interaction['auto_flower_enabled']
+                )
+                if not result.get('rated') and not result.get('flowered'):
+                    logger.info(
+                        f"【{self.cookie_id}】{reason}触发未产生动作"
+                        f"（可能该单已评价过，或接口尚未返回可求花状态）"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    f"【{self.cookie_id}】{reason}触发买家互动失败: {self._safe_str(exc)}"
+                )
+            finally:
+                self._buyer_interaction_triggering = False
+
+        asyncio.create_task(run())
 
     async def _run_buyer_interactions(self, rate_on: bool, flower_on: bool) -> dict:
         """对已完结订单执行评价和求花。
@@ -10062,16 +10177,24 @@ class XianyuLive:
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】系统通知消息不处理')
                 return
             elif send_message == '[买家确认收货，交易成功]':
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】交易完成消息不处理')
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】交易完成，触发买家互动')
+                await self.send_post_receipt_thanks(websocket, chat_id, send_user_id)
+                await self.trigger_buyer_interactions_now('买家确认收货')
                 return
             elif send_message == '快给ta一个评价吧~' or send_message == '快给ta一个评价吧～':
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】评价提醒消息不处理')
+                # 闲鱼只在交易完成后才推这条提醒，是个可靠的补充信号：
+                # 万一「交易成功」那条消息漏收，靠它也能触发。触发本身有去重。
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】收到评价提醒，触发买家互动')
+                await self.send_post_receipt_thanks(websocket, chat_id, send_user_id)
+                await self.trigger_buyer_interactions_now('评价提醒')
                 return
             elif send_message == '卖家人不错？送Ta闲鱼小红花':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】小红花提醒消息不处理')
                 return
             elif send_message == '[你已确认收货，交易成功]':
-                logger.info(f'[{msg_time}] 【{self.cookie_id}】买家确认收货消息不处理')
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】确认收货，触发买家互动')
+                await self.send_post_receipt_thanks(websocket, chat_id, send_user_id)
+                await self.trigger_buyer_interactions_now('确认收货')
                 return
             elif send_message == '[你已发货]':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】发货确认消息不处理')
@@ -11056,6 +11179,29 @@ class XianyuLive:
             f"group={group_name}, total={len(all_items)}, saved={total_saved}, "
             f"confirmed_empty={confirmed_empty}"
         )
+
+        # 校准上下架状态。同步原先只做 upsert，接口不再返回的商品会永久留在
+        # 列表里，和在售的长得一样 —— 用户既分不清也筛不掉。
+        #
+        # 只在「完整且成功」的同步后才校准，否则会把在售商品误标成下架：
+        #   - 被 max_pages 截断时，后面几页的商品根本没被拉取；
+        #   - 一件都没返回时，除非接口明确确认为空，否则更可能是接口抖动。
+        off_shelf_count = 0
+        truncated = bool(max_pages and pages_fetched >= max_pages)
+        if truncated:
+            logger.info(f"【{self.cookie_id}】同步被 max_pages 截断，跳过上下架校准")
+        elif not all_items and not confirmed_empty:
+            logger.warning(
+                f"【{self.cookie_id}】接口未返回任何商品且未确认为空，"
+                f"跳过上下架校准以免误标"
+            )
+        else:
+            from app.db_manager import db_manager
+            stats = db_manager.reconcile_item_listing_status(
+                self.cookie_id, [item.get('id') for item in all_items]
+            )
+            off_shelf_count = stats.get('off_shelf', 0)
+
         return {
             'success': True,
             'total_pages': pages_fetched,
@@ -11068,7 +11214,8 @@ class XianyuLive:
             'count_reconciled': count_reconciled,
             'confirmed_empty': confirmed_empty,
             'group_name': group_name,
-            'account_id': self.myid
+            'account_id': self.myid,
+            'off_shelf_count': off_shelf_count
         }
 
     async def send_image_msg(self, ws, cid, toid, image_url, width=800, height=600, card_id=None):

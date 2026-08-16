@@ -5884,7 +5884,7 @@ class AIReplySettings(BaseModel):
     ai_enabled: bool
     model_name: str = "qwen-plus"
     api_key: str = ""
-    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url: str = "https://ai.corleom.com/v1"
     max_discount_percent: int = 10
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
@@ -6263,6 +6263,13 @@ async def get_all_items_from_account(request: dict, current_user: Dict[str, Any]
         group_declared_count = result.get('group_declared_count', total_count)
         parsed_count = result.get('parsed_count', total_count)
         count_reconciled = bool(result.get('count_reconciled'))
+        off_shelf_count = int(result.get('off_shelf_count') or 0)
+        # 本次未被接口返回的商品已标为已下架，要告诉用户 —— 否则列表里少了几件
+        # 会显得像数据丢了。
+        off_shelf_note = (
+            f"；另有 {off_shelf_count} 件本次未返回，已标记为已下架"
+            if off_shelf_count else ""
+        )
 
         if confirmed_empty:
             message = f"闲鱼接口确认账号 {account_id} 的“{group_name}”分组当前为 0 件"
@@ -6271,13 +6278,15 @@ async def get_all_items_from_account(request: dict, current_user: Dict[str, Any]
             message = (
                 f"成功同步 {parsed_count} 件商品；闲鱼接口计数异常"
                 f"（接口 {api_total_count}、分组 {group_declared_count}），已按商品列表自动校准"
+                f"{off_shelf_note}"
             )
             logger.warning(message)
         else:
-            message = f"成功获取商品，共 {total_count} 件，保存 {saved_count} 件"
+            message = f"成功获取商品，共 {total_count} 件，保存 {saved_count} 件{off_shelf_note}"
             logger.info(
                 f"成功获取账号 {cookie_id} 的 {total_count} 个商品"
-                f"（共{total_pages}页），保存 {saved_count} 个"
+                f"（共{total_pages}页），保存 {saved_count} 个，"
+                f"标记已下架 {off_shelf_count} 个"
             )
 
         return {
@@ -7499,12 +7508,57 @@ async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current
 
     这两项会对买家产生不可撤销的实际动作，订单页需要据此决定是否展示入口，
     避免用户点了才发现被后端拒绝。
+
+    开关按账号存，所以返回逐账号的映射；顶层的两个布尔保留为「是否有任意账号
+    开启」，供只需要粗粒度判断的地方使用（比如整块入口要不要出现）。
     """
+    from app.db_manager import db_manager
+
+    accounts = db_manager.get_all_cookies(current_user['user_id']) or {}
+    per_account = {
+        cid: db_manager.get_buyer_interaction_settings(cid)
+        for cid in accounts
+    }
     return {
-        'auto_rate_enabled': _seller_feature_enabled(AUTO_RATE_SETTING_KEY),
-        'auto_flower_enabled': _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY),
+        'accounts': per_account,
+        'auto_rate_enabled': any(v['auto_rate_enabled'] for v in per_account.values()),
+        'auto_flower_enabled': any(v['auto_flower_enabled'] for v in per_account.values()),
+        'auto_thanks_enabled': any(v['auto_thanks_enabled'] for v in per_account.values()),
         'auto_rate_template': _rate_template(),
     }
+
+
+class BuyerInteractionUpdate(BaseModel):
+    auto_rate_enabled: Optional[bool] = None
+    auto_flower_enabled: Optional[bool] = None
+    auto_thanks_enabled: Optional[bool] = None
+
+
+@app.put('/api/seller-features/{cookie_id}')
+async def update_seller_features(
+    cookie_id: str,
+    payload: BuyerInteractionUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """按账号更新评价/求花开关。"""
+    from app.db_manager import db_manager
+
+    if cookie_id not in (db_manager.get_all_cookies(current_user['user_id']) or {}):
+        raise HTTPException(status_code=403, detail="无权限操作该账号")
+
+    db_manager.update_buyer_interaction_settings(
+        cookie_id,
+        auto_rate_enabled=payload.auto_rate_enabled,
+        auto_flower_enabled=payload.auto_flower_enabled,
+        auto_thanks_enabled=payload.auto_thanks_enabled,
+    )
+    log_with_user(
+        'info',
+        f"更新账号 {cookie_id} 买家互动开关: rate={payload.auto_rate_enabled}, "
+        f"flower={payload.auto_flower_enabled}, thanks={payload.auto_thanks_enabled}",
+        current_user
+    )
+    return {"success": True, **db_manager.get_buyer_interaction_settings(cookie_id)}
 
 
 @app.get('/api/orders/{order_id}')
@@ -9232,14 +9286,15 @@ async def require_order_flower(
     from app.db_manager import db_manager
     from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
 
-    if not _seller_feature_enabled(AUTO_FLOWER_SETTING_KEY):
-        raise HTTPException(
-            status_code=403,
-            detail="求花功能未开启，请先在设置中启用（会向买家发送消息）",
-        )
-
     user_cookies = db_manager.get_all_cookies(current_user['user_id'])
     cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+
+    # 开关按账号判：先解析出订单归属账号，再看该账号有没有开
+    if not db_manager.get_buyer_interaction_settings(cid)['auto_flower_enabled']:
+        raise HTTPException(
+            status_code=403,
+            detail="该账号未开启求花功能，请先在买家互动里为它启用（会向买家发送消息）",
+        )
 
     api = XianyuSellerAPI(cid, cookies_str)
     try:
@@ -9269,12 +9324,6 @@ async def rate_orders(
     from app.db_manager import db_manager
     from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
 
-    if not _seller_feature_enabled(AUTO_RATE_SETTING_KEY):
-        raise HTTPException(
-            status_code=403,
-            detail="评价功能未开启，请先在设置中启用（评价提交后不可撤销）",
-        )
-
     id_list = [item.strip() for item in str(order_ids or '').split(',') if item.strip()]
     if not id_list:
         raise HTTPException(status_code=400, detail="订单列表不能为空")
@@ -9289,6 +9338,14 @@ async def rate_orders(
         raise HTTPException(status_code=400, detail="批量评价的订单必须属于同一个账号")
 
     cid = resolved.pop()
+
+    # 开关按账号判：先解析出订单归属账号，再看该账号有没有开
+    if not db_manager.get_buyer_interaction_settings(cid)['auto_rate_enabled']:
+        raise HTTPException(
+            status_code=403,
+            detail="该账号未开启评价功能，请先在买家互动里为它启用（评价提交后不可撤销）",
+        )
+
     api = XianyuSellerAPI(cid, user_cookies[cid])
     try:
         result = await api.create_rate(
