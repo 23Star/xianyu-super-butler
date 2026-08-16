@@ -165,7 +165,7 @@ const Toggle: React.FC<{
     disabled={disabled}
     onClick={onChange}
     className={`relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors ${
-      checked ? 'bg-green-500' : 'bg-gray-300'
+      checked ? 'bg-[#ffe100]' : 'bg-[#e8dcbc]'
     } disabled:cursor-not-allowed disabled:opacity-50`}
   >
     <span

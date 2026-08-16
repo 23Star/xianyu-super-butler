@@ -47,6 +47,11 @@ import { EmptyState, SectionHeader } from './ui';
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
 
+// 轮询间隔。会话列表与消息都要经 WebSocket 透传到闲鱼，频率过高会把账号
+// 打到限流（429 flow controled）；聊天场景 10 秒的延迟是可接受的。
+const CONVERSATION_POLL_MS = 10000;
+const MESSAGE_POLL_MS = 10000;
+
 interface MessageManagementProps {
   isActive?: boolean;
 }
@@ -177,7 +182,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       const result = await getChatConversations(activeAccountId);
       setConversations(result.conversations || []);
       setActiveCid((current) => {
-        if (current && result.conversations.some((conversation) => conversation.cid === current)) {
+        // 用户已经选了会话就不要动它。会话列表是定时刷新的，一旦某次刷新
+        // 因限流或数据不全而没带上当前会话，这里就会把用户强行切回第一条 ——
+        // 表现为「点第二个及之后的对话，消息区一片空白」。
+        if (current) {
           return current;
         }
         return result.conversations[0]?.cid || '';
@@ -253,14 +261,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId) return undefined;
     void loadConversations(true);
-    const timer = window.setInterval(() => void loadConversations(true), 3000);
+    // 10 秒一轮。原来 3 秒刷一次，每条请求都要经 WebSocket 转发到闲鱼，
+    // 多开几个标签页就会把账号打到 429（flow controled），表现为消息加载失败。
+    const timer = window.setInterval(() => void loadConversations(true), CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
   }, [isActive, view, activeAccountId]);
 
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId || !activeCid) return undefined;
     void loadMessages(true);
-    const timer = window.setInterval(() => void loadMessages(true), 3000);
+    const timer = window.setInterval(() => void loadMessages(true), MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [isActive, view, activeAccountId, activeCid]);
 
@@ -353,7 +363,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const renderAvatar = (url: string | undefined, label: string, className: string) => {
     const normalized = normalizeImageUrl(url);
     const placeholder = (
-      <div className={`${className} flex items-center justify-center bg-[#252525] text-sm font-bold text-white`}>
+      <div className={`${className} flex items-center justify-center bg-[#3a3427] text-sm font-bold text-white`}>
         {label.trim().slice(0, 1) || <UserRound className="h-4 w-4" />}
       </div>
     );
@@ -375,13 +385,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
   const renderMessages = () => (
     <div className="grid h-full min-h-0 overflow-hidden bg-white lg:grid-cols-[356px_minmax(0,1fr)]">
-      <aside className={`${mobilePane === 'chat' ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col border-b border-[#e9e9e9] lg:border-b-0 lg:border-r`}>
-        <div className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[#eeeeee] px-4">
+      <aside className={`${mobilePane === 'chat' ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col border-b border-[#f0e6c8] lg:border-b-0 lg:border-r`}>
+        <div className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[#f0e6c8] px-4">
           <select
             value={activeAccountId}
             onChange={(event) => setActiveAccountId(event.target.value)}
             aria-label="消息账号"
-            className="h-10 min-w-0 flex-1 rounded-md border border-[#dedede] bg-white px-3 text-sm font-bold outline-none focus:border-[#e6c600]"
+            className="h-10 min-w-0 flex-1 rounded-md border border-[#e6d69a] bg-white px-3 text-sm font-bold outline-none focus:border-[#e6c600]"
           >
             {accounts.length === 0 && <option value="">暂无账号</option>}
             {accounts.map((account) => (
@@ -394,7 +404,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             type="button"
             onClick={() => void Promise.all([loadAccounts(), loadConversations()])}
             title="刷新账号和会话"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-[#f3f3f3]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-[#fff9e8]"
           >
             <RefreshCw className={`h-4 w-4 ${
               accountsLoading || conversationsLoading ? 'animate-spin' : ''
@@ -404,20 +414,20 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             type="button"
             onClick={() => setView('filters')}
             title="消息过滤规则"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-[#f3f3f3]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full hover:bg-[#fff9e8]"
           >
             <Settings2 className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="border-b border-[#eeeeee] p-3">
+        <div className="border-b border-[#f0e6c8] p-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#aaa]" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索联系人、商品或消息"
-              className="h-9 w-full rounded-md bg-[#f4f4f4] pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-[#ffe100]"
+              className="h-9 w-full rounded-md bg-[#fff9e8] pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-[#ffe100]"
             />
           </div>
         </div>
@@ -440,13 +450,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   setMobilePane('chat');
                 }}
                 className={`grid w-full grid-cols-[48px_minmax(0,1fr)_auto] gap-3 px-4 py-3 text-left ${
-                  selected ? 'bg-[#f0f0f0]' : 'hover:bg-[#f7f7f7]'
+                  selected ? 'bg-[#f5edd6]' : 'hover:bg-[#fffdf5]'
                 }`}
               >
                 {renderAvatar(conversation.otherUserAvatar, title, 'h-12 w-12 rounded-full')}
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <p className="truncate text-sm font-bold text-[#222]">{title}</p>
+                    <p className="truncate text-sm font-bold text-[#2a2416]">{title}</p>
                     {conversation.unreadCount > 0 && (
                       <span className="min-w-5 rounded-full bg-[#ff4d4f] px-1.5 text-center text-[10px] leading-5 text-white">
                         {conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}
@@ -480,19 +490,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       <section className={`${mobilePane === 'list' ? 'hidden lg:flex' : 'flex'} min-h-0 min-w-0 flex-col`}>
         {activeConversation ? (
           <>
-            <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-[#eeeeee] px-5">
+            <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-[#f0e6c8] px-5">
               <div className="flex min-w-0 items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setMobilePane('list')}
-                  className="-ml-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-[#f3f3f3] lg:hidden"
+                  className="-ml-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-[#fff9e8] lg:hidden"
                   title="返回会话列表"
                   aria-label="返回会话列表"
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </button>
                 <div className="min-w-0">
-                  <h3 className="truncate text-base font-bold text-[#222]">
+                  <h3 className="truncate text-base font-bold text-[#2a2416]">
                     {activeConversation.otherUserName || `闲鱼用户 ${activeConversation.otherUserId}`}
                   </h3>
                   <p className="mt-0.5 truncate text-xs text-[#999]">
@@ -504,13 +514,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 activeAccount?.connected ? 'text-emerald-600' : 'text-[#999]'
               }`}>
                 <span className={`h-2 w-2 rounded-full ${
-                  activeAccount?.connected ? 'bg-emerald-500' : 'bg-[#bbb]'
+                  activeAccount?.connected ? 'bg-emerald-500' : 'bg-[#b8ac8e]'
                 }`} />
                 {activeAccount?.connected ? '账号在线' : '账号离线'}
               </span>
             </header>
 
-            <div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b border-[#eeeeee] px-4 py-3 sm:min-h-[92px] sm:gap-4 sm:px-5">
+            <div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b border-[#f0e6c8] px-4 py-3 sm:min-h-[92px] sm:gap-4 sm:px-5">
               {normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image) ? (
                 <img
                   src={normalizeImageUrl(activeConversation.itemImage || activeItem?.item_image)}
@@ -518,12 +528,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   className="h-14 w-14 shrink-0 rounded-md object-cover sm:h-16 sm:w-16"
                 />
               ) : (
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-[#f2f2f2] text-[#aaa] sm:h-16 sm:w-16">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-[#fff9e8] text-[#aaa] sm:h-16 sm:w-16">
                   <Package className="h-5 w-5" />
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-bold text-[#222]">
+                <p className="truncate text-sm font-bold text-[#2a2416]">
                   {activeConversation.itemTitle || activeItem?.item_title || '未关联商品'}
                 </p>
                 {activeItem?.item_price && (
@@ -536,12 +546,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   {activeConversation.itemId ? `商品 ID ${activeConversation.itemId}` : '普通会话'}
                 </p>
               </div>
-              <span className="hidden rounded-md bg-[#ffe100] px-4 py-2 text-xs font-bold text-[#222] sm:inline-flex">
+              <span className="hidden rounded-md bg-[#ffe100] px-4 py-2 text-xs font-bold text-[#2a2416] sm:inline-flex">
                 {accountName(activeAccount)}
               </span>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto bg-[#f7f7f7] px-4 py-6 sm:px-8">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-[#fffdf5] px-4 py-6 sm:px-8">
               {messagesLoading && messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
                   <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
@@ -568,7 +578,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                             'h-9 w-9 shrink-0 rounded-full'
                           )}
                           <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
-                            message.isSelf ? 'bg-[#ffe100] text-[#222]' : 'bg-white text-[#333]'
+                            message.isSelf ? 'bg-[#ffe100] text-[#2a2416]' : 'bg-white text-[#333]'
                           }`}>
                             {message.images.map((url) => (
                               <img
@@ -599,7 +609,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               )}
             </div>
 
-            <footer className="shrink-0 border-t border-[#eeeeee] bg-white px-4 py-3 sm:px-5">
+            <footer className="shrink-0 border-t border-[#f0e6c8] bg-white px-4 py-3 sm:px-5">
               <div className="mb-2 flex items-center gap-4 text-[#555]">
                 <button type="button" title="表情（暂未开放）" className="hover:text-[#111]">
                   <Smile className="h-5 w-5" />
@@ -617,7 +627,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     <Zap className="h-5 w-5" />
                   </button>
                   {showPhrases && (
-                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[#e4e6e8] bg-white p-2 shadow-lg">
+                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[#f0e6c8] bg-white p-2 shadow-lg">
                       {quickPhrases.length === 0 ? (
                         <p className="px-2 py-3 text-xs text-gray-500">
                           还没有快捷短语，可在「设置」中添加。
@@ -628,9 +638,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                             key={phrase.id}
                             type="button"
                             onClick={() => insertPhrase(phrase)}
-                            className="block w-full rounded-md px-2 py-2 text-left hover:bg-[#f7f8f9]"
+                            className="block w-full rounded-md px-2 py-2 text-left hover:bg-[#fffdf5]"
                           >
-                            <span className="block text-xs font-semibold text-[#222]">
+                            <span className="block text-xs font-semibold text-[#2a2416]">
                               [{phrase.category}] {phrase.title}
                             </span>
                             <span className="mt-0.5 block truncate text-xs text-gray-500">
@@ -662,7 +672,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   type="button"
                   onClick={() => void sendMessage()}
                   disabled={!draft.trim() || sending || !activeAccount?.connected}
-                  className="flex h-9 shrink-0 items-center gap-2 rounded-md bg-[#ffe100] px-4 text-sm font-bold text-[#222] hover:bg-[#f4d900] disabled:cursor-not-allowed disabled:bg-[#f2f2f2] disabled:text-[#aaa] sm:px-5"
+                  className="flex h-9 shrink-0 items-center gap-2 rounded-md bg-[#ffe100] px-4 text-sm font-bold text-[#2a2416] hover:bg-[#ffd700] disabled:cursor-not-allowed disabled:bg-[#fff9e8] disabled:text-[#aaa] sm:px-5"
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   发送
@@ -682,7 +692,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   );
 
   const renderFilters = () => (
-    <div className="h-full overflow-y-auto bg-[#f5f6f7] p-4 sm:p-6 lg:p-8">
+    <div className="h-full overflow-y-auto bg-[#fffdf5] p-4 sm:p-6 lg:p-8">
       <div className="page-stack mx-auto max-w-[1320px]">
         <header className="page-header">
           <div>
@@ -833,7 +843,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   onClick={() => void toggleMessageFilter(filter.id).then(loadFilters)}
                   title={filter.enabled ? '停用规则' : '启用规则'}
                   className={`relative h-6 w-11 rounded-full transition-colors ${
-                    filter.enabled ? 'bg-[#f5c400]' : 'bg-gray-300'
+                    filter.enabled ? 'bg-[#f5c800]' : 'bg-gray-300'
                   }`}
                 >
                   <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${
@@ -841,7 +851,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   }`} />
                 </button>
                 <div>
-                  <p className="break-all text-sm font-bold text-[#222]">{filter.cookie_id}</p>
+                  <p className="break-all text-sm font-bold text-[#2a2416]">{filter.cookie_id}</p>
                   <p className="mt-1 text-xs text-[#888]">{filterTypeLabel[filter.filter_type]}</p>
                 </div>
                 <div className="min-w-0">

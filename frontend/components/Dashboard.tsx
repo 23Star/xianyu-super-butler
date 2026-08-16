@@ -9,7 +9,7 @@ import { EmptyState, PageHeader, PageLoading, PageTabs, SectionHeader } from './
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const styles = {
     processing: 'bg-yellow-100 text-yellow-800',
-    pending_ship: 'bg-[#FFE815] text-black',
+    pending_ship: 'bg-[#ffe100] text-black',
     shipped: 'bg-blue-100 text-blue-700',
     completed: 'bg-green-100 text-green-700',
     cancelled: 'bg-gray-100 text-gray-500',
@@ -70,7 +70,9 @@ const Dashboard: React.FC = () => {
   const [itemNames, setItemNames] = useState<Record<string, string>>({});
 
   // 颜色配置
-  const COLORS = ['#FFE815', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
+  // 以品牌黄为主，配少量低饱和辅助色。原来混了纯蓝/纯紫/亮绿，
+  // 几个饼图并排时颜色打架，也压不住整站的黄色主题。
+  const COLORS = ['#ffe100', '#f5c800', '#ffd426', '#e8c86a', '#8fc7a8', '#c9b8e8'];
 
   const loadAnalytics = async (range: TimeRange) => {
     // 使用本地时间而不是UTC时间
@@ -486,38 +488,38 @@ const Dashboard: React.FC = () => {
           title="有效成交额 (CNY)"
           value={`¥${analytics.revenue_stats.total_amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
           icon={DollarSign}
-          colorClass="bg-yellow-400"
+          colorClass="bg-[#ffe100]"
           trend={getTrendPercent() || undefined}
         />
         <StatCard
           title="已到账 (CNY)"
           value={`¥${(analytics.revenue_stats.confirmed_amount ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
           icon={DollarSign}
-          colorClass="bg-green-500"
+          colorClass="bg-[#f5c800]"
         />
         <StatCard
           title="已退款 (CNY)"
           value={`¥${(analytics.revenue_stats.refunded_amount ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`}
           icon={DollarSign}
-          colorClass="bg-gray-400"
+          colorClass="bg-[#e8a0a0]"
         />
         <StatCard
           title="订单总数"
           value={totalOrders.toLocaleString()}
           icon={ShoppingCart}
-          colorClass="bg-orange-500"
+          colorClass="bg-[#ffd700]"
         />
         <StatCard
           title="活跃账号 / 总数"
           value={`${stats.active_cookies} / ${stats.total_cookies}`}
           icon={Users}
-          colorClass="bg-blue-500"
+          colorClass="bg-[#8fc7a8]"
         />
         <StatCard
           title="库存卡密余量"
           value={stats.total_cards}
           icon={Package}
-          colorClass="bg-purple-500"
+          colorClass="bg-[#c9b8e8]"
         />
       </div>
 
@@ -534,34 +536,35 @@ const Dashboard: React.FC = () => {
               <BarChart
                 data={chartData}
                 margin={{ top: 18, right: 16, left: -20, bottom: 18 }}
-                barCategoryGap={chartData.length <= 2 ? 30 : chartData.length <= 10 ? '20%' : '10%'}
+                barGap={6}
+                barCategoryGap="28%"
               >
-                <CartesianGrid vertical={false} stroke="#eef0f2" strokeDasharray="3 3" />
+                <CartesianGrid vertical={false} stroke="#ebe9e3" strokeDasharray="4 4" />
                 <XAxis
                   dataKey="name"
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#6d747c', fontSize: 12, fontWeight: 600}}
+                  tick={{fill: '#66625c', fontSize: 12, fontWeight: 600}}
                   dy={10}
                   interval="preserveStartEnd"
                 />
                 <YAxis
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#939aa2', fontSize: 12, fontWeight: 500}}
+                  tick={{fill: '#b0aaa0', fontSize: 12, fontWeight: 500}}
                   tickFormatter={(value) => `¥${value}`}
                 />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: '#ffffff',
-                    borderRadius: '6px',
-                    border: '1px solid #e4e6e8',
-                    boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)',
-                    padding: '10px 12px'
+                    borderRadius: '14px',
+                    border: '1px solid #ebe9e3',
+                    boxShadow: '0 8px 24px rgba(122, 96, 20, 0.12)',
+                    padding: '10px 14px'
                   }}
-                  itemStyle={{ color: '#1f2328', fontWeight: 600 }}
-                  labelStyle={{ color: '#6d747c' }}
-                  cursor={{ fill: 'rgba(214, 188, 0, 0.08)' }}
+                  itemStyle={{ color: '#2a2416', fontWeight: 600 }}
+                  labelStyle={{ color: '#66625c', fontWeight: 600, marginBottom: 4 }}
+                  cursor={{ fill: 'rgba(255, 225, 0, 0.12)', radius: 8 }}
                   formatter={(value, name) => {
                     const label = name === 'confirmed' ? '已到账' : '成交额';
                     return [`¥${Number(value).toFixed(2)}`, label];
@@ -573,13 +576,15 @@ const Dashboard: React.FC = () => {
                   iconType="circle"
                   iconSize={8}
                   formatter={(value) => (
-                    <span style={{ color: '#6d747c', fontSize: 12 }}>
+                    <span style={{ color: '#66625c', fontSize: 12 }}>
                       {value === 'confirmed' ? '已到账' : '成交额'}
                     </span>
                   )}
                 />
-                <Bar dataKey="amount" fill="#d6bc00" radius={[3, 3, 0, 0]} strokeWidth={0} />
-                <Bar dataKey="confirmed" fill="#22c55e" radius={[3, 3, 0, 0]} strokeWidth={0} />
+                {/* maxBarSize 必须给：只有一两天数据时，柱子会被拉成占满半个图表的
+                    巨大色块，看起来像渲染错误。限宽后少量数据也是正常的细柱。 */}
+                <Bar dataKey="amount" fill="#ffd426" radius={[8, 8, 0, 0]} strokeWidth={0} maxBarSize={44} />
+                <Bar dataKey="confirmed" fill="#3fbf7f" radius={[8, 8, 0, 0]} strokeWidth={0} maxBarSize={44} />
               </BarChart>
             </ResponsiveContainer>
           )}
@@ -596,31 +601,34 @@ const Dashboard: React.FC = () => {
               <EmptyState compact title="暂无商品销售数据" description="当前时间范围内没有可统计的商品订单。" icon={Package} />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={productSalesData} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f0f0f0" />
+                <BarChart data={productSalesData} layout="vertical" barCategoryGap="30%">
+                  <CartesianGrid strokeDasharray="4 4" horizontal={true} vertical={false} stroke="#ebe9e3" />
                   <XAxis
                     type="number"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#9CA3AF', fontSize: 12 }}
+                    tick={{ fill: '#b0aaa0', fontSize: 12 }}
                   />
                   <YAxis
                     type="category"
                     dataKey="name"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#6B7280', fontSize: 12 }}
+                    tick={{ fill: '#66625c', fontSize: 12 }}
                     width={100}
                   />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: '#fff',
-                      border: '1px solid #e5e7eb',
-                      borderRadius: '6px',
-                      boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)'
+                      border: '1px solid #ebe9e3',
+                      borderRadius: '14px',
+                      boxShadow: '0 8px 24px rgba(122, 96, 20, 0.12)',
+                      padding: '10px 14px'
                     }}
+                    cursor={{ fill: 'rgba(255, 225, 0, 0.12)', radius: 8 }}
                   />
-                  <Bar dataKey="sales" fill="#c7ad00" radius={[0, 3, 3, 0]} />
+                  {/* 同上：商品只有一两个时不限宽会变成超粗横条 */}
+                  <Bar dataKey="sales" fill="#ffd426" radius={[0, 8, 8, 0]} maxBarSize={28} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -644,18 +652,39 @@ const Dashboard: React.FC = () => {
                     outerRadius={90}
                     paddingAngle={2}
                     dataKey="value"
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    // 不能用回调参数 percent：数据项里自带同名的 percent 字段（0-100），
+                    // 会把 Recharts 传入的 0-1 小数覆盖掉，结果乘 100 后显示成 2857%。
+                    // 这里直接按 value 与总数计算。
+                    label={({ name, value }) => {
+                      const total = sourceDataData.reduce((sum, item) => sum + item.value, 0);
+                      const ratio = total > 0 ? (Number(value) / total) * 100 : 0;
+                      return `${name} ${ratio.toFixed(0)}%`;
+                    }}
                     labelLine={false}
+                    // 悬停时扇形外扩，配合下面的 Tooltip 给出反馈；
+                    // 原先两者都没有，鼠标划过去毫无响应
+                    activeShape={{ outerRadius: 98 }}
                   >
                     {sourceDataData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                      <Cell key={`cell-${index}`} fill={entry.color} stroke="#ffffff" strokeWidth={2} />
                     ))}
                   </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#ffffff',
+                      border: '1px solid #e9e7e2',
+                      borderRadius: '14px',
+                      boxShadow: '0 8px 24px rgba(35, 33, 30, 0.10)',
+                      padding: '10px 14px'
+                    }}
+                    itemStyle={{ color: '#23211e', fontWeight: 600 }}
+                    formatter={(value, name) => [`${value} 单`, name]}
+                  />
                   <Legend
                     verticalAlign="bottom"
                     height={36}
                     iconType="circle"
-                    formatter={(value) => <span style={{ color: '#6B7280', fontWeight: 500 }}>{value}</span>}
+                    formatter={(value) => <span style={{ color: '#6b6862', fontWeight: 500 }}>{value}</span>}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -778,18 +807,21 @@ const Dashboard: React.FC = () => {
                       paddingAngle={2}
                       dataKey="value"
                       label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      activeShape={{ outerRadius: 108 }}
                     >
                       {categoryDataData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} />
+                        <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} stroke="#ffffff" strokeWidth={2} />
                       ))}
                     </Pie>
                     <Tooltip
                       contentStyle={{
                         backgroundColor: '#fff',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: '6px',
-                        boxShadow: '0 4px 16px rgba(20, 24, 28, 0.08)'
+                        border: '1px solid #e9e7e2',
+                        borderRadius: '14px',
+                        boxShadow: '0 8px 24px rgba(35, 33, 30, 0.10)',
+                        padding: '10px 14px'
                       }}
+                      itemStyle={{ color: '#23211e', fontWeight: 600 }}
                       formatter={(value: number) => `¥${value.toLocaleString()}`}
                     />
                   </PieChart>

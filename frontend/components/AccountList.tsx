@@ -18,6 +18,7 @@ import {
   refreshAccountProfile,
   getRiskControlStatus,
   startManualCaptchaSession,
+  requestFreshCaptchaUrl,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
@@ -31,9 +32,11 @@ const AccountList: React.FC = () => {
   // 风控熔断状态：命中后账号会暂停请求，需要让用户看到而不是只报 409
   const [riskBlocked, setRiskBlocked] = useState<Array<{
     cookie_id: string;
+    blocked: boolean;
     remaining_seconds: number;
     verification_type: 'none' | 'slider' | 'face' | 'qr' | 'risk_control';
     verification_message: string;
+    verification_url?: string;
   }>>([]);
   const [showQRModal, setShowQRModal] = useState(false);
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
@@ -46,6 +49,8 @@ const AccountList: React.FC = () => {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [editingAccount, setEditingAccount] = useState<AccountDetail | null>(null);
   const [refreshingProfileId, setRefreshingProfileId] = useState<string | null>(null);
+  // 正在取新验证链接的账号
+  const [freshUrlLoadingId, setFreshUrlLoadingId] = useState<string | null>(null);
   const [manualCaptchaId, setManualCaptchaId] = useState<string | null>(null);
   // 人工滑块验证弹窗：把服务器端浏览器的画面镜像到本页
   const [captchaAccount, setCaptchaAccount] = useState<AccountDetail | null>(null);
@@ -116,7 +121,7 @@ const AccountList: React.FC = () => {
   useEffect(() => {
     const poll = () => {
       getRiskControlStatus()
-        .then(res => setRiskBlocked((res.accounts || []).filter(a => a.blocked)))
+        .then(res => setRiskBlocked((res.accounts || []).filter(a => a.blocked || (a.verification_type && a.verification_type !== 'none'))))
         .catch(() => setRiskBlocked([]));
     };
     poll();
@@ -142,6 +147,33 @@ const AccountList: React.FC = () => {
   const handleToggle = async (id: string, currentStatus: boolean) => {
     await updateAccountStatus(id, !currentStatus);
     loadAccounts();
+  };
+
+  // 点按钮时实时取链接，而不是用风控日志里的历史链接 ——
+  // punish 链接的 x5secdata 只能用一次、约 1 小时失效，
+  // 旧链接打开只会看到「抱歉，页面访问出现了问题」。
+  const handleOpenFreshCaptcha = async (id: string) => {
+    setFreshUrlLoadingId(id);
+    try {
+      const result = await requestFreshCaptchaUrl(id);
+      if (!result.need_verify) {
+        notify(result.message || '该账号风控已解除，无需验证', 'success');
+        await loadAccounts({ silent: true });
+        const status = await getRiskControlStatus();
+        setRiskBlocked((status.accounts || []).filter(
+          item => item.blocked || (item.verification_type && item.verification_type !== 'none')
+        ));
+        return;
+      }
+      if (result.verification_url) {
+        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
+        notify('已打开验证页，请用鼠标拖动滑块完成验证', 'info');
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '获取验证链接失败', 'error');
+    } finally {
+      setFreshUrlLoadingId(null);
+    }
   };
 
   const handleRefreshProfile = async (id: string) => {
@@ -186,7 +218,7 @@ const AccountList: React.FC = () => {
       setCaptchaMessage(result.message || '验证完成，账号 Cookie 已更新');
       notify(result.message || '人工验证完成，账号 Cookie 已更新', 'success');
       const status = await getRiskControlStatus();
-      setRiskBlocked((status.accounts || []).filter(item => item.blocked));
+      setRiskBlocked((status.accounts || []).filter(item => item.blocked || (item.verification_type && item.verification_type !== 'none')));
       await loadAccounts({ silent: true });
     } catch (error) {
       const msg = error instanceof Error ? error.message : '人工验证启动失败';
@@ -491,8 +523,18 @@ const AccountList: React.FC = () => {
     if (account.runtime_state === 'running') {
       return { label: '监听中', className: 'bg-green-100 text-green-700' };
     }
+    // 登录态过期是终态：等待和过验证都没用，必须重新扫码。
+    // 与「连接中」分开显示，否则用户会一直等一个不会变好的状态。
+    if (account.runtime_state === 'need_relogin') {
+      return { label: '需重新扫码', className: 'bg-red-100 text-red-700' };
+    }
     if (account.runtime_state === 'failed') {
       return { label: '监听异常', className: 'bg-red-100 text-red-700' };
+    }
+    // 反复重连通常意味着账号被风控拦住：Token 取不到，消息、发货、自动回复
+    // 实际都不通。必须与「监听中」区分开，否则界面会给出一个假的健康状态。
+    if (account.runtime_state === 'connecting') {
+      return { label: '连接中 / 重连', className: 'bg-amber-100 text-amber-800' };
     }
     return { label: '已启用 / 未运行', className: 'bg-amber-100 text-amber-800' };
   };
@@ -504,15 +546,26 @@ const AccountList: React.FC = () => {
       {riskBlocked.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
           <p className="text-sm font-bold text-amber-900">
-            闲鱼要求人机验证，{riskBlocked.length} 个账号已暂停请求
+            闲鱼要求人机验证，{riskBlocked.length} 个账号无法获取令牌
           </p>
           <p className="mt-1 text-xs leading-5 text-amber-800">
             {riskBlocked.map(item => `${item.cookie_id}：${item.verification_message || '平台风控'}`).join('；')}。
-            {' '}系统会自动退避并重试，预计
-            {' '}
-            {Math.max(1, Math.ceil(Math.max(...riskBlocked.map(a => a.remaining_seconds)) / 60))}
-            {' '}
-            分钟后恢复。此期间请勿频繁操作 —— 持续请求会让验证状态持续更久。
+            {/* 只有本地熔断中才有确切的恢复时间；闲鱼侧的验证要求要靠过验证解除，
+                写死「N 分钟后恢复」会让用户干等一个不会自动好的状态 */}
+            {riskBlocked.some(a => a.blocked) ? (
+              <>
+                {' '}系统会自动退避并重试，预计
+                {' '}
+                {Math.max(1, Math.ceil(Math.max(...riskBlocked.map(a => a.remaining_seconds || 0)) / 60))}
+                {' '}
+                分钟后恢复。此期间请勿频繁操作 —— 持续请求会让验证状态持续更久。
+              </>
+            ) : (
+              <>
+                {' '}本地冷却已结束，但闲鱼仍要求完成验证。请用下方账号卡片里的
+                「在我的浏览器打开验证页」用真实鼠标过一次滑块，通过后会自动恢复。
+              </>
+            )}
           </p>
         </div>
       )}
@@ -603,10 +656,40 @@ const AccountList: React.FC = () => {
                   <p className="mt-1 text-xs font-medium text-gray-400">备注：{account.remark}</p>
                 )}
                 <div className="flex flex-wrap gap-2">
-                   {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'} · {Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟</span>}
+                   {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
                    {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认</span>}
                    {account.pause_duration > 0 && <span className="status-badge status-badge-info flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停 {account.pause_duration} 分钟</span>}
                 </div>
+                {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
+                {account.runtime_state === 'need_relogin' && (
+                  <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                    闲鱼登录态已过期，人机验证和等待都无法恢复。请点右上角「扫码添加账号」
+                    用同一个闲鱼账号重新扫码，即可覆盖并恢复该账号。
+                  </p>
+                )}
+                {/* 闲鱼要求人机验证时给出「自己浏览器打开」的入口。
+                    服务器端用 CDP 拖滑块通过率很低（风控查的是合并前子事件密度，
+                    自动化派发每帧只有一个），用真实鼠标过一次要可靠得多。 */}
+                {blockedState?.verification_url && (
+                  <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
+                    <p className="font-bold">闲鱼要求完成人机验证，账号暂时拿不到令牌</p>
+                    <p className="mt-1">
+                      推荐用你自己的浏览器打开验证页、用真实鼠标拖动滑块，通过率远高于服务器自动拖动。
+                      验证通过后本页会自动恢复，无需重新扫码。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFreshCaptcha(account.id)}
+                      disabled={freshUrlLoadingId === account.id}
+                      className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-[#ffe100] px-3 py-1.5 font-bold text-[#2a2416] hover:bg-[#ffd700] disabled:opacity-60"
+                    >
+                      {freshUrlLoadingId === account.id
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <ShieldCheck className="h-3.5 w-3.5" />}
+                      在我的浏览器打开验证页
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex items-center justify-end gap-1 border-t border-gray-100 pt-3 sm:border-0 sm:pt-0">
@@ -836,7 +919,7 @@ const AccountList: React.FC = () => {
                   type="button"
                   onClick={() => setEditForm({ ...editForm, auto_confirm: !editForm.auto_confirm })}
                   className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                    editForm.auto_confirm ? 'bg-[#FFE815]' : 'bg-gray-300'
+                    editForm.auto_confirm ? 'bg-[#ffe100]' : 'bg-gray-300'
                   }`}
                 >
                   <span
@@ -910,7 +993,7 @@ const AccountList: React.FC = () => {
                       type="button"
                       onClick={() => setEditForm({ ...editForm, show_browser: !editForm.show_browser })}
                       className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                        editForm.show_browser ? 'bg-[#FFE815]' : 'bg-gray-300'
+                        editForm.show_browser ? 'bg-[#ffe100]' : 'bg-gray-300'
                       }`}
                     >
                       <span
@@ -986,7 +1069,7 @@ const AccountList: React.FC = () => {
                   type="button"
                   onClick={() => setAiSettings({ ...aiSettings, ai_enabled: !aiSettings.ai_enabled })}
                   className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                    aiSettings.ai_enabled ? 'bg-[#FFE815]' : 'bg-gray-300'
+                    aiSettings.ai_enabled ? 'bg-[#ffe100]' : 'bg-gray-300'
                   }`}
                 >
                   <span

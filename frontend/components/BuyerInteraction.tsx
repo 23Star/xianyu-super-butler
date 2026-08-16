@@ -146,9 +146,10 @@ const BuyerInteraction: React.FC = () => {
         )}
       />
 
-      <NoticeBanner type="warning">
-        评价提交后无法撤销，求花会向买家发送一条消息。建议先用测试订单验证效果。
-      </NoticeBanner>
+      <NoticeBanner
+        type="warning"
+        message="评价提交后无法撤销，求花会向买家发送一条消息。建议先用测试订单验证效果。"
+      />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <section className="section-panel">

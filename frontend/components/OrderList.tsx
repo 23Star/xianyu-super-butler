@@ -9,7 +9,7 @@ import { EmptyState, PageHeader, PageTabs } from './ui';
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
   const styles = {
     processing: 'bg-yellow-100 text-yellow-800',
-    pending_ship: 'bg-[#FFE815] text-black',
+    pending_ship: 'bg-[#ffe100] text-black',
     shipped: 'bg-blue-100 text-blue-700',
     completed: 'bg-green-100 text-green-700',
     cancelled: 'bg-gray-100 text-gray-500',
@@ -557,7 +557,7 @@ const OrderList: React.FC = () => {
           />
           <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
             <div className="group relative w-full md:w-auto">
-               <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#FFE815] transition-colors" />
+               <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-[#ffe100] transition-colors" />
                <input
                    type="text"
                    placeholder="搜索订单号/商品/买家..."
@@ -1201,7 +1201,7 @@ const OrderList: React.FC = () => {
                       onClick={() => setRateValue(value)}
                       className={`rounded-md border px-3 py-2 text-sm font-bold transition-colors ${
                         rateValue === value
-                          ? 'border-[#FFE815] bg-[#FFE815] text-black'
+                          ? 'border-[#ffe100] bg-[#ffe100] text-black'
                           : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
                       }`}
                     >
@@ -1219,7 +1219,7 @@ const OrderList: React.FC = () => {
                   rows={3}
                   maxLength={200}
                   placeholder="例如：交易顺利，感谢支持！"
-                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-[#FFE815] focus:outline-none"
+                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-[#ffe100] focus:outline-none"
                 />
                 <p className="mt-1 text-right text-xs text-gray-400">{rateFeedback.length}/200</p>
               </div>

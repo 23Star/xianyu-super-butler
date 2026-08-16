@@ -77,27 +77,34 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         aria-label="关闭导航"
       />
     )}
-    <aside className={`fixed left-0 top-0 z-40 flex h-screen w-[248px] flex-col border-r border-[#e4e6e8] bg-white transition-transform lg:translate-x-0 ${
+    <aside className={`fixed left-0 top-0 z-40 flex h-screen w-[248px] flex-col bg-white transition-transform lg:translate-x-0 ${
       mobileOpen ? 'translate-x-0' : '-translate-x-full'
-    }`}>
+    }`} style={{ borderRight: '1px solid var(--border)' }}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex h-[72px] shrink-0 items-center gap-3 border-b border-[#eef0f2] px-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e4cf00] bg-[#ffe100]">
-            <span className="text-lg font-black text-[#1f2328]">闲</span>
+        {/* 品牌区：黄色渐变徽标 + 圆角，作为整站视觉锚点 */}
+        <div className="flex h-[76px] shrink-0 items-center gap-3 px-5">
+          <div
+            className="flex h-10 w-10 items-center justify-center rounded-xl"
+            style={{
+              background: 'linear-gradient(140deg, var(--brand-300), var(--brand))',
+              boxShadow: 'var(--shadow-brand)',
+            }}
+          >
+            <span className="text-lg font-black text-[#2a2416]">闲</span>
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-base font-extrabold text-[#1f2328]">闲鱼智控</p>
-            <p className="mt-0.5 text-[11px] font-medium text-[#939aa2]">运营工作台</p>
+            <p className="truncate text-base font-extrabold text-[#2a2416]">闲鱼超级管家</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[#a89e83]">运营工作台</p>
           </div>
-          <button type="button" onClick={onMobileClose} className="p-2 rounded-md hover:bg-gray-100 lg:hidden" aria-label="关闭导航">
+          <button type="button" onClick={onMobileClose} className="rounded-full p-2 hover:bg-[#fff9e8] lg:hidden" aria-label="关闭导航">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
           {menuGroups.map((group, groupIndex) => (
             <div key={group.label} className={groupIndex === 0 ? '' : 'mt-5'}>
-              <p className="mb-1.5 px-3 text-[11px] font-bold text-[#9aa1a8]">{group.label}</p>
+              <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-wide text-[#b8ac8e]">{group.label}</p>
               <div className="space-y-1">
                 {group.items.map((item) => {
                   const Icon = item.icon;
@@ -107,13 +114,17 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
                       key={item.id}
                       type="button"
                       onClick={() => setActiveTab(item.id)}
-                      className={`group flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-left transition-colors ${
+                      className={`group flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left transition-all ${
                         isActive
-                          ? 'bg-[#ffe100] font-bold text-[#1f2328]'
-                          : 'font-medium text-[#60676f] hover:bg-[#f4f5f6] hover:text-[#1f2328]'
+                          ? 'font-bold text-[#2a2416]'
+                          : 'font-medium text-[#6e654f] hover:bg-[#fffdf0] hover:text-[#2a2416]'
                       }`}
+                      style={isActive ? {
+                        background: 'linear-gradient(135deg, var(--brand-300), var(--brand))',
+                        boxShadow: 'var(--shadow-brand)',
+                      } : undefined}
                     >
-                      <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-[#1f2328]' : 'text-[#8d949c] group-hover:text-[#60676f]'}`} />
+                      <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-[#2a2416]' : 'text-[#a89e83] group-hover:text-[#6e654f]'}`} />
                       <span className="truncate text-sm">{item.label}</span>
                     </button>
                   );
@@ -124,14 +135,14 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         </nav>
       </div>
 
-      <div className="shrink-0 border-t border-[#eef0f2] p-3">
-        <button 
+      <div className="shrink-0 p-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <button
           type="button"
           onClick={onLogout}
-          className="flex min-h-10 w-full items-center gap-3 rounded-md px-3 text-[#6d747c] transition-colors hover:bg-red-50 hover:text-red-600"
+          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-[#6e654f] transition-colors hover:bg-[#fff0f0] hover:text-[#e03131]"
         >
           <LogOut className="h-[18px] w-[18px]" />
-          <span className="text-sm">退出登录</span>
+          <span className="text-sm font-medium">退出登录</span>
         </button>
       </div>
     </aside>

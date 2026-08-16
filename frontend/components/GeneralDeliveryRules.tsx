@@ -377,7 +377,7 @@ const GeneralDeliveryRules: React.FC<GeneralDeliveryRulesProps> = ({
                   aria-checked={form.enabled}
                   onClick={() => setForm(current => ({ ...current, enabled: !current.enabled }))}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full ${
-                    form.enabled ? 'bg-green-500' : 'bg-gray-300'
+                    form.enabled ? 'bg-[#ffe100]' : 'bg-[#e8dcbc]'
                   }`}
                   aria-label="启用通用发货规则"
                 >

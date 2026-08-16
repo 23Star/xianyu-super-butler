@@ -113,20 +113,24 @@ export const SectionHeader: React.FC<SectionHeaderProps> = ({
 
 interface NoticeBannerProps {
   type: 'success' | 'error' | 'warning' | 'info';
-  message: string;
+  message?: string;
   onClose?: () => void;
+  children?: React.ReactNode;
 }
 
 export const NoticeBanner: React.FC<NoticeBannerProps> = ({
   type,
   message,
   onClose,
+  children,
 }) => {
   const Icon = type === 'success' ? CheckCircle2 : AlertTriangle;
   return (
     <div className={`notice-banner notice-banner--${type}`} role="status">
       <Icon className="h-4 w-4 shrink-0" />
-      <span className="min-w-0 flex-1">{message}</span>
+      {/* 同时接受 message 与 children：只认 message 时，写成子元素的文案会被
+          静默丢掉，页面上只剩一个感叹号图标，而 TS 不会报错（FC 隐式允许 children） */}
+      <span className="min-w-0 flex-1">{message ?? children}</span>
       {onClose && (
         <button type="button" onClick={onClose} aria-label="关闭提示">
           <X className="h-4 w-4" />

@@ -56,41 +56,33 @@ export const changePassword = async (currentPassword: string, newPassword: strin
 
 // Accounts
 export const getAccountDetails = async (): Promise<AccountDetail[]> => {
+  // 只发一次请求。原实现拿到账号列表后，再逐个请求 /cookie/{id}/details 补
+  // username/password/show_browser —— 而列表接口内部本来就查了同一份详情，
+  // 等于对同一份数据做 N+1。页面上有 7 处组件各自调用本函数，账号一多首屏
+  // 就被这些重复请求拖慢；现在列表接口直接返回这几个字段。
   const data = await get<any[]>('/cookies/details');
-  return Promise.all(data.map(async item => {
-    let details: any = {};
-    try {
-      details = await get(`/cookie/${item.id}/details`);
-    } catch {
-      // 详情加载失败时保留基础账号数据，避免整页不可用。
-    }
-
-    return {
-      ...details,
-      id: item.id,
-      value: item.value,
-      cookie: item.value,
-      enabled: item.enabled,
-      auto_confirm: item.auto_confirm,
-      remark: item.remark,
-      note: item.remark,
-      pause_duration: item.pause_duration,
-      username: details.username,
-      login_password: details.password || details.login_password,
-      show_browser: details.show_browser,
-      nickname: item.nickname || details.nickname || item.remark || details.username || `账号 ${item.id.substring(0, 6)}`,
-      avatar_url: item.avatar_url || details.avatar_url,
-      location: item.location || details.location,
-      bio: item.bio || details.bio,
-      followers: item.followers ?? details.followers,
-      following: item.following ?? details.following,
-      profile_updated_at: item.profile_updated_at || details.profile_updated_at,
-      // runtime_state 只有 /cookies/details 返回，而 details 展开在前会把它盖掉，
-      // 漏掉这一行会让账号即便正常收发心跳也永远显示「未运行」+ 灰色状态点。
-      runtime_state: item.runtime_state,
-      ai_enabled: false,
-    };
-  }));
+  return data.map(item => ({
+    id: item.id,
+    value: item.value,
+    cookie: item.value,
+    enabled: item.enabled,
+    auto_confirm: item.auto_confirm,
+    remark: item.remark,
+    note: item.remark,
+    pause_duration: item.pause_duration,
+    username: item.username,
+    login_password: item.login_password,
+    show_browser: item.show_browser,
+    nickname: item.nickname || item.remark || item.username || `账号 ${item.id.substring(0, 6)}`,
+    avatar_url: item.avatar_url,
+    location: item.location,
+    bio: item.bio,
+    followers: item.followers,
+    following: item.following,
+    profile_updated_at: item.profile_updated_at,
+    runtime_state: item.runtime_state,
+    ai_enabled: false,
+  })) as AccountDetail[];
 };
 
 export const refreshAccountProfile = async (id: string): Promise<{ success: boolean; profile?: Partial<AccountDetail> }> => {
@@ -314,11 +306,23 @@ export const getRiskControlStatus = async (): Promise<{
     reason: string;
     verification_type: 'none' | 'slider' | 'face' | 'qr' | 'risk_control';
     verification_message: string;
+    verification_url?: string;
     latest_event: string;
     latest_event_at?: string;
   }>;
 }> => {
   return get('/api/risk-control/status');
+};
+
+// 实时取一个新鲜的验证链接。punish 链接的 x5secdata 只能用一次、约 1 小时失效，
+// 直接用风控日志里的历史链接打开只会看到「抱歉，页面访问出现了问题」。
+export const requestFreshCaptchaUrl = async (cookieId: string): Promise<{
+  success: boolean;
+  need_verify: boolean;
+  verification_url?: string;
+  message: string;
+}> => {
+  return post(`/api/risk-control/${encodeURIComponent(cookieId)}/fresh-captcha-url`);
 };
 
 export const startManualCaptchaSession = async (

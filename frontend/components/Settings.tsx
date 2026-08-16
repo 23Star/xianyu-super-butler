@@ -661,9 +661,10 @@ const Settings: React.FC = () => {
             </label>
 
             <div className="lg:col-span-2">
-              <NoticeBanner type="info">
-                常用兼容服务包括阿里云 DashScope 和 OpenAI。API Key 仅保存在当前系统配置中。
-              </NoticeBanner>
+              <NoticeBanner
+                type="info"
+                message="常用兼容服务包括阿里云 DashScope 和 OpenAI。API Key 仅保存在当前系统配置中。"
+              />
             </div>
           </div>
         </section>

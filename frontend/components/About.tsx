@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Info, Megaphone, RefreshCw, Download, ExternalLink, CheckCircle2, Globe } from 'lucide-react';
+import { Info, Megaphone, RefreshCw, Download, ExternalLink, CheckCircle2, Globe, Github, Mail } from 'lucide-react';
 import { getAnnouncement } from '../services/api';
 import { AnnouncementPayload } from '../types';
 import { EmptyState, PageHeader } from './ui';
@@ -114,18 +114,45 @@ const About: React.FC = () => {
           </p>
         )}
 
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-gray-100 pt-4">
-          <span className="text-xs font-semibold text-gray-500">官网</span>
-          <a
-            href="https://xy.corleom.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-[#8c7900] hover:underline"
-          >
-            <Globe className="h-3.5 w-3.5" />
-            xy.corleom.com
-            <ExternalLink className="h-3 w-3" />
-          </a>
+        <div className="mt-4 grid gap-3 border-t border-gray-100 pt-4 sm:grid-cols-3">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-gray-500">官网</span>
+            <a
+              href="https://xy.corleom.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-w-0 items-center gap-1.5 text-xs font-bold text-[#8c7900] hover:underline"
+            >
+              <Globe className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">xy.corleom.com</span>
+              <ExternalLink className="h-3 w-3 shrink-0" />
+            </a>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-gray-500">开源仓库</span>
+            <a
+              href="https://github.com/23Star/xianyu-super-butler"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-w-0 items-center gap-1.5 text-xs font-bold text-[#8c7900] hover:underline"
+            >
+              <Github className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">23Star/xianyu-super-butler</span>
+              <ExternalLink className="h-3 w-3 shrink-0" />
+            </a>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-gray-500">联系邮箱</span>
+            <a
+              href="mailto:admin@corleom.com"
+              className="inline-flex min-w-0 items-center gap-1.5 text-xs font-bold text-[#8c7900] hover:underline"
+            >
+              <Mail className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">admin@corleom.com</span>
+            </a>
+          </div>
         </div>
       </section>
 
