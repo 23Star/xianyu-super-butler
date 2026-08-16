@@ -368,13 +368,30 @@ export const requireOrderFlower = async (orderId: string): Promise<any> => {
   return post(`/api/orders/${orderId}/require-flower`);
 };
 
-// 买家互动开关状态，用于决定订单页是否展示评价/求花入口
+// 买家互动开关状态。开关按账号存，accounts 是逐账号的映射；
+// 顶层两个布尔表示「是否有任意账号开启」，用于决定整块入口要不要出现。
+export interface BuyerInteractionFlags {
+  auto_rate_enabled: boolean;
+  auto_flower_enabled: boolean;
+  /** 确认收货后自动给买家发一条致谢文本 */
+  auto_thanks_enabled: boolean;
+}
+
 export const getSellerFeatureFlags = async (): Promise<{
+  accounts?: Record<string, BuyerInteractionFlags>;
   auto_rate_enabled: boolean;
   auto_flower_enabled: boolean;
   auto_rate_template?: string;
 }> => {
   return get('/api/seller-features');
+};
+
+// 按账号更新评价/求花开关
+export const updateSellerFeatureFlags = async (
+  cookieId: string,
+  payload: Partial<BuyerInteractionFlags>,
+): Promise<BuyerInteractionFlags> => {
+  return put(`/api/seller-features/${cookieId}`, payload);
 };
 
 // 评价提交后不可撤销，需先在设置中开启

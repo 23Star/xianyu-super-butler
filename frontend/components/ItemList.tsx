@@ -244,9 +244,25 @@ const ItemList: React.FC = () => {
     [deliveryConfigs],
   );
 
-  const visibleItems = useMemo(
+  // 下架商品默认藏起来：它们和在售的混在一起会让人误以为还能卖，
+  // 但不能直接删 —— 专属发货配置挂在商品上，重新上架还要接着用。
+  const [showOffShelf, setShowOffShelf] = useState(false);
+
+  const isOffShelf = (item: Item) => item.listing_status === 'off_shelf';
+
+  const accountScopedItems = useMemo(
     () => (listAccountFilter ? items.filter(item => item.cookie_id === listAccountFilter) : items),
     [items, listAccountFilter],
+  );
+
+  const offShelfCount = useMemo(
+    () => accountScopedItems.filter(isOffShelf).length,
+    [accountScopedItems],
+  );
+
+  const visibleItems = useMemo(
+    () => (showOffShelf ? accountScopedItems : accountScopedItems.filter(item => !isOffShelf(item))),
+    [accountScopedItems, showOffShelf],
   );
 
   // 商品数据由后端一次性返回，这里做客户端分页：商品多时一屏几十行难以浏览
@@ -709,6 +725,20 @@ const ItemList: React.FC = () => {
               <span className="text-xs text-gray-500">
                 已配置专属发货 {configuredItemCount} 件
               </span>
+              {offShelfCount > 0 && (
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 cursor-pointer accent-brand-500"
+                    checked={showOffShelf}
+                    onChange={event => {
+                      setShowOffShelf(event.target.checked);
+                      setPage(1);
+                    }}
+                  />
+                  显示已下架（{offShelfCount}）
+                </label>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -799,9 +829,23 @@ const ItemList: React.FC = () => {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex min-w-0 flex-wrap items-start gap-2">
-                            <h3 className="min-w-0 flex-1 text-sm font-bold leading-5 text-gray-900">
+                            <h3 className={`min-w-0 flex-1 text-sm font-bold leading-5 ${
+                              isOffShelf(item) ? 'text-gray-400 line-through' : 'text-gray-900'
+                            }`}>
                               {item.item_title || '未命名商品'}
                             </h3>
+                            {isOffShelf(item) && (
+                              <span
+                                className="status-badge shrink-0 bg-gray-100 text-gray-500"
+                                title={
+                                  item.last_seen_at
+                                    ? `最后一次被闲鱼返回：${item.last_seen_at}`
+                                    : '闲鱼商品列表已不再返回这件商品'
+                                }
+                              >
+                                已下架
+                              </span>
+                            )}
                             <span className={`status-badge shrink-0 ${statusClass}`}>
                               {statusText}
                             </span>

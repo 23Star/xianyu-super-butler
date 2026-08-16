@@ -145,6 +145,11 @@ export interface Item {
   item_category?: string;
   is_multi_spec?: number | boolean;
   multi_quantity_delivery?: number | boolean;
+  /** 'on_sale' | 'off_shelf'：闲鱼接口是否还返回这件商品。
+   *  同步只做 upsert，下架或删除的商品会留在库里，靠这个字段区分。 */
+  listing_status?: string;
+  /** 最后一次被闲鱼接口返回的时间，用于在误判时提供依据。 */
+  last_seen_at?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -511,6 +516,10 @@ export interface SystemSettings {
   auto_rate_enabled?: boolean;
   // 订单页评价框的预填文案，避免每单重复手打
   auto_rate_template?: string;
+  /** 确认收货致谢文案，全账号共用 */
+  auto_thanks_template?: string;
+  /** 买家互动兜底轮询间隔（秒）。确认收货已由消息事件即时触发，这里只是兜底。 */
+  buyer_interaction_interval?: string | number;
   auto_flower_enabled?: boolean;
   // 公告与更新：地址存为字符串，开关也用字符串以复用通用设置接口
   announcement_source_url?: string;

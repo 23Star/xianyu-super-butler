@@ -373,6 +373,38 @@ a:focus-visible {
   line-height: 1.5;
 }
 
+/* 紧凑变体：订单页是 5 张纯计数卡，用默认尺寸时 3 列排成 3+2，
+   第二行空一格且整块占掉近半屏。这里改成一行 5 张并压扁高度。
+   概览页仍用默认的 3×2，两者互不影响。 */
+.metric-grid--compact {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metric-grid--compact .metric-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+}
+
+.metric-grid--compact .metric-card__label {
+  font-size: 11px;
+}
+
+.metric-grid--compact .metric-card__value {
+  margin-top: 2px;
+  font-size: 20px;
+}
+
+.metric-grid--compact .metric-card__meta {
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.4;
+  /* 说明文字只占一行，超出省略 —— 换行会把卡片高度顶回去 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -755,6 +787,11 @@ aside nav:hover::-webkit-scrollbar-thumb {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  /* 紧凑卡窄屏放不下 5 列，退到 3 列（5 张排成 3+2） */
+  .metric-grid--compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 639px) {
@@ -821,8 +858,18 @@ aside nav:hover::-webkit-scrollbar-thumb {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* 手机上紧凑卡保持 2 列，不跟着退成单列 —— 它们只有一个数字，
+     单列会白白拉长页面 */
+  .metric-grid--compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .metric-card__value {
     font-size: 22px;
+  }
+
+  .metric-grid--compact .metric-card__value {
+    font-size: 18px;
   }
 }
 

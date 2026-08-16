@@ -494,7 +494,7 @@ const OrderList: React.FC = () => {
         )}
       />
 
-      <div className="metric-grid">
+      <div className="metric-grid metric-grid--compact">
         <div className="metric-card">
           <p className="metric-card__label">订单总数</p>
           <p className="metric-card__value">{totalCount}</p>
