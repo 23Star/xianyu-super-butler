@@ -4,6 +4,7 @@
 // 全站有 395 处 rounded-md、130+ 处 bg-gray-*，逐处替换既容易漏又难回退。
 // 把 md 圆角调大、把 gray 色阶换成暖调，所有组件一次到位。
 export default {
+  darkMode: 'class',
   content: [
     "./index.html",
     "./*.{js,ts,jsx,tsx}",
@@ -29,16 +30,16 @@ export default {
         // 中性色阶：只带极轻微的暖调，避免和黄色强调元素冲突。
         // 不做成黄色系 —— 全站 130+ 处 bg-gray-* 一旦变黄会让整页发闷。
         gray: {
-          50: '#FAFAF8',
-          100: '#F5F4F0',
-          200: '#EBE9E3',
-          300: '#DDD9D0',
-          400: '#B0AAA0',
-          500: '#85807A',
-          600: '#66625C',
-          700: '#4A4742',
-          800: '#33302C',
-          900: '#22201D',
+          50: 'rgb(var(--gray-50) / <alpha-value>)',
+          100: 'rgb(var(--gray-100) / <alpha-value>)',
+          200: 'rgb(var(--gray-200) / <alpha-value>)',
+          300: 'rgb(var(--gray-300) / <alpha-value>)',
+          400: 'rgb(var(--gray-400) / <alpha-value>)',
+          500: 'rgb(var(--gray-500) / <alpha-value>)',
+          600: 'rgb(var(--gray-600) / <alpha-value>)',
+          700: 'rgb(var(--gray-700) / <alpha-value>)',
+          800: 'rgb(var(--gray-800) / <alpha-value>)',
+          900: 'rgb(var(--gray-900) / <alpha-value>)',
         },
       },
       borderRadius: {

@@ -471,7 +471,7 @@ const ProductAutomation: React.FC = () => {
                                 className="h-full w-full object-cover"
                                 referrerPolicy="no-referrer"
                               />
-                            ) : <Archive className="m-3 h-6 w-6 text-gray-300" />}
+                            ) : <Archive className="m-3 h-6 w-6 text-gray-400" />}
                           </div>
                           <div className="min-w-0">
                             <div className="max-w-72 truncate font-bold text-gray-900">{material.title}</div>

@@ -36,7 +36,7 @@ const StatCard: React.FC<{ title: string; value: string | number; icon: React.El
   <div className="metric-card">
     <div className="flex items-start justify-between gap-3">
       <span className={`flex h-9 w-9 items-center justify-center rounded-md ${colorClass}`}>
-        <Icon className="h-4 w-4 text-white" />
+        <Icon className="h-4 w-4 text-[var(--brand-ink)]" />
       </span>
       {trend && <span className="status-badge status-badge-success flex items-center gap-1">
         <TrendingUp className="w-3 h-3" /> {trend}
@@ -539,32 +539,32 @@ const Dashboard: React.FC = () => {
                 barGap={6}
                 barCategoryGap="28%"
               >
-                <CartesianGrid vertical={false} stroke="#ebe9e3" strokeDasharray="4 4" />
+                <CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="4 4" />
                 <XAxis
                   dataKey="name"
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#66625c', fontSize: 12, fontWeight: 600}}
+                  tick={{fill: 'var(--text-muted)', fontSize: 12, fontWeight: 600}}
                   dy={10}
                   interval="preserveStartEnd"
                 />
                 <YAxis
                   axisLine={false}
                   tickLine={false}
-                  tick={{fill: '#b0aaa0', fontSize: 12, fontWeight: 500}}
+                  tick={{fill: 'var(--text-soft)', fontSize: 12, fontWeight: 500}}
                   tickFormatter={(value) => `¥${value}`}
                 />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#ffffff',
+                    backgroundColor: 'var(--surface)',
                     borderRadius: '14px',
-                    border: '1px solid #ebe9e3',
-                    boxShadow: '0 8px 24px rgba(122, 96, 20, 0.12)',
+                    border: '1px solid var(--border)',
+                    boxShadow: 'var(--shadow-md)',
                     padding: '10px 14px'
                   }}
-                  itemStyle={{ color: '#2a2416', fontWeight: 600 }}
-                  labelStyle={{ color: '#66625c', fontWeight: 600, marginBottom: 4 }}
-                  cursor={{ fill: 'rgba(255, 225, 0, 0.12)', radius: 8 }}
+                  itemStyle={{ color: 'var(--text)', fontWeight: 600 }}
+                  labelStyle={{ color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4 }}
+                  cursor={{ fill: 'var(--chart-cursor)', radius: 8 }}
                   formatter={(value, name) => {
                     const label = name === 'confirmed' ? '已到账' : '成交额';
                     return [`¥${Number(value).toFixed(2)}`, label];
@@ -576,7 +576,7 @@ const Dashboard: React.FC = () => {
                   iconType="circle"
                   iconSize={8}
                   formatter={(value) => (
-                    <span style={{ color: '#66625c', fontSize: 12 }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
                       {value === 'confirmed' ? '已到账' : '成交额'}
                     </span>
                   )}
@@ -602,30 +602,32 @@ const Dashboard: React.FC = () => {
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={productSalesData} layout="vertical" barCategoryGap="30%">
-                  <CartesianGrid strokeDasharray="4 4" horizontal={true} vertical={false} stroke="#ebe9e3" />
+                  <CartesianGrid strokeDasharray="4 4" horizontal={true} vertical={false} stroke="var(--chart-grid)" />
                   <XAxis
                     type="number"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#b0aaa0', fontSize: 12 }}
+                    tick={{ fill: 'var(--text-soft)', fontSize: 12 }}
                   />
                   <YAxis
                     type="category"
                     dataKey="name"
                     axisLine={false}
                     tickLine={false}
-                    tick={{ fill: '#66625c', fontSize: 12 }}
+                    tick={{ fill: 'var(--text-muted)', fontSize: 12 }}
                     width={100}
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: '#fff',
-                      border: '1px solid #ebe9e3',
+                      backgroundColor: 'var(--surface)',
+                      border: '1px solid var(--border)',
                       borderRadius: '14px',
-                      boxShadow: '0 8px 24px rgba(122, 96, 20, 0.12)',
+                      boxShadow: 'var(--shadow-md)',
                       padding: '10px 14px'
                     }}
-                    cursor={{ fill: 'rgba(255, 225, 0, 0.12)', radius: 8 }}
+                    itemStyle={{ color: 'var(--text)', fontWeight: 600 }}
+                    labelStyle={{ color: 'var(--text-muted)', fontWeight: 600 }}
+                    cursor={{ fill: 'var(--chart-cursor)', radius: 8 }}
                   />
                   {/* 同上：商品只有一两个时不限宽会变成超粗横条 */}
                   <Bar dataKey="sales" fill="#ffd426" radius={[0, 8, 8, 0]} maxBarSize={28} />
@@ -666,25 +668,26 @@ const Dashboard: React.FC = () => {
                     activeShape={{ outerRadius: 98 }}
                   >
                     {sourceDataData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} stroke="#ffffff" strokeWidth={2} />
+                      <Cell key={`cell-${index}`} fill={entry.color} stroke="var(--surface)" strokeWidth={2} />
                     ))}
                   </Pie>
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e9e7e2',
+                      backgroundColor: 'var(--surface)',
+                      border: '1px solid var(--border)',
                       borderRadius: '14px',
-                      boxShadow: '0 8px 24px rgba(35, 33, 30, 0.10)',
+                      boxShadow: 'var(--shadow-md)',
                       padding: '10px 14px'
                     }}
-                    itemStyle={{ color: '#23211e', fontWeight: 600 }}
+                    itemStyle={{ color: 'var(--text)', fontWeight: 600 }}
+                    labelStyle={{ color: 'var(--text-muted)', fontWeight: 600 }}
                     formatter={(value, name) => [`${value} 单`, name]}
                   />
                   <Legend
                     verticalAlign="bottom"
                     height={36}
                     iconType="circle"
-                    formatter={(value) => <span style={{ color: '#6b6862', fontWeight: 500 }}>{value}</span>}
+                    formatter={(value) => <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>{value}</span>}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -746,7 +749,7 @@ const Dashboard: React.FC = () => {
                         <td>
                           <div className="flex items-center gap-3">
                             <div className="h-11 w-11 flex-shrink-0 overflow-hidden rounded-md border border-gray-100 bg-gray-100">
-                              <PackageCheck className="w-full h-full text-gray-300 p-2" />
+                              <PackageCheck className="w-full h-full text-gray-400 p-2" />
                             </div>
                             <div className="min-w-0">
                               <div className="font-bold text-gray-900 text-sm line-clamp-1">
@@ -810,18 +813,19 @@ const Dashboard: React.FC = () => {
                       activeShape={{ outerRadius: 108 }}
                     >
                       {categoryDataData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} stroke="#ffffff" strokeWidth={2} />
+                        <Cell key={`cell-${index}`} fill={entry.color || COLORS[index % COLORS.length]} stroke="var(--surface)" strokeWidth={2} />
                       ))}
                     </Pie>
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: '#fff',
-                        border: '1px solid #e9e7e2',
+                        backgroundColor: 'var(--surface)',
+                        border: '1px solid var(--border)',
                         borderRadius: '14px',
-                        boxShadow: '0 8px 24px rgba(35, 33, 30, 0.10)',
+                        boxShadow: 'var(--shadow-md)',
                         padding: '10px 14px'
                       }}
-                      itemStyle={{ color: '#23211e', fontWeight: 600 }}
+                      itemStyle={{ color: 'var(--text)', fontWeight: 600 }}
+                      labelStyle={{ color: 'var(--text-muted)', fontWeight: 600 }}
                       formatter={(value: number) => `¥${value.toLocaleString()}`}
                     />
                   </PieChart>

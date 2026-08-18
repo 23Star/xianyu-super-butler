@@ -591,7 +591,7 @@ const OrderList: React.FC = () => {
                         {order.item_image ? (
                             <img src={order.item_image} alt="" className="w-full h-full object-cover" />
                         ) : (
-                            <div className="w-full h-full flex items-center justify-center text-gray-300"><PackageCheck /></div>
+                            <div className="w-full h-full flex items-center justify-center text-gray-400"><PackageCheck /></div>
                         )}
                       </div>
                       <div className="min-w-0">

@@ -220,7 +220,7 @@ const AIReply: React.FC = () => {
                         href={FREE_TOKEN_HOME}
                         target="_blank"
                         rel="noreferrer noopener"
-                        className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-600"
+                        className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-brand-ink hover:bg-brand-600"
                       >
                         免费领取 token
                         <ExternalLink className="h-3.5 w-3.5" />
