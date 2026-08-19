@@ -133,7 +133,7 @@ const ItemImage: React.FC<{ item: Item }> = ({ item }) => {
 
   if (!src || failed) {
     return (
-      <div className="flex h-full w-full items-center justify-center text-gray-300">
+      <div className="flex h-full w-full items-center justify-center text-gray-400">
         <Box className="h-8 w-8" />
       </div>
     );

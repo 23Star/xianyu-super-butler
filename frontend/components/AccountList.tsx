@@ -644,7 +644,7 @@ const AccountList: React.FC = () => {
                     <span className="flex items-center gap-1.5">
                       <Users className="h-4 w-4 text-gray-400" />
                       {account.followers?.toLocaleString() ?? '--'} 粉丝
-                      <span className="text-gray-300">/</span>
+                      <span className="text-gray-400">/</span>
                       {account.following?.toLocaleString() ?? '--'} 关注
                     </span>
                   )}
@@ -786,7 +786,7 @@ const AccountList: React.FC = () => {
 
                   <div className="modal-body py-5">
                       <div className="text-center">
-                          <div className="relative mx-auto flex h-60 w-60 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50">
+                          <div className="media-light-surface relative mx-auto flex h-60 w-60 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50">
                               {qrStatus === 'loading' && <Loader2 className="h-9 w-9 animate-spin text-amber-500" />}
                               {(qrStatus === 'waiting' || qrStatus === 'scanned') && (
                                   <img src={qrCodeUrl} alt="闲鱼登录二维码" className="h-full w-full p-2" />

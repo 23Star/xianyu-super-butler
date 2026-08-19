@@ -16,6 +16,7 @@ import {
   X,
   Info,
 } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
 
 interface SidebarProps {
   activeTab: string;
@@ -77,7 +78,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         aria-label="关闭导航"
       />
     )}
-    <aside className={`fixed left-0 top-0 z-40 flex h-screen w-[248px] flex-col bg-white transition-transform lg:translate-x-0 ${
+    <aside className={`fixed left-0 top-0 z-40 flex h-screen w-[248px] flex-col bg-[var(--surface)] transition-transform lg:translate-x-0 ${
       mobileOpen ? 'translate-x-0' : '-translate-x-full'
     }`} style={{ borderRight: '1px solid var(--border)' }}>
       <div className="flex min-h-0 flex-1 flex-col">
@@ -93,10 +94,10 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
             <span className="text-lg font-black text-[#2a2416]">闲</span>
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-base font-extrabold text-[#2a2416]">闲鱼超级管家</p>
-            <p className="mt-0.5 text-[11px] font-medium text-[#a89e83]">运营工作台</p>
+            <p className="truncate text-base font-extrabold text-[var(--text)]">闲鱼超级管家</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[var(--text-soft)]">运营工作台</p>
           </div>
-          <button type="button" onClick={onMobileClose} className="rounded-full p-2 hover:bg-[#fff9e8] lg:hidden" aria-label="关闭导航">
+          <button type="button" onClick={onMobileClose} className="rounded-full p-2 hover:bg-[var(--surface-hover)] lg:hidden" aria-label="关闭导航">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -104,7 +105,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
           {menuGroups.map((group, groupIndex) => (
             <div key={group.label} className={groupIndex === 0 ? '' : 'mt-5'}>
-              <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-wide text-[#b8ac8e]">{group.label}</p>
+              <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-wide text-[var(--text-soft)]">{group.label}</p>
               <div className="space-y-1">
                 {group.items.map((item) => {
                   const Icon = item.icon;
@@ -117,14 +118,14 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
                       className={`group flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left transition-all ${
                         isActive
                           ? 'font-bold text-[#2a2416]'
-                          : 'font-medium text-[#6e654f] hover:bg-[#fffdf0] hover:text-[#2a2416]'
+                          : 'font-medium text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
                       }`}
                       style={isActive ? {
                         background: 'linear-gradient(135deg, var(--brand-300), var(--brand))',
                         boxShadow: 'var(--shadow-brand)',
                       } : undefined}
                     >
-                      <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-[#2a2416]' : 'text-[#a89e83] group-hover:text-[#6e654f]'}`} />
+                      <Icon className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-[#2a2416]' : 'text-[var(--text-soft)] group-hover:text-[var(--text-muted)]'}`} />
                       <span className="truncate text-sm">{item.label}</span>
                     </button>
                   );
@@ -136,10 +137,11 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
       </div>
 
       <div className="shrink-0 p-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <ThemeToggle className="mb-2" />
         <button
           type="button"
           onClick={onLogout}
-          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-[#6e654f] transition-colors hover:bg-[#fff0f0] hover:text-[#e03131]"
+          className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-[var(--text-muted)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
         >
           <LogOut className="h-[18px] w-[18px]" />
           <span className="text-sm font-medium">退出登录</span>

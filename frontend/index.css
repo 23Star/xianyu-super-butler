@@ -8,7 +8,8 @@
   padding: 0;
 }
 
-:root {
+:root,
+:root[data-theme='light'] {
   color-scheme: light;
 
   /* 牛皮纸白：极低饱和的暖白，比纯白柔和但不发黄。
@@ -25,7 +26,19 @@
 
   --text: #23211e;
   --text-muted: #6b6862;
-  --text-soft: #9c9892;
+  --text-soft: #76716a;
+
+  /* Tailwind 灰阶改由主题变量驱动：背景色从浅到深，文字色亦保留原有层级。 */
+  --gray-50: 250 250 248;
+  --gray-100: 245 244 240;
+  --gray-200: 235 233 227;
+  --gray-300: 221 217 208;
+  --gray-400: 118 113 106;
+  --gray-500: 107 104 98;
+  --gray-600: 102 98 92;
+  --gray-700: 74 71 66;
+  --gray-800: 51 48 44;
+  --gray-900: 34 32 29;
 
   /* 品牌黄色阶：从浅到深，供背景、描边、悬停、按下各层使用 */
   --brand-50: #fffdf0;
@@ -37,14 +50,21 @@
   --brand-active: #f5c800;
   --brand-ink: #2a2416;        /* 黄底之上的文字色 */
   --brand-soft: #fff9c9;
+  --brand-text: #806d00;
+  --focus-ring: #806d00;
+  --unread-badge: #dc2626;
 
-  --danger: #e03131;
+  --danger: #b42318;
+  --danger-ink: #b42318;
   --danger-soft: #fff0f0;
-  --success: #0f9d58;
+  --success: #0f704b;
+  --success-ink: #0f704b;
   --success-soft: #eefaf3;
-  --warning: #d98600;
+  --warning: #945800;
+  --warning-ink: #945800;
   --warning-soft: #fff7e6;
-  --info: #2f7dd1;
+  --info: #2a5f92;
+  --info-ink: #2a5f92;
   --info-soft: #f0f7ff;
 
   /* 圆角成体系：控件 10、卡片 16、面板 20、胶囊 999 */
@@ -59,11 +79,81 @@
   --shadow-md: 0 6px 20px rgba(35, 33, 30, 0.08);
   --shadow-lg: 0 16px 40px rgba(35, 33, 30, 0.12);
   --shadow-brand: 0 6px 18px rgba(255, 214, 0, 0.35);
+  --chart-grid: #ebe9e3;
+  --chart-cursor: rgba(35, 33, 30, 0.06);
+  --scrollbar-thumb: #d6d3cc;
+  --scrollbar-thumb-hover: #b9b4aa;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 暖黑而非纯黑，延续闲鱼黄的品牌气质，同时拉开三个表面层级。 */
+  --app-bg: #11110f;
+  --surface: #191916;
+  --surface-subtle: #20201c;
+  --surface-strong: #292820;
+  --surface-hover: #302e27;
+
+  --border: #37362f;
+  --border-strong: #504c40;
+  --border-brand: #d9bd19;
+
+  --text: #f5f2e8;
+  --text-muted: #c2bcae;
+  --text-soft: #aaa59b;
+
+  /* 反转灰阶的语义亮度：bg-gray-50 变暗，text-gray-900 自动变亮。 */
+  --gray-50: 32 32 28;
+  --gray-100: 41 40 34;
+  --gray-200: 56 53 45;
+  --gray-300: 77 72 60;
+  --gray-400: 170 165 155;
+  --gray-500: 174 167 153;
+  --gray-600: 194 188 174;
+  --gray-700: 215 210 198;
+  --gray-800: 234 230 220;
+  --gray-900: 245 242 232;
+
+  /* 黄色仍保持醒目；浅黄底在暗色中改为低亮度金棕底。 */
+  --brand-50: #292617;
+  --brand-100: #373116;
+  --brand-200: #4b4015;
+  --brand-soft: #393216;
+  --brand-text: #f2d85c;
+  --focus-ring: #f2d85c;
+
+  --danger: #ff8c8c;
+  --danger-ink: #ffaaaa;
+  --danger-soft: #3a1e1e;
+  --success: #75d9a3;
+  --success-ink: #8fe0b5;
+  --success-soft: #173528;
+  --warning: #ffd170;
+  --warning-ink: #f3d77c;
+  --warning-soft: #3a2d16;
+  --info: #91c9ff;
+  --info-ink: #9dccff;
+  --info-soft: #182e45;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.42);
+  --shadow-brand: 0 7px 22px rgba(221, 187, 0, 0.18);
+  --chart-grid: #403d36;
+  --chart-cursor: rgba(255, 255, 255, 0.06);
+  --scrollbar-thumb: #5b574e;
+  --scrollbar-thumb-hover: #d2bd38;
 }
 
 html, body, #root {
   height: 100%;
   width: 100%;
+}
+
+html {
+  background: var(--app-bg);
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 body {
@@ -87,8 +177,272 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
-  outline: 2px solid #bfaa00;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled,
+input[readonly] {
+  color: var(--text-muted);
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  box-shadow: 0 0 0 1000px var(--surface) inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
+/* 三态主题选择器：选中态同时使用描边、底色和字重，不只依赖颜色。 */
+.theme-picker {
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.theme-picker__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  padding: 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.theme-picker__status {
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.theme-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-strong);
+  padding: 3px;
+}
+
+.theme-switcher__option {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.theme-switcher__option:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.theme-switcher__option--active,
+.theme-switcher__option--active:hover {
+  border-color: var(--border-brand);
+  background: var(--brand-soft);
+  color: var(--brand-text);
+  font-weight: 750;
+}
+
+.theme-picker--compact .theme-switcher {
+  grid-template-columns: repeat(3, 36px);
+  border-radius: 11px;
+}
+
+.theme-picker--compact .theme-switcher__option {
+  width: 36px;
+  min-height: 36px;
+}
+
+/* 二维码必须保留纯白扫描底，不参与深色反转。 */
+.media-light-surface {
+  color-scheme: light;
+  background: #ffffff !important;
+  color: #23211e !important;
+}
+
+:root[data-theme='dark'] .media-light-surface .bg-white,
+:root[data-theme='dark'] .media-light-surface [class~='bg-white/95'] {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+
+:root[data-theme='dark'] .media-light-surface .bg-gray-50,
+:root[data-theme='dark'] .media-light-surface .bg-green-50 {
+  background-color: #fafaf8 !important;
+}
+
+:root[data-theme='dark'] .media-light-surface .text-gray-500 { color: #6b6862 !important; }
+:root[data-theme='dark'] .media-light-surface .text-gray-800 { color: #33302c !important; }
+:root[data-theme='dark'] .media-light-surface .text-green-700 { color: #0f704b !important; }
+:root[data-theme='dark'] .media-light-surface .text-amber-800 { color: #7a5100 !important; }
+:root[data-theme='dark'] .media-light-surface .text-blue-600 { color: #245f9d !important; }
+:root[data-theme='dark'] .media-light-surface .text-red-600 { color: #c92a2a !important; }
+
+/* Tailwind 的纯白与少量历史硬编码暖白，统一落入暗色表面层。 */
+:root[data-theme='dark'] .bg-white {
+  background-color: var(--surface);
+}
+
+:root[data-theme='dark'] [class~='bg-white/95'] {
+  background-color: rgba(25, 25, 22, 0.96);
+}
+
+:root[data-theme='dark'] [class~='bg-white/90'],
+:root[data-theme='dark'] [class~='bg-white/80'] {
+  background-color: rgba(25, 25, 22, 0.9);
+}
+
+:root[data-theme='dark'] [class~='bg-[#fffdf5]'] { background-color: var(--app-bg); }
+:root[data-theme='dark'] [class~='bg-[#fff9e8]'],
+:root[data-theme='dark'] [class~='bg-[#fffdf0]'],
+:root[data-theme='dark'] [class~='bg-[#f5edd6]'] { background-color: var(--surface-strong); }
+:root[data-theme='dark'] [class~='hover:bg-[#fff9e8]']:hover,
+:root[data-theme='dark'] [class~='hover:bg-[#fffdf5]']:hover,
+:root[data-theme='dark'] [class~='hover:bg-[#fffdf0]']:hover { background-color: var(--surface-hover); }
+:root[data-theme='dark'] [class~='disabled:bg-white']:disabled { background-color: var(--surface); }
+
+:root[data-theme='dark'] [class~='border-[#f0e6c8]'],
+:root[data-theme='dark'] [class~='border-[#e6d69a]'] { border-color: var(--border); }
+
+:root[data-theme='dark'] [class~='text-[#111]'],
+:root[data-theme='dark'] [class~='text-[#333]'],
+:root[data-theme='dark'] [class~='text-[#555]'],
+:root[data-theme='dark'] [class~='text-[#666]'] { color: var(--text); }
+:root[data-theme='dark'] [class~='text-[#777]'],
+:root[data-theme='dark'] [class~='text-[#888]'] { color: var(--text-muted); }
+:root[data-theme='dark'] [class~='text-[#999]'],
+:root[data-theme='dark'] [class~='text-[#aaa]'],
+:root[data-theme='dark'] [class~='text-[#a89e83]'],
+:root[data-theme='dark'] [class~='text-[#b8ac8e]'],
+:root[data-theme='dark'] [class~='text-[#d0d0d0]'] { color: var(--text-soft); }
+:root[data-theme='dark'] [class~='text-[#8c7900]'],
+:root[data-theme='dark'] [class~='text-[#8a6300]'],
+:root[data-theme='dark'] [class~='text-[#6b5200]'],
+:root[data-theme='dark'] [class~='text-[#d6b600]'] { color: var(--brand-text); }
+:root[data-theme='dark'] [class~='hover:text-black']:hover,
+:root[data-theme='dark'] [class~='hover:text-[#111]']:hover { color: var(--text); }
+
+/* 开关圆点与二维码一样需要维持亮色，才能和关闭态轨道拉开边界。 */
+:root[data-theme='dark'] button .rounded-full.bg-white {
+  background-color: #f4f1e8;
+}
+
+/* 状态色成对调整，避免暗色页面上出现刺眼浅色块或暗字。 */
+:root[data-theme='dark'] .bg-red-50,
+:root[data-theme='dark'] .bg-red-100 { background-color: var(--danger-soft); }
+:root[data-theme='dark'] .border-red-200 { border-color: #744040; }
+:root[data-theme='dark'] .text-red-500,
+:root[data-theme='dark'] .text-red-600,
+:root[data-theme='dark'] .text-red-700,
+:root[data-theme='dark'] .text-red-800,
+:root[data-theme='dark'] .text-red-900 { color: #ffaaaa; }
+
+:root[data-theme='dark'] .bg-green-50,
+:root[data-theme='dark'] .bg-green-100,
+:root[data-theme='dark'] .bg-emerald-50 { background-color: var(--success-soft); }
+:root[data-theme='dark'] .border-green-200,
+:root[data-theme='dark'] .border-emerald-200 { border-color: #356b50; }
+:root[data-theme='dark'] .text-green-600,
+:root[data-theme='dark'] .text-green-700,
+:root[data-theme='dark'] .text-green-800,
+:root[data-theme='dark'] .text-emerald-600,
+:root[data-theme='dark'] .text-emerald-700,
+:root[data-theme='dark'] .text-emerald-800 { color: #8fe0b5; }
+
+:root[data-theme='dark'] .bg-blue-50,
+:root[data-theme='dark'] .bg-blue-100 { background-color: var(--info-soft); }
+:root[data-theme='dark'] .border-blue-200 { border-color: #3c638c; }
+:root[data-theme='dark'] .text-blue-500,
+:root[data-theme='dark'] .text-blue-600,
+:root[data-theme='dark'] .text-blue-700,
+:root[data-theme='dark'] .text-blue-800,
+:root[data-theme='dark'] .text-blue-900 { color: #9dccff; }
+
+:root[data-theme='dark'] .bg-yellow-50,
+:root[data-theme='dark'] .bg-yellow-100,
+:root[data-theme='dark'] .bg-amber-50,
+:root[data-theme='dark'] .bg-amber-100,
+:root[data-theme='dark'] .bg-amber-200 { background-color: var(--warning-soft); }
+:root[data-theme='dark'] .border-amber-200 { border-color: #755f2d; }
+:root[data-theme='dark'] .text-yellow-600,
+:root[data-theme='dark'] .text-yellow-700,
+:root[data-theme='dark'] .text-yellow-800,
+:root[data-theme='dark'] .text-amber-500,
+:root[data-theme='dark'] .text-amber-600,
+:root[data-theme='dark'] .text-amber-700,
+:root[data-theme='dark'] .text-amber-800,
+:root[data-theme='dark'] .text-amber-900 { color: #f3d77c; }
+
+:root[data-theme='dark'] [class~='bg-[#fff8d1]'] { background-color: #393216; }
+:root[data-theme='dark'] [class~='bg-[#eef4ff]'] { background-color: #1c2d45; }
+:root[data-theme='dark'] [class~='bg-[#f0f7f3]'] { background-color: #193126; }
+:root[data-theme='dark'] [class~='bg-[#f7f2fb]'] { background-color: #2c2438; }
+:root[data-theme='dark'] [class~='text-[#3f5f8f]'] { color: #aacbff; }
+:root[data-theme='dark'] [class~='text-[#3f7a5c]'] { color: #9bd9b5; }
+:root[data-theme='dark'] [class~='text-[#6b5a8a]'] { color: #d1baf2; }
+
+:root[data-theme='dark'] [class~='hover:bg-red-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-red-100']:hover { background-color: var(--danger-soft); }
+:root[data-theme='dark'] [class~='hover:bg-green-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-green-100']:hover,
+:root[data-theme='dark'] [class~='hover:bg-emerald-50']:hover { background-color: var(--success-soft); }
+:root[data-theme='dark'] [class~='hover:bg-blue-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-blue-100']:hover { background-color: var(--info-soft); }
+:root[data-theme='dark'] [class~='hover:bg-yellow-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-yellow-100']:hover,
+:root[data-theme='dark'] [class~='hover:bg-amber-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-amber-100']:hover { background-color: var(--warning-soft); }
+:root[data-theme='dark'] [class~='hover:bg-black/5']:hover { background-color: rgba(255, 255, 255, 0.08); }
+
+:root[data-theme='dark'] [class~='hover:text-red-600']:hover,
+:root[data-theme='dark'] [class~='hover:text-red-700']:hover { color: #ffaaaa; }
+:root[data-theme='dark'] [class~='hover:text-green-600']:hover,
+:root[data-theme='dark'] [class~='hover:text-green-700']:hover,
+:root[data-theme='dark'] [class~='hover:text-emerald-600']:hover { color: #8fe0b5; }
+:root[data-theme='dark'] [class~='hover:text-blue-600']:hover,
+:root[data-theme='dark'] [class~='hover:text-blue-700']:hover { color: #9dccff; }
+:root[data-theme='dark'] [class~='hover:text-amber-600']:hover,
+:root[data-theme='dark'] [class~='hover:text-amber-700']:hover { color: #f3d77c; }
+
+:root[data-theme='dark'] [class~='hover:bg-pink-50']:hover,
+:root[data-theme='dark'] [class~='hover:bg-pink-100']:hover { background-color: var(--danger-soft); }
+:root[data-theme='dark'] [class~='hover:text-pink-600']:hover,
+:root[data-theme='dark'] [class~='hover:text-pink-700']:hover,
+:root[data-theme='dark'] [class~='hover:text-yellow-600']:hover { color: var(--warning-ink); }
+:root[data-theme='dark'] [class~='hover:bg-amber-200']:hover { background-color: var(--warning-soft); }
+
+/* 登录页品牌面板永远是亮黄底，不能继承暗色表面的亮文字映射。 */
+:root[data-theme='dark'] .theme-brand-panel [class~='text-[#8a6300]'] { color: #8a6300; }
+:root[data-theme='dark'] .theme-brand-panel [class~='text-[#6b5200]'] { color: #6b5200; }
+
+:root[data-theme='dark'] .page-tab:not(.page-tab--active) .page-tab__count {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.recharts-pie-label-text,
+.recharts-text {
+  fill: var(--text-muted);
+}
+
+:root[data-theme='dark'] .modal-overlay,
+:root[data-theme='dark'] .modal-overlay-centered {
+  background-color: rgba(0, 0, 0, 0.68);
 }
 
 .page-stack {
@@ -306,27 +660,27 @@ a:focus-visible {
 }
 
 .notice-banner--success {
-  border-color: #b9e3d0;
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
   background: var(--success-soft);
-  color: #0f704b;
+  color: var(--success-ink);
 }
 
 .notice-banner--error {
-  border-color: #f6c9c9;
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
   background: var(--danger-soft);
-  color: #b42318;
+  color: var(--danger-ink);
 }
 
 .notice-banner--warning {
   border-color: var(--border-strong);
   background: var(--warning-soft);
-  color: #945800;
+  color: var(--warning-ink);
 }
 
 .notice-banner--info {
-  border-color: #cbdff5;
+  border-color: color-mix(in srgb, var(--info) 38%, var(--border));
   background: var(--info-soft);
-  color: #2a5f92;
+  color: var(--info-ink);
 }
 
 .metric-grid {
@@ -502,14 +856,22 @@ a:focus-visible {
 
 .ios-input:focus {
   background: var(--surface);
-  border-color: var(--brand);
-  box-shadow: 0 0 0 4px rgba(255, 225, 0, 0.28);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--focus-ring) 28%, transparent);
   outline: none;
 }
 
 .ios-input::placeholder {
   color: var(--text-soft);
   font-weight: 400;
+}
+
+.ios-input:disabled,
+.ios-input[readonly] {
+  border-color: var(--border);
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 .ios-btn-primary {
@@ -569,14 +931,14 @@ a:focus-visible {
   background: var(--danger-soft);
   color: var(--danger);
   font-weight: 600;
-  border: 1px solid #f6c9c9;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
   transition: background-color 0.15s ease, border-color 0.15s ease;
   cursor: pointer;
 }
 
 .ios-btn-danger:hover:not(:disabled) {
-  background: #ffe3e3;
-  border-color: #f19a9a;
+  background: color-mix(in srgb, var(--danger-soft) 82%, var(--danger));
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--border));
 }
 
 .data-table {
@@ -601,7 +963,7 @@ a:focus-visible {
 
 .data-table td {
   padding: 13px 16px;
-  border-bottom: 1px solid #eef0f2;
+  border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 
@@ -623,12 +985,12 @@ a:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--brand-active);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* 侧边栏导航：滚动条按需出现，常驻的黄色轨道会在品牌区旁边多出一条竖线 */
@@ -698,17 +1060,17 @@ aside nav:hover::-webkit-scrollbar-thumb {
 
 .status-badge-success {
   background-color: var(--success-soft);
-  color: #0b7a45;
+  color: var(--success-ink);
 }
 
 .status-badge-warning {
   background-color: var(--brand-100);
-  color: #8a6300;
+  color: var(--warning-ink);
 }
 
 .status-badge-error {
   background-color: var(--danger-soft);
-  color: #b42318;
+  color: var(--danger-ink);
 }
 
 /* info 徽标多用于"N 件商品/N 个账号"这类计数，走品牌黄比蓝色更贴主题；
@@ -738,7 +1100,8 @@ aside nav:hover::-webkit-scrollbar-thumb {
   margin: auto;
   display: flex;
   flex-direction: column;
-  background-color: white;
+  background-color: var(--surface);
+  color: var(--text);
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
@@ -758,6 +1121,7 @@ aside nav:hover::-webkit-scrollbar-thumb {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 22px;
+  color: var(--text);
 }
 
 .modal-footer {
@@ -881,7 +1245,8 @@ aside nav:hover::-webkit-scrollbar-thumb {
   margin: auto 0;
   display: flex;
   flex-direction: column;
-  background-color: white;
+  background-color: var(--surface);
+  color: var(--text);
   border-radius: var(--radius);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-md);
