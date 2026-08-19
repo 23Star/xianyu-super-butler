@@ -51,6 +51,68 @@ type MobilePane = 'list' | 'chat';
 // 打到限流（429 flow controled）；聊天场景 10 秒的延迟是可接受的。
 const CONVERSATION_POLL_MS = 10000;
 const MESSAGE_POLL_MS = 10000;
+const READ_WATERMARKS_STORAGE_KEY = 'xianyu-message-read-watermarks-v2';
+const MAX_READ_WATERMARKS = 500;
+
+type ReadWatermark = {
+  lastMessageTime: number;
+  lastMessageSummary: string;
+  unreadCount: number;
+};
+
+type ReadWatermarks = Record<string, ReadWatermark>;
+
+const readWatermarkKey = (accountId: string, cid: string) => `${accountId}\u0000${cid}`;
+
+const loadReadWatermarks = (): ReadWatermarks => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(READ_WATERMARKS_STORAGE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const watermark = value as Partial<ReadWatermark>;
+        return Number.isFinite(watermark.lastMessageTime)
+          && typeof watermark.lastMessageSummary === 'string'
+          && Number.isFinite(watermark.unreadCount);
+      })
+    ) as ReadWatermarks;
+  } catch {
+    return {};
+  }
+};
+
+const saveReadWatermarks = (watermarks: ReadWatermarks) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const recentEntries = Object.entries(watermarks)
+      .sort(([, left], [, right]) => right.lastMessageTime - left.lastMessageTime)
+      .slice(0, MAX_READ_WATERMARKS);
+    window.localStorage.setItem(
+      READ_WATERMARKS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(recentEntries))
+    );
+  } catch {
+    // 隐私模式或存储空间不足时，仍保留当前页面内的已读状态。
+  }
+};
+
+const isCoveredByReadWatermark = (
+  watermark: ReadWatermark | undefined,
+  conversation: ChatConversation
+) => {
+  if (!watermark) return false;
+  const lastMessageTime = Number(conversation.lastMessageTime) || 0;
+  const lastMessageSummary = String(conversation.lastMessageSummary || '');
+  const unreadCount = Number(conversation.unreadCount) || 0;
+  return lastMessageTime < watermark.lastMessageTime
+    || (
+      lastMessageTime === watermark.lastMessageTime
+      && lastMessageSummary === watermark.lastMessageSummary
+      && unreadCount <= watermark.unreadCount
+    );
+};
 
 interface MessageManagementProps {
   isActive?: boolean;
@@ -107,6 +169,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [activeCid, setActiveCid] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [query, setQuery] = useState('');
+  const [searchInputUnlocked, setSearchInputUnlocked] = useState(false);
+  const [searchInputName] = useState(
+    () => `conversation-filter-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -116,6 +182,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchInputTouchedRef = useRef(false);
+  const activeCidRef = useRef('');
+  const readWatermarksRef = useRef<ReadWatermarks>(loadReadWatermarks());
 
   const [filters, setFilters] = useState<MessageFilter[]>([]);
   const [filtersLoading, setFiltersLoading] = useState(true);
@@ -156,6 +226,42 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const selectedAllFilters = filters.length > 0
     && filters.every((filter) => selectedFilterIds.includes(filter.id));
 
+  const rememberConversationRead = (conversation: ChatConversation) => {
+    if (!activeAccountId || !conversation.cid) return;
+    const key = readWatermarkKey(activeAccountId, conversation.cid);
+    const nextWatermark: ReadWatermark = {
+      lastMessageTime: Number(conversation.lastMessageTime) || 0,
+      lastMessageSummary: String(conversation.lastMessageSummary || ''),
+      unreadCount: Number(conversation.unreadCount) || 0,
+    };
+    const previous = readWatermarksRef.current[key];
+    if (
+      previous
+      && (
+        previous.lastMessageTime > nextWatermark.lastMessageTime
+        || (
+          previous.lastMessageTime === nextWatermark.lastMessageTime
+          && previous.lastMessageSummary === nextWatermark.lastMessageSummary
+          && previous.unreadCount >= nextWatermark.unreadCount
+        )
+      )
+    ) {
+      return;
+    }
+    readWatermarksRef.current[key] = nextWatermark;
+    saveReadWatermarks(readWatermarksRef.current);
+  };
+
+  const openConversation = (conversation: ChatConversation) => {
+    rememberConversationRead(conversation);
+    activeCidRef.current = conversation.cid;
+    setConversations((current) => current.map((item) => (
+      item.cid === conversation.cid ? { ...item, unreadCount: 0 } : item
+    )));
+    setActiveCid(conversation.cid);
+    setMobilePane('chat');
+  };
+
   const loadAccounts = async () => {
     setAccountsLoading(true);
     try {
@@ -180,15 +286,36 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (!silent) setConversationsLoading(true);
     try {
       const result = await getChatConversations(activeAccountId);
-      setConversations(result.conversations || []);
+      const incoming = result.conversations || [];
+      const currentCid = activeCidRef.current;
+      const nextCid = incoming.some((conversation) => conversation.cid === currentCid)
+        ? currentCid
+        : incoming[0]?.cid || '';
+      const normalized = incoming.map((conversation) => {
+        const isOpen = isActive
+          && conversation.cid === nextCid
+          && (
+            mobilePane === 'chat'
+            || window.matchMedia('(min-width: 1024px)').matches
+          );
+        const watermark = readWatermarksRef.current[
+          readWatermarkKey(activeAccountId, conversation.cid)
+        ];
+        if (isOpen) rememberConversationRead(conversation);
+        return isOpen || isCoveredByReadWatermark(watermark, conversation)
+          ? { ...conversation, unreadCount: 0 }
+          : conversation;
+      });
+      setConversations(normalized);
       setActiveCid((current) => {
         // 用户已经选了会话就不要动它。会话列表是定时刷新的，一旦某次刷新
         // 因限流或数据不全而没带上当前会话，这里就会把用户强行切回第一条 ——
         // 表现为「点第二个及之后的对话，消息区一片空白」。
-        if (current) {
-          return current;
-        }
-        return result.conversations[0]?.cid || '';
+        const next = current && incoming.some((conversation) => conversation.cid === current)
+          ? current
+          : incoming[0]?.cid || '';
+        activeCidRef.current = next;
+        return next;
       });
     } catch (error) {
       if (!silent) notify(`加载会话失败：${(error as Error).message}`, 'error');
@@ -248,6 +375,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   }, []);
 
   useEffect(() => {
+    activeCidRef.current = '';
     setActiveCid('');
     setMessages([]);
     setMobilePane('list');
@@ -265,7 +393,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     // 多开几个标签页就会把账号打到 429（flow controled），表现为消息加载失败。
     const timer = window.setInterval(() => void loadConversations(true), CONVERSATION_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [isActive, view, activeAccountId]);
+  }, [isActive, view, activeAccountId, mobilePane]);
 
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId || !activeCid) return undefined;
@@ -277,6 +405,22 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    // Chromium 和部分密码管理器会无视 autocomplete="off"，把本站保存的
+    // 管理员用户名灌进页面上的第一个文本框。只清理用户尚未触碰过的值，
+    // 避免定时器误删用户真正输入的搜索词。
+    const clearUnexpectedAutofill = () => {
+      if (searchInputTouchedRef.current || !searchInputRef.current) return;
+      searchInputRef.current.value = '';
+      setQuery('');
+    };
+    clearUnexpectedAutofill();
+    const timers = [100, 500, 1500].map((delay) => (
+      window.setTimeout(clearUnexpectedAutofill, delay)
+    ));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, []);
 
   useEffect(() => {
     getQuickPhrases()
@@ -424,8 +568,34 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-soft)]" />
             <input
+              ref={searchInputRef}
+              type="search"
+              name={searchInputName}
+              autoComplete="new-password"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="搜索联系人、商品或消息"
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-bwignore="true"
+              readOnly={!searchInputUnlocked}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onFocus={() => {
+                searchInputTouchedRef.current = true;
+                setSearchInputUnlocked(true);
+              }}
+              onBlur={() => {
+                searchInputTouchedRef.current = false;
+                setSearchInputUnlocked(false);
+              }}
+              onChange={(event) => {
+                if (!searchInputTouchedRef.current) {
+                  event.currentTarget.value = '';
+                  setQuery('');
+                  return;
+                }
+                setQuery(event.target.value);
+              }}
               placeholder="搜索联系人、商品或消息"
               className="h-9 w-full rounded-md bg-[var(--surface-subtle)] pl-9 pr-3 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] focus:ring-2 focus:ring-[var(--brand)]"
             />
@@ -445,10 +615,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               <button
                 key={conversation.cid}
                 type="button"
-                onClick={() => {
-                  setActiveCid(conversation.cid);
-                  setMobilePane('chat');
-                }}
+                onClick={() => openConversation(conversation)}
                 className={`grid w-full grid-cols-[48px_minmax(0,1fr)_auto] gap-3 px-4 py-3 text-left ${
                   selected ? 'bg-[var(--surface-strong)]' : 'hover:bg-[var(--surface-hover)]'
                 }`}
