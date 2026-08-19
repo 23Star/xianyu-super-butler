@@ -1470,6 +1470,15 @@ class XianyuLive:
                 except Exception as parse_e:
                     logger.warning(f"解析dynamicOperation JSON失败: {parse_e}")
 
+            # 方法2.5: 从 message['3'] 中直接提取 orderId
+            if not order_id:
+                message_3 = message.get('3')
+                if isinstance(message_3, dict):
+                    direct_order_id = message_3.get('orderId')
+                    if direct_order_id and str(direct_order_id).isdigit():
+                        order_id = str(direct_order_id)
+                        logger.info(f'【{self.cookie_id}】✅ 从message[3].orderId提取到订单ID: {order_id}')
+
             # 方法3: 如果前面的方法都失败，尝试在整个消息中搜索订单ID模式
             if not order_id:
                 try:
@@ -1478,10 +1487,10 @@ class XianyuLive:
 
                     # 搜索各种可能的订单ID模式
                     patterns = [
-                        r'orderId[=:](\d{10,})',  # orderId=123456789 或 orderId:123456789
+                        r'orderId["\']?\s*[:=]\s*["\']?(\d{10,})',  # orderId: '123' 或 orderId=123
                         r'order_detail\?id=(\d{10,})',  # order_detail?id=123456789
                         r'"id"\s*:\s*"?(\d{10,})"?',  # "id":"123456789" 或 "id":123456789
-                        r'bizOrderId[=:](\d{10,})',  # bizOrderId=123456789
+                        r'bizOrderId["\']?\s*[:=]\s*["\']?(\d{10,})',  # bizOrderId=123456789
                     ]
 
                     for pattern in patterns:

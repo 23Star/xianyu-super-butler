@@ -84,33 +84,54 @@ async def fetch_order_detail_direct(
         except SellerApiError as exc:
             logger.debug(f"【{cookie_id}】订单 {order_id} 列表查询失败: {exc}")
 
-        # 规格信息只能从发货页渲染接口拿
+        # 规格信息优先从买家端订单详情接口拿（skuInfo 格式固定为 "规格名:规格值"）
         try:
-            render = parse_consign_render(await api.get_consign_render(order_id))
-            for key in (
-                "spec_name",
-                "spec_value",
-                "need_serial_number",
-                "need_upload_report",
-                "support_consign_type",
-            ):
-                if render.get(key) not in (None, "", []):
-                    result[key] = render[key]
-            # 列表接口缺字段时用渲染接口补齐
-            for key in (
-                "item_id",
-                "item_title",
-                "receiver_name",
-                "receiver_phone",
-                "receiver_address",
-                "auction_price",
-            ):
-                if not result.get(key) and render.get(key):
-                    result[key] = render[key]
-            if not result.get("buy_num"):
-                result["buy_num"] = render.get("buy_num") or 1
-        except SellerApiError as exc:
-            logger.debug(f"【{cookie_id}】订单 {order_id} 发货页渲染失败: {exc}")
+            detail = await api.get_order_detail(order_id)
+            components = detail.get("components") or []
+            for comp in components:
+                if comp.get("render") == "orderInfoVO":
+                    item_info = (comp.get("data") or {}).get("itemInfo") or {}
+                    sku_info = item_info.get("skuInfo", "")
+                    if sku_info and ":" in sku_info:
+                        parts = sku_info.split(":", 1)
+                        result["spec_name"] = parts[0].strip()
+                        result["spec_value"] = parts[1].strip() if len(parts) > 1 else ""
+                        logger.debug(
+                            f"【{cookie_id}】订单 {order_id} 从 order.detail 获取规格: "
+                            f"{result['spec_name']}={result['spec_value']}"
+                        )
+                    break
+        except (SellerApiError, Exception) as exc:
+            logger.debug(f"【{cookie_id}】订单 {order_id} order.detail 查询失败: {exc}")
+
+        # 规格信息的备用来源：发货页渲染接口的 itemInfoLines
+        if not result.get("spec_value"):
+            try:
+                render = parse_consign_render(await api.get_consign_render(order_id))
+                for key in (
+                    "spec_name",
+                    "spec_value",
+                    "need_serial_number",
+                    "need_upload_report",
+                    "support_consign_type",
+                ):
+                    if render.get(key) not in (None, "", []):
+                        result[key] = render[key]
+                # 列表接口缺字段时用渲染接口补齐
+                for key in (
+                    "item_id",
+                    "item_title",
+                    "receiver_name",
+                    "receiver_phone",
+                    "receiver_address",
+                    "auction_price",
+                ):
+                    if not result.get(key) and render.get(key):
+                        result[key] = render[key]
+                if not result.get("buy_num"):
+                    result["buy_num"] = render.get("buy_num") or 1
+            except SellerApiError as exc:
+                logger.debug(f"【{cookie_id}】订单 {order_id} 发货页渲染失败: {exc}")
     except Exception as e:
         logger.warning(f"【{cookie_id}】订单 {order_id} 直连获取异常: {e}")
     finally:
