@@ -1,6 +1,8 @@
 import base64
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
+from utils.im_media import binary_data_url, resolve_media
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -55,36 +57,169 @@ def _load_content(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _interpret_content(decoded: Dict[str, Any]) -> Tuple[str, List[str], str]:
-    content_type = decoded.get("contentType")
-    text_value = decoded.get("text")
-    if content_type == 1 or text_value is not None:
-        if isinstance(text_value, dict):
-            return str(text_value.get("text", "")), [], "text"
-        return str(text_value or ""), [], "text"
+def _optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-    image = decoded.get("image")
+
+def _audio_mime_type(file_type: Any) -> str:
+    types = {0: "audio/opus", 1: "audio/ogg", 2: "audio/amr"}
+    if isinstance(file_type, str):
+        return f"audio/{file_type.lower()}"
+    return types.get(file_type, "audio/ogg")
+
+
+def _empty_content() -> Dict[str, Any]:
+    return {"text": "", "images": [], "type": "", "audio": None, "video": None}
+
+
+def _resolve_url(value: Any, media_host: Optional[str]) -> str:
+    return str(resolve_media(value, media_host).get("url") or "")
+
+
+def make_image_content(image_url: str, width: int = 800, height: int = 600) -> Dict[str, Any]:
+    return {
+        "contentType": 2,
+        "image": {
+            "pics": [
+                {
+                    "height": int(height),
+                    "type": 0,
+                    "url": image_url,
+                    "width": int(width),
+                }
+            ]
+        },
+    }
+
+
+def make_video_content(
+    video_url: str,
+    width: int = 0,
+    height: int = 0,
+    duration_ms: int = 0,
+    poster: str = "",
+) -> Dict[str, Any]:
+    video = {
+        "url": video_url,
+        "width": int(width or 0),
+        "height": int(height or 0),
+        "duration": int(duration_ms or 0),
+        "durationMs": int(duration_ms or 0),
+    }
+    if poster:
+        video["poster"] = poster
+        video["coverUrl"] = poster
+    return {"contentType": 4, "video": video}
+
+
+def _interpret_content(
+    decoded: Dict[str, Any],
+    media_host: Optional[str] = None,
+) -> Dict[str, Any]:
+    result = _empty_content()
+    content_type = decoded.get("contentType")
+    if isinstance(content_type, str) and content_type.isdigit():
+        content_type = int(content_type)
+
+    text_value = decoded.get("text")
+    if content_type == 1 or (text_value is not None and content_type not in (2, 3, 4)):
+        if isinstance(text_value, dict):
+            result["text"] = str(text_value.get("text", ""))
+        else:
+            result["text"] = str(text_value or "")
+        result["type"] = "text"
+        return result
+
+    image = decoded.get("image") or decoded.get("photo")
     if content_type == 2 or isinstance(image, dict):
         pics = image.get("pics", []) if isinstance(image, dict) else []
-        images = [
-            str(pic.get("url"))
-            for pic in pics
-            if isinstance(pic, dict) and pic.get("url")
-        ]
-        legacy_url = decoded.get("picUrl")
-        if legacy_url and not images:
-            images.append(str(legacy_url))
-        return "", images, "image"
+        images = []
+        for pic in pics:
+            raw_url = None
+            if isinstance(pic, dict):
+                raw_url = pic.get("url") or pic.get("mediaId")
+            url = _resolve_url(raw_url, media_host)
+            if url:
+                images.append(url)
+        if not images:
+            url = _resolve_url(decoded.get("picUrl"), media_host)
+            if url:
+                images.append(url)
+        result["images"] = images
+        result["type"] = "image"
+        return result
 
-    if content_type == 3 or decoded.get("audio"):
-        return "[语音消息]", [], "system"
+    audio_block = decoded.get("audio")
+    if content_type == 3 or isinstance(audio_block, dict):
+        if isinstance(audio_block, dict):
+            media_value = (
+                audio_block.get("url")
+                or audio_block.get("audioUrl")
+                or audio_block.get("mediaId")
+            )
+            resource = resolve_media(media_value, media_host)
+            audio_url = resource.get("url") or binary_data_url(
+                audio_block.get("audioBytes"),
+                _audio_mime_type(audio_block.get("fileType") or resource.get("fileType")),
+            )
+            if audio_url:
+                result["audio"] = {
+                    "url": audio_url,
+                    "durationMs": _optional_int(
+                        audio_block.get("durationMs") or audio_block.get("duration")
+                    ),
+                }
+        result["type"] = "audio"
+        return result
+
+    video_block = decoded.get("video")
+    if content_type == 4 or isinstance(video_block, dict):
+        if isinstance(video_block, dict):
+            resource = resolve_media(
+                video_block.get("url")
+                or video_block.get("videoUrl")
+                or video_block.get("videoMediaId"),
+                media_host,
+            )
+            poster = resolve_media(
+                video_block.get("poster")
+                or video_block.get("coverUrl")
+                or video_block.get("picMediaId"),
+                media_host,
+            )
+            if resource.get("url"):
+                result["video"] = {
+                    "url": resource["url"],
+                    "poster": poster.get("url") or "",
+                    "width": _optional_int(
+                        video_block.get("width") or resource.get("width")
+                    ),
+                    "height": _optional_int(
+                        video_block.get("height") or resource.get("height")
+                    ),
+                    "durationMs": _optional_int(
+                        video_block.get("durationMs") or video_block.get("duration")
+                    ),
+                }
+        result["type"] = "video"
+        return result
 
     if decoded.get("title") or decoded.get("template"):
-        return str(decoded.get("title") or decoded.get("template")), [], "card"
-    return "", [], ""
+        result["text"] = str(decoded.get("title") or decoded.get("template"))
+        result["type"] = "card"
+        return result
+    return result
 
 
-def extract_message_summary(message: Dict[str, Any]) -> str:
+def extract_message_summary(
+    message: Dict[str, Any],
+    media_host: Optional[str] = None,
+) -> str:
     content = _as_dict(message.get("content"))
     custom = _as_dict(content.get("custom"))
     summary = custom.get("summary") or custom.get("degrade")
@@ -92,15 +227,23 @@ def extract_message_summary(message: Dict[str, Any]) -> str:
         return str(summary)[:80]
     decoded = _load_content(custom.get("data"))
     if decoded:
-        text, images, msg_type = _interpret_content(decoded)
-        if text:
-            return text[:80]
-        if images or msg_type == "image":
+        interpreted = _interpret_content(decoded, media_host)
+        if interpreted["text"]:
+            return interpreted["text"][:80]
+        if interpreted["images"] or interpreted["type"] == "image":
             return "[图片]"
+        if interpreted["audio"] or interpreted["type"] == "audio":
+            return "[语音]"
+        if interpreted["video"] or interpreted["type"] == "video":
+            return "[视频]"
     return ""
 
 
-def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]:
+def parse_conversation(
+    raw: Dict[str, Any],
+    my_id: str,
+    media_host: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     try:
         conversation = _as_dict(raw.get("singleChatConversation"))
         raw_cid = str(conversation.get("cid") or "")
@@ -149,13 +292,15 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
             ),
             "itemId": str(extension.get("itemId") or ""),
             "itemTitle": str(extension.get("itemTitle") or ""),
-            "itemImage": str(
+            "itemImage": _resolve_url(
                 extension.get("itemPic")
                 or extension.get("itemImage")
                 or extension.get("picUrl")
-                or ""
+                or "",
+                media_host,
             ),
-            "lastMessageSummary": extract_message_summary(last_message),
+            "lastMessageSummary": extract_message_summary(last_message, media_host),
+            "lastMessageId": str(last_message.get("messageId") or ""),
             "lastMessageTime": int(raw.get("modifyTime") or 0),
             "unreadCount": int(raw.get("redPoint") or 0),
         }
@@ -163,7 +308,11 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
         return None
 
 
-def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]:
+def parse_message(
+    model: Dict[str, Any],
+    my_id: str,
+    media_host: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     try:
         message = _as_dict(model.get("message"))
         extension = _as_dict(message.get("extension"))
@@ -174,13 +323,27 @@ def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]
 
         text = ""
         images: List[str] = []
+        audio = None
+        video = None
         message_type = "system"
         if decoded:
-            text, images, message_type = _interpret_content(decoded)
-        if not text and not images:
+            interpreted = _interpret_content(decoded, media_host)
+            text = interpreted["text"]
+            images = interpreted["images"]
+            audio = interpreted["audio"]
+            video = interpreted["video"]
+            message_type = interpreted["type"] or "system"
+        if not text and not images and not audio and not video:
             text = str(custom.get("summary") or custom.get("degrade") or "[系统消息]")
         if not message_type:
-            message_type = "image" if images else "text"
+            if images:
+                message_type = "image"
+            elif audio:
+                message_type = "audio"
+            elif video:
+                message_type = "video"
+            else:
+                message_type = "text"
 
         return {
             "messageId": str(message.get("messageId") or ""),
@@ -190,6 +353,8 @@ def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]
             "type": message_type,
             "text": text,
             "images": images,
+            "audio": audio,
+            "video": video,
             "time": int(message.get("createAt") or message.get("time") or 0),
         }
     except (TypeError, ValueError):

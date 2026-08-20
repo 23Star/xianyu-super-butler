@@ -161,6 +161,49 @@ class ImageUploader:
                     os.remove(temp_path)
                 except:
                     pass
+
+    async def upload_file(self, file_path: str, content_type: str, timeout: int = 120) -> Optional[str]:
+        """上传语音或视频到闲鱼 CDN，不做图片压缩。"""
+        try:
+            if not self.session:
+                await self.create_session()
+            if not os.path.exists(file_path):
+                logger.error(f"媒体文件不存在: {file_path}")
+                return None
+
+            filename = os.path.basename(file_path)
+            with open(file_path, "rb") as handle:
+                file_data = handle.read()
+
+            headers = {
+                "cookie": self.cookies_str,
+                "Referer": "https://www.goofish.com/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "x-requested-with": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+            }
+            data = aiohttp.FormData()
+            data.add_field("file", file_data, filename=filename, content_type=content_type)
+            logger.info(f"开始上传媒体到闲鱼CDN: {filename} ({content_type})")
+            async with self.session.post(
+                self.upload_url,
+                data=data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                if response.status != 200:
+                    logger.error(f"媒体上传失败: HTTP {response.status}")
+                    return None
+                media_url = self._parse_upload_response(await response.text())
+                if media_url:
+                    logger.info(f"媒体上传成功: {media_url}")
+                return media_url
+        except Exception as exc:
+            logger.error(f"媒体上传异常: {exc}")
+            return None
     
     def _parse_upload_response(self, response_text: str) -> Optional[str]:
         """解析上传响应获取图片URL"""

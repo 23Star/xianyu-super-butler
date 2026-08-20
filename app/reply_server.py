@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Optional, Dict, Any
@@ -10,6 +10,7 @@ import time
 import json
 import os
 import re
+import tempfile
 import pandas as pd
 import io
 import asyncio
@@ -1132,6 +1133,15 @@ class ChatSendMessageRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
 
 
+class PlayableAudioRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2000)
+
+
+class ChatMarkReadRequest(BaseModel):
+    cid: str = Field(..., min_length=1, max_length=200)
+    message_id: str = Field(..., min_length=1, max_length=200)
+
+
 def verify_api_key(api_key: str) -> bool:
     """验证API秘钥"""
     try:
@@ -1343,10 +1353,11 @@ async def get_chat_conversations(
     manager = cookie_manager.manager
     instance = manager.instances.get(cookie_id) if manager else None
     my_id = str(getattr(instance, "myid", "") or "")
+    media_host = getattr(instance, "media_host", None)
     conversations = []
     for item in body.get("userConvs", []) if isinstance(body, dict) else []:
         raw = item.get("singleChatUserConversation", item) if isinstance(item, dict) else {}
-        parsed = parse_conversation(raw, my_id)
+        parsed = parse_conversation(raw, my_id, media_host)
         if parsed:
             conversations.append(parsed)
     return {
@@ -1384,6 +1395,7 @@ async def get_chat_messages(
     manager = cookie_manager.manager
     instance = manager.instances.get(cookie_id) if manager else None
     my_id = str(getattr(instance, "myid", "") or "")
+    media_host = getattr(instance, "media_host", None)
 
     # 这个接口的响应结构有两种：消息可能直接挂在 body 下，也可能包在 body.data 里。
     # 只读一层时另一种结构会永远拿到空列表，表现为「点开会话看不到任何消息」。
@@ -1398,7 +1410,7 @@ async def get_chat_messages(
 
     messages = []
     for model in pick("userMessageModels", []) or []:
-        parsed = parse_message(model, my_id)
+        parsed = parse_message(model, my_id, media_host)
         if parsed:
             messages.append(parsed)
     messages.reverse()
@@ -1436,6 +1448,170 @@ async def send_chat_message(
         f"会话={request.cid}, 对方={request.to_user_id}, 长度={len(request.text)}"
     )
     return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
+
+
+@app.post("/chat/read/{cookie_id}")
+async def mark_chat_conversation_read(
+    cookie_id: str,
+    request: ChatMarkReadRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    await _run_on_account_loop(
+        cookie_id,
+        lambda instance: instance.mark_im_conversation_read(
+            request.cid.strip(),
+            request.message_id.strip(),
+        ),
+    )
+    return {"success": True, "message": "已读", "data": {"cid": request.cid.strip()}}
+
+
+@app.post("/chat/send-image/{cookie_id}")
+async def send_chat_image(
+    cookie_id: str,
+    cid: str = Form(..., min_length=1, max_length=200),
+    to_user_id: str = Form(..., min_length=1, max_length=100),
+    image: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="请上传图片文件")
+
+    image_data = await image.read()
+    if not image_data:
+        raise HTTPException(status_code=400, detail="图片文件为空")
+    if len(image_data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片不能超过 5MB")
+
+    suffix = os.path.splitext(image.filename or "")[1] or ".jpg"
+    fd, temp_path = tempfile.mkstemp(suffix=suffix)
+    try:
+        os.write(fd, image_data)
+        os.close(fd)
+        response = await _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.send_im_image(
+                cid.strip(),
+                to_user_id.strip(),
+                temp_path,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+    body = {}
+    image_url = ""
+    if isinstance(response, dict):
+        image_url = str(response.get("imageUrl") or "")
+        inner = response.get("response")
+        if isinstance(inner, dict):
+            body = inner.get("body", {}) if isinstance(inner.get("body"), dict) else {}
+    message_id = str(body.get("messageId") or body.get("msgId") or "")
+    logger.info(
+        f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼图片，"
+        f"会话={cid}, 对方={to_user_id}"
+    )
+    return {
+        "success": True,
+        "message": "发送成功",
+        "data": {"messageId": message_id, "imageUrl": image_url},
+    }
+
+
+def _write_chat_upload(data: bytes, filename: str, default_suffix: str) -> str:
+    suffix = os.path.splitext(filename or "")[1] or default_suffix
+    fd, temp_path = tempfile.mkstemp(suffix=suffix)
+    os.write(fd, data)
+    os.close(fd)
+    return temp_path
+
+
+def _chat_send_result(response: Any, url_key: str) -> Dict[str, Any]:
+    media_url = ""
+    body = {}
+    if isinstance(response, dict):
+        media_url = str(response.get(url_key) or "")
+        inner = response.get("response")
+        if isinstance(inner, dict):
+            body = inner.get("body", {}) if isinstance(inner.get("body"), dict) else {}
+    return {
+        "messageId": str(body.get("messageId") or body.get("msgId") or ""),
+        url_key: media_url,
+    }
+
+
+@app.post("/chat/send-video/{cookie_id}")
+async def send_chat_video(
+    cookie_id: str,
+    cid: str = Form(..., min_length=1, max_length=200),
+    to_user_id: str = Form(..., min_length=1, max_length=100),
+    video: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    _get_owned_chat_account(cookie_id, current_user)
+    content_type = (video.content_type or "").lower()
+    if content_type and not content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="请上传视频文件")
+
+    video_data = await video.read()
+    if not video_data:
+        raise HTTPException(status_code=400, detail="视频文件为空")
+    if len(video_data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="视频不能超过 20MB")
+
+    temp_path = _write_chat_upload(video_data, video.filename or "", ".mp4")
+    try:
+        response = await _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.send_im_video(
+                cid.strip(),
+                to_user_id.strip(),
+                temp_path,
+                content_type or "video/mp4",
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+    logger.info(
+        f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼视频，"
+        f"会话={cid}, 对方={to_user_id}"
+    )
+    return {"success": True, "message": "发送成功", "data": _chat_send_result(response, "videoUrl")}
+
+
+@app.post("/chat/media/audio")
+async def playable_chat_audio(
+    request: PlayableAudioRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    from utils.im_audio import AudioProxy, AudioProxyError
+
+    try:
+        content, media_type = await AudioProxy().get_playable_audio(request.url.strip())
+    except AudioProxyError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @app.post('/send-message', response_model=SendMessageResponse)

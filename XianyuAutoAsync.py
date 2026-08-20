@@ -766,6 +766,7 @@ class XianyuLive:
         self.token_retry_interval = TOKEN_RETRY_INTERVAL
         self.last_token_refresh_time = 0
         self.current_token = None
+        self.media_host = "down.im.dingtalk.cn"
         self.token_refresh_task = None
         self.connection_restart_flag = False  # 连接重启标志
 
@@ -2249,6 +2250,10 @@ class XianyuLive:
                             if 'data' in res_json and 'accessToken' in res_json['data']:
                                 new_token = res_json['data']['accessToken']
                                 self.current_token = new_token
+                                self.media_host = (
+                                    res_json['data'].get('mediaHost')
+                                    or "down.im.dingtalk.cn"
+                                )
                                 self.last_token_refresh_time = time.time()
 
                                 # 【消息接收时间重置】Token刷新成功后重置消息接收标志，与 cookie_refresh_loop 保持一致
@@ -6786,6 +6791,21 @@ class XianyuLive:
         )
         return response.get("body", {}) if isinstance(response, dict) else {}
 
+    async def mark_im_conversation_read(self, cid, message_id):
+        target = str(message_id or "").strip()
+        if not target:
+            raise ValueError("缺少要标记已读的消息")
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        response = await self._send_im_request(
+            "/r/Conversation/clearRedPoint",
+            [[{"cid": full_cid, "messageId": target}]],
+        )
+        body = response.get("body", {}) if isinstance(response, dict) else {}
+        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
+            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+            raise RuntimeError(str(reason))
+        return response
+
     async def send_im_text(self, cid, toid, text):
         text = str(text or "").strip()
         if not text:
@@ -6832,6 +6852,107 @@ class XianyuLive:
             reason = body.get("developerMessage") or body.get("reason") or body.get("code")
             raise RuntimeError(str(reason))
         return response
+
+    async def _send_im_custom(self, cid, toid, payload):
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        full_toid = toid if "@goofish" in toid else f"{toid}@goofish"
+        encoded = base64.b64encode(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8")
+        response = await self._send_im_request(
+            "/r/MessageSend/sendByReceiverScope",
+            [
+                {
+                    "uuid": generate_uuid(),
+                    "cid": full_cid,
+                    "conversationType": 1,
+                    "content": {
+                        "contentType": 101,
+                        "custom": {"type": 1, "data": encoded},
+                    },
+                    "redPointPolicy": 0,
+                    "extension": {"extJson": "{}"},
+                    "ctx": {"appVersion": "1.0", "platform": "web"},
+                    "mtags": {},
+                    "msgReadStatusSetting": 1,
+                },
+                {
+                    "actualReceivers": [
+                        full_toid,
+                        f"{self.myid}@goofish",
+                    ],
+                },
+            ],
+        )
+        body = response.get("body", {}) if isinstance(response, dict) else {}
+        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
+            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+            raise RuntimeError(str(reason))
+        return response
+
+    async def send_im_image(self, cid, toid, image_path, width=None, height=None):
+        from PIL import Image
+
+        from app.xianyu_im import make_image_content
+        from utils.image_uploader import ImageUploader
+
+        if not image_path or not os.path.exists(image_path):
+            raise ValueError("图片文件不存在")
+
+        async with ImageUploader(self.cookies_str) as uploader:
+            image_url = await uploader.upload_image(image_path)
+        if not image_url:
+            raise RuntimeError("图片上传失败，登录态可能已失效")
+
+        if not width or not height:
+            try:
+                with Image.open(image_path) as img:
+                    width, height = img.size
+            except Exception:
+                width, height = 800, 600
+        width = int(width or 800)
+        height = int(height or 600)
+        response = await self._send_im_custom(
+            cid, toid, make_image_content(image_url, width, height)
+        )
+        return {
+            "response": response,
+            "imageUrl": image_url,
+            "width": width,
+            "height": height,
+        }
+
+    async def send_im_video(self, cid, toid, video_path, content_type="video/mp4"):
+        from app.xianyu_im import make_video_content
+        from utils.im_media import probe_media
+        from utils.image_uploader import ImageUploader
+
+        if not video_path or not os.path.exists(video_path):
+            raise ValueError("视频文件不存在")
+
+        async with ImageUploader(self.cookies_str) as uploader:
+            video_url = await uploader.upload_file(video_path, content_type, timeout=180)
+        if not video_url:
+            raise RuntimeError("视频上传失败，登录态可能已失效")
+
+        info = await probe_media(video_path)
+        response = await self._send_im_custom(
+            cid,
+            toid,
+            make_video_content(
+                video_url,
+                info.get("width") or 0,
+                info.get("height") or 0,
+                info.get("durationMs") or 0,
+            ),
+        )
+        return {
+            "response": response,
+            "videoUrl": video_url,
+            "width": info.get("width") or 0,
+            "height": info.get("height") or 0,
+            "durationMs": info.get("durationMs") or 0,
+        }
 
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token

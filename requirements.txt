@@ -37,6 +37,8 @@ openai>=1.50.0
 # ==================== 图像处理 ====================
 Pillow>=10.0.0
 qrcode[pil]>=7.4.2
+msgpack>=1.0.0
+imageio-ffmpeg>=0.6.0
 
 # ==================== 浏览器自动化 ====================
 # 固定版本：playwright 与其配套的 Chromium revision 强绑定，装了新版 playwright

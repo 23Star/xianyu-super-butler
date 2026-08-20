@@ -434,8 +434,22 @@ export interface ChatConversation {
   itemTitle?: string;
   itemImage?: string;
   lastMessageSummary: string;
+  lastMessageId?: string;
   lastMessageTime: number;
   unreadCount: number;
+}
+
+export interface ChatAudio {
+  url: string;
+  durationMs?: number | null;
+}
+
+export interface ChatVideo {
+  url: string;
+  poster?: string;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
 }
 
 export interface ChatMessage {
@@ -443,9 +457,11 @@ export interface ChatMessage {
   senderId: string;
   senderName: string;
   isSelf: boolean;
-  type: 'text' | 'image' | 'system' | 'card';
+  type: 'text' | 'image' | 'audio' | 'video' | 'system' | 'card';
   text: string;
   images: string[];
+  audio?: ChatAudio | null;
+  video?: ChatVideo | null;
   time: number;
 }
 

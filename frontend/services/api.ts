@@ -1049,11 +1049,44 @@ export const getChatMessages = async (
   return response.data;
 };
 
+export const markChatConversationRead = async (
+  cookieId: string,
+  data: { cid: string; message_id: string }
+): Promise<{ success: boolean; message: string; data?: { cid?: string } }> => {
+  return post(`/chat/read/${encodeURIComponent(cookieId)}`, data);
+};
+
 export const sendChatMessage = async (
   cookieId: string,
   data: { cid: string; to_user_id: string; text: string }
 ): Promise<{ success: boolean; message: string; data?: { messageId?: string } }> => {
   return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);
+};
+
+export const sendChatImage = async (
+  cookieId: string,
+  data: { cid: string; to_user_id: string; image: File }
+): Promise<{ success: boolean; message: string; data?: { messageId?: string; imageUrl?: string } }> => {
+  const form = new FormData();
+  form.append('cid', data.cid);
+  form.append('to_user_id', data.to_user_id);
+  form.append('image', data.image);
+  return post(`/chat/send-image/${encodeURIComponent(cookieId)}`, form, { timeout: 60000 });
+};
+
+export const sendChatVideo = async (
+  cookieId: string,
+  data: { cid: string; to_user_id: string; video: File }
+): Promise<{ success: boolean; message: string; data?: { messageId?: string; videoUrl?: string } }> => {
+  const form = new FormData();
+  form.append('cid', data.cid);
+  form.append('to_user_id', data.to_user_id);
+  form.append('video', data.video);
+  return post(`/chat/send-video/${encodeURIComponent(cookieId)}`, form, { timeout: 120000 });
+};
+
+export const getPlayableAudio = async (url: string): Promise<Blob> => {
+  return post('/chat/media/audio', { url }, { responseType: 'blob', timeout: 60000 });
 };
 
 // Default Reply

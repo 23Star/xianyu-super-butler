@@ -11,9 +11,10 @@ import {
   Send,
   Settings2,
   Smile,
-  Zap,
   Trash2,
   UserRound,
+  Video,
+  Zap,
 } from 'lucide-react';
 
 import {
@@ -36,10 +37,14 @@ import {
   getChatMessages,
   getItems,
   getMessageFilters,
+  getPlayableAudio,
   getQuickPhrases,
+  markChatConversationRead,
+  sendChatImage,
   sendChatMessage,
-  useQuickPhrase,
+  sendChatVideo,
   toggleMessageFilter,
+  useQuickPhrase,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
@@ -135,6 +140,32 @@ const formatTimestamp = (value?: number) => {
   return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
 };
 
+const formatDuration = (value?: number | null) => {
+  if (!value || value <= 0) return '';
+  const seconds = Math.round(value / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+};
+
+const audioKey = (message: ChatMessage) => message.messageId || message.audio?.url || '';
+
+const requestErrorMessage = (error: unknown, fallback: string) => {
+  const response = (error as { response?: { data?: { detail?: unknown } } })?.response;
+  const detail = response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail[0] && typeof detail[0] === 'object' && 'msg' in detail[0]) {
+    return String((detail[0] as { msg: unknown }).msg);
+  }
+  const message = (error as { message?: string })?.message;
+  return message || fallback;
+};
+
+const looksLikeImage = (file: File) =>
+  file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp)$/i.test(file.name);
+
+const looksLikeVideo = (file: File) =>
+  file.type.startsWith('video/') || /\.(mp4|webm|mov)$/i.test(file.name);
+
 const formatDateTime = (value?: string) => {
   if (!value) return '-';
   const date = new Date(value.includes('T') ? value : value.replace(' ', 'T'));
@@ -181,6 +212,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const [audioSources, setAudioSources] = useState<Record<string, string>>({});
+  const [audioLoading, setAudioLoading] = useState<Set<string>>(new Set());
+  const [audioErrors, setAudioErrors] = useState<Set<string>>(new Set());
+  const audioSourcesRef = useRef<Record<string, string>>({});
+  const lastMarkedReadRef = useRef('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchInputTouchedRef = useRef(false);
@@ -332,7 +370,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (!silent) setMessagesLoading(true);
     try {
       const result = await getChatMessages(activeAccountId, activeCid);
-      setMessages(result.messages || []);
+      const nextMessages = result.messages || [];
+      setMessages(nextMessages);
+      const latestId = nextMessages[nextMessages.length - 1]?.messageId;
+      void markCurrentConversationRead(latestId);
     } catch (error) {
       if (!silent) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
     } finally {
@@ -428,11 +469,76 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       .catch(() => setQuickPhrases([]));
   }, []);
 
+  useEffect(() => {
+    audioSourcesRef.current = audioSources;
+  }, [audioSources]);
+
+  useEffect(() => {
+    messages.forEach((message) => {
+      if (message.type !== 'audio' || !message.audio?.url) return;
+      const key = audioKey(message);
+      if (!key || audioSources[key] || audioLoading.has(key) || audioErrors.has(key)) return;
+      setAudioLoading((current) => {
+        const next = new Set(current);
+        next.add(key);
+        return next;
+      });
+      getPlayableAudio(message.audio.url)
+        .then((blob) => {
+          const source = URL.createObjectURL(blob);
+          setAudioSources((current) => ({ ...current, [key]: source }));
+        })
+        .catch(() => {
+          setAudioErrors((current) => {
+            const next = new Set(current);
+            next.add(key);
+            return next;
+          });
+        })
+        .finally(() => {
+          setAudioLoading((current) => {
+            const next = new Set(current);
+            next.delete(key);
+            return next;
+          });
+        });
+    });
+  }, [messages, audioSources, audioLoading, audioErrors]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(audioSourcesRef.current).forEach((source) => URL.revokeObjectURL(source));
+    };
+  }, []);
+
   // 插入短语到输入框而不是直接发送，方便先改再发
   const insertPhrase = (phrase: QuickPhrase) => {
     setDraft(current => (current ? `${current}${phrase.content}` : phrase.content));
     setShowPhrases(false);
     void useQuickPhrase(phrase.id).catch(() => undefined);
+  };
+
+  const markCurrentConversationRead = async (messageId?: string) => {
+    const target = messageId
+      || conversations.find((conversation) => conversation.cid === activeCid)?.lastMessageId
+      || '';
+    if (!activeAccountId || !activeCid || !target) return;
+    const key = `${activeAccountId}:${activeCid}:${target}`;
+    if (lastMarkedReadRef.current === key) return;
+    try {
+      await markChatConversationRead(activeAccountId, {
+        cid: activeCid,
+        message_id: target,
+      });
+      lastMarkedReadRef.current = key;
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.cid === activeCid ? { ...conversation, unreadCount: 0 } : conversation
+        )
+      );
+    } catch {
+      // 已读失败不打断看消息；下次轮询或再次进入会话会重试
+    }
   };
 
   const sendMessage = async () => {
@@ -449,9 +555,103 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       await Promise.all([loadMessages(true), loadConversations(true)]);
       notify('消息已发送', 'success');
     } catch (error) {
-      notify(`发送失败：${(error as Error).message}`, 'error');
+      notify(`发送失败：${requestErrorMessage(error, '消息发送失败')}`, 'error');
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendImage = async (file?: File) => {
+    if (!file) return;
+    if (!activeConversation || !activeAccountId) {
+      notify('请先选择会话', 'warning');
+      return;
+    }
+    if (sending) {
+      notify('正在发送，请稍候', 'warning');
+      return;
+    }
+    if (!looksLikeImage(file)) {
+      notify('请选择图片文件', 'warning');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      notify('图片不能超过 5MB', 'warning');
+      return;
+    }
+    setSending(true);
+    notify('正在发送图片...', 'info');
+    try {
+      await sendChatImage(activeAccountId, {
+        cid: activeConversation.cid,
+        to_user_id: activeConversation.otherUserId,
+        image: file,
+      });
+      await Promise.all([loadMessages(true), loadConversations(true)]);
+      notify('图片已发送', 'success');
+    } catch (error) {
+      notify(`图片发送失败：${requestErrorMessage(error, '图片发送失败')}`, 'error');
+    } finally {
+      setSending(false);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  const sendVideo = async (file?: File) => {
+    if (!file) return;
+    if (!activeConversation || !activeAccountId) {
+      notify('请先选择会话', 'warning');
+      return;
+    }
+    if (sending) {
+      notify('正在发送，请稍候', 'warning');
+      return;
+    }
+    if (!looksLikeVideo(file)) {
+      notify('请选择视频文件', 'warning');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      notify('视频不能超过 20MB', 'warning');
+      return;
+    }
+    setSending(true);
+    notify('正在发送视频...', 'info');
+    try {
+      await sendChatVideo(activeAccountId, {
+        cid: activeConversation.cid,
+        to_user_id: activeConversation.otherUserId,
+        video: file,
+      });
+      await Promise.all([loadMessages(true), loadConversations(true)]);
+      notify('视频已发送', 'success');
+    } catch (error) {
+      notify(`视频发送失败：${requestErrorMessage(error, '视频发送失败')}`, 'error');
+    } finally {
+      setSending(false);
+      if (videoInputRef.current) videoInputRef.current.value = '';
+    }
+  };
+
+  const pasteMedia = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const mediaFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+      .filter((file) => looksLikeImage(file) || looksLikeVideo(file));
+
+    if (mediaFiles.length === 0) return;
+    event.preventDefault();
+    if (mediaFiles.length > 1) {
+      notify('一次只能粘贴发送一个图片或视频', 'warning');
+      return;
+    }
+
+    const file = mediaFiles[0];
+    if (looksLikeImage(file)) {
+      void sendImage(file);
+    } else {
+      void sendVideo(file);
     }
   };
 
@@ -747,7 +947,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                           <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
                             message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
                           }`}>
-                            {message.images.map((url) => (
+                            {(message.images || []).map((url) => (
                               <img
                                 key={url}
                                 src={normalizeImageUrl(url)}
@@ -755,6 +955,34 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                                 className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
                               />
                             ))}
+                            {message.type === 'audio' && message.audio && (
+                              <div className="min-w-[220px]">
+                                {audioSources[audioKey(message)] ? (
+                                  <audio
+                                    controls
+                                    src={audioSources[audioKey(message)]}
+                                    className="w-full"
+                                  />
+                                ) : audioLoading.has(audioKey(message)) ? (
+                                  <p className="text-xs text-[#999]">语音解析中...</p>
+                                ) : (
+                                  <p className="text-xs text-[#999]">语音无法播放</p>
+                                )}
+                                {formatDuration(message.audio.durationMs) && (
+                                  <p className="mt-1 text-[11px] text-[#999]">
+                                    {formatDuration(message.audio.durationMs)}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            {message.type === 'video' && message.video?.url && (
+                              <video
+                                controls
+                                src={normalizeImageUrl(message.video.url)}
+                                poster={normalizeImageUrl(message.video.poster)}
+                                className="mb-2 max-h-80 max-w-full rounded last:mb-0"
+                              />
+                            )}
                             {message.text && (
                               <p className="whitespace-pre-wrap break-words">{message.text}</p>
                             )}
@@ -781,9 +1009,46 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="表情（暂未开放）" className="hover:text-[var(--text)]">
                   <Smile className="h-5 w-5" />
                 </button>
-                <button type="button" title="图片（暂未开放）" className="hover:text-[var(--text)]">
+                <label
+                  title="发送图片"
+                  className={`hover:text-[var(--text)] ${
+                    !activeConversation || sending ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                  }`}
+                >
                   <Image className="h-5 w-5" />
-                </button>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    disabled={!activeConversation || sending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = '';
+                      void sendImage(file);
+                    }}
+                  />
+                </label>
+                <label
+                  title="发送视频"
+                  className={`hover:text-[var(--text)] ${
+                    !activeConversation || sending ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                  }`}
+                >
+                  <Video className="h-5 w-5" />
+                  <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/mp4,video/webm,video/quicktime"
+                    className="sr-only"
+                    disabled={!activeConversation || sending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = '';
+                      void sendVideo(file);
+                    }}
+                  />
+                </label>
                 <div className="relative">
                   <button
                     type="button"
@@ -824,6 +1089,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onPaste={pasteMedia}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
@@ -831,7 +1097,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     }
                   }}
                   rows={2}
-                  placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
+                  placeholder={activeAccount?.connected ? '输入消息，可粘贴图片或视频' : '账号离线，暂时无法发送'}
                   disabled={!activeAccount?.connected}
                   className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
                 />
