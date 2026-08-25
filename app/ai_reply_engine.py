@@ -82,6 +82,7 @@ class AIReplyEngine:
                 api_key=settings['api_key'],
                 base_url=settings['base_url'],
                 timeout=30.0,
+                default_headers={"User-Agent": settings.get('user_agent') or 'codex_cli_rs/0.0.0 (Hermes Agent)'},
             )
             logger.info(f"为账号 {cookie_id} 创建OpenAI客户端成功，实际base_url: {client.base_url}")
             return client

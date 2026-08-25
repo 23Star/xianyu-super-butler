@@ -5885,6 +5885,7 @@ class AIReplySettings(BaseModel):
     model_name: str = "qwen-plus"
     api_key: str = ""
     base_url: str = "https://ai.corleom.com/v1"
+    user_agent: str = ""
     max_discount_percent: int = 10
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
