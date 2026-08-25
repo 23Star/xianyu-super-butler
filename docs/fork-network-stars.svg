@@ -26,7 +26,7 @@
 
   <rect x="32" y="154" width="256" height="76" rx="6" class="card"/>
   <text x="48" y="181" class="label">Main repository</text>
-  <text x="48" y="213" class="metric">804 stars</text>
+  <text x="48" y="213" class="metric">805 stars</text>
 
   <rect x="306" y="154" width="256" height="76" rx="6" class="card"/>
   <text x="322" y="181" class="label">Public fork repositories</text>
@@ -34,9 +34,9 @@
 
   <rect x="580" y="154" width="288" height="76" rx="6" class="card"/>
   <text x="596" y="181" class="label">Stars received by forks</text>
-  <text x="596" y="213" class="metric">1,857 on 9 forks</text>
+  <text x="596" y="213" class="metric">1,856 on 9 forks</text>
 
   <text x="32" y="258" class="label">Most-starred forks</text>
-  <text x="32" y="278" class="repo">Mxucc/xianyu-super-butler</text><rect x="500" y="262" width="300" height="14" rx="3" class="bar"/><text x="820" y="278" text-anchor="end" class="count">1,849</text><text x="32" y="320" class="repo">Elichenx/xianyu-super-butler</text><rect x="500" y="304" width="8" height="14" rx="3" class="bar"/><text x="820" y="320" text-anchor="end" class="count">1</text><text x="32" y="362" class="repo">founderqiang/xianyu-super-butler</text><rect x="500" y="346" width="8" height="14" rx="3" class="bar"/><text x="820" y="362" text-anchor="end" class="count">1</text><text x="32" y="404" class="repo">goman-X/xianyu-super-butler</text><rect x="500" y="388" width="8" height="14" rx="3" class="bar"/><text x="820" y="404" text-anchor="end" class="count">1</text><text x="32" y="446" class="repo">hzy632932-bit/xianyu-super-butler</text><rect x="500" y="430" width="8" height="14" rx="3" class="bar"/><text x="820" y="446" text-anchor="end" class="count">1</text>
-  <text x="868" y="462" text-anchor="end" class="label">Updated 2026-08-25 07:11 UTC</text>
+  <text x="32" y="278" class="repo">Mxucc/xianyu-super-butler</text><rect x="500" y="262" width="300" height="14" rx="3" class="bar"/><text x="820" y="278" text-anchor="end" class="count">1,848</text><text x="32" y="320" class="repo">Elichenx/xianyu-super-butler</text><rect x="500" y="304" width="8" height="14" rx="3" class="bar"/><text x="820" y="320" text-anchor="end" class="count">1</text><text x="32" y="362" class="repo">founderqiang/xianyu-super-butler</text><rect x="500" y="346" width="8" height="14" rx="3" class="bar"/><text x="820" y="362" text-anchor="end" class="count">1</text><text x="32" y="404" class="repo">goman-X/xianyu-super-butler</text><rect x="500" y="388" width="8" height="14" rx="3" class="bar"/><text x="820" y="404" text-anchor="end" class="count">1</text><text x="32" y="446" class="repo">hzy632932-bit/xianyu-super-butler</text><rect x="500" y="430" width="8" height="14" rx="3" class="bar"/><text x="820" y="446" text-anchor="end" class="count">1</text>
+  <text x="868" y="462" text-anchor="end" class="label">Updated 2026-08-25 13:14 UTC</text>
 </svg>
