@@ -31,6 +31,7 @@ const defaultSettings: AIReplySettings = {
   api_key: '',
   api_key_configured: false,
   base_url: FREE_TOKEN_BASE_URL,
+  user_agent: 'codex_cli_rs/0.0.0 (Hermes Agent)',
   max_discount_percent: 10,
   max_discount_amount: 100,
   max_bargain_rounds: 3,
@@ -273,6 +274,16 @@ const AIReply: React.FC = () => {
                         {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     </div>
+                  </label>
+                  <label className="md:col-span-2">
+                    <span className="mb-1.5 block text-sm font-semibold text-gray-700">User-Agent</span>
+                    <input
+                      value={settings.user_agent ?? ''}
+                      onChange={event => updateSetting('user_agent', event.target.value)}
+                      className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
+                      placeholder="codex_cli_rs/0.0.0 (Hermes Agent)"
+                    />
+                    <span className="mt-1 block text-xs text-gray-500">部分 API 中转站（如 AgentRouter）通过 User-Agent 白名单检测客户端，留空使用默认值。</span>
                   </label>
                 </div>
               </section>

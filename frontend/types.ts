@@ -537,6 +537,7 @@ export interface AIReplySettings {
   api_key: string;
   api_key_configured?: boolean;
   base_url: string;
+  user_agent?: string;
   max_discount_percent: number;
   max_discount_amount?: number;
   max_bargain_rounds: number;

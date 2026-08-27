@@ -166,6 +166,7 @@ class DBManager:
                 model_name TEXT DEFAULT 'qwen-plus',
                 api_key TEXT,
                 base_url TEXT DEFAULT 'https://ai.corleom.com/v1',
+                user_agent TEXT,
                 max_discount_percent INTEGER DEFAULT 10,
                 max_discount_amount INTEGER DEFAULT 100,
                 max_bargain_rounds INTEGER DEFAULT 3,
@@ -804,6 +805,10 @@ class DBManager:
                         f"ALTER TABLE ai_reply_settings ADD COLUMN {column_name} {column_type}"
                     )
                     logger.info(f"数据库迁移完成：添加AI设置列 {column_name}")
+
+            if 'user_agent' not in ai_setting_columns:
+                cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN user_agent TEXT")
+                logger.info("数据库迁移完成：添加AI设置列 user_agent")
 
             # 确保商品同步配置存在
             cursor.execute("SELECT key FROM system_settings WHERE key IN ('item_sync_enabled', 'item_sync_interval', 'item_sync_max_pages')")
@@ -2440,17 +2445,18 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 INSERT OR REPLACE INTO ai_reply_settings
-                (cookie_id, ai_enabled, model_name, api_key, base_url,
+                (cookie_id, ai_enabled, model_name, api_key, base_url, user_agent,
                  max_discount_percent, max_discount_amount, max_bargain_rounds,
                  context_enabled, context_message_limit, context_expire_minutes,
                  custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
                     settings.get('ai_enabled', False),
                     settings.get('model_name', 'qwen-plus'),
                     settings.get('api_key', ''),
                     settings.get('base_url', 'https://ai.corleom.com/v1'),
+                    settings.get('user_agent', ''),
                     settings.get('max_discount_percent', 10),
                     settings.get('max_discount_amount', 100),
                     settings.get('max_bargain_rounds', 3),
@@ -2481,7 +2487,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT ai_enabled, model_name, api_key, base_url,
+                SELECT ai_enabled, model_name, api_key, base_url, user_agent,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
                        context_enabled, context_message_limit, context_expire_minutes,
                        custom_prompts
@@ -2511,13 +2517,14 @@ class DBManager:
                         'model_name': use_model,
                         'api_key': use_api_key,
                         'base_url': use_base_url,
-                        'max_discount_percent': result[4],
-                        'max_discount_amount': result[5],
-                        'max_bargain_rounds': result[6],
-                        'context_enabled': bool(result[7]),
-                        'context_message_limit': result[8] or 12,
-                        'context_expire_minutes': result[9] or 120,
-                        'custom_prompts': result[10]
+                        'user_agent': result[4] or '',
+                        'max_discount_percent': result[5],
+                        'max_discount_amount': result[6],
+                        'max_bargain_rounds': result[7],
+                        'context_enabled': bool(result[8]),
+                        'context_message_limit': result[9] or 12,
+                        'context_expire_minutes': result[10] or 120,
+                        'custom_prompts': result[11]
                     }
                 else:
                     # 账号没有设置，使用系统设置作为默认值
@@ -2526,6 +2533,7 @@ class DBManager:
                         'model_name': system_model,
                         'api_key': system_api_key,
                         'base_url': system_base_url,
+                        'user_agent': '',
                         'max_discount_percent': 10,
                         'max_discount_amount': 100,
                         'max_bargain_rounds': 3,
@@ -2541,6 +2549,7 @@ class DBManager:
                     'model_name': 'qwen-plus',
                     'api_key': '',
                     'base_url': 'https://ai.corleom.com/v1',
+                    'user_agent': '',
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,
@@ -2571,7 +2580,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT cookie_id, ai_enabled, model_name, api_key, base_url,
+                SELECT cookie_id, ai_enabled, model_name, api_key, base_url, user_agent,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
                        context_enabled, context_message_limit, context_expire_minutes,
                        custom_prompts
@@ -2586,13 +2595,14 @@ class DBManager:
                         'model_name': row[2],
                         'api_key': row[3],
                         'base_url': row[4],
-                        'max_discount_percent': row[5],
-                        'max_discount_amount': row[6],
-                        'max_bargain_rounds': row[7],
-                        'context_enabled': bool(row[8]),
-                        'context_message_limit': row[9] or 12,
-                        'context_expire_minutes': row[10] or 120,
-                        'custom_prompts': row[11]
+                        'user_agent': row[5] or '',
+                        'max_discount_percent': row[6],
+                        'max_discount_amount': row[7],
+                        'max_bargain_rounds': row[8],
+                        'context_enabled': bool(row[9]),
+                        'context_message_limit': row[10] or 12,
+                        'context_expire_minutes': row[11] or 120,
+                        'custom_prompts': row[12]
                     }
 
                 return result
