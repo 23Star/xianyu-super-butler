@@ -850,6 +850,7 @@ class XianyuLive:
         # 滑块验证相关
         self.captcha_verification_count = 0  # 滑块验证次数计数器
         self.max_captcha_verification_count = 3  # 最大滑块验证次数，防止无限递归
+        self.manual_captcha_in_progress = False  # 人工滑块验证进行中标志，暂停自动验证避免争抢浏览器槽位
 
         # WebSocket连接监控
         self.connection_state = ConnectionState.DISCONNECTED  # 连接状态
@@ -2084,6 +2085,14 @@ class XianyuLive:
                     f"跳过本次 Token 刷新"
                 )
                 self.last_token_refresh_status = "risk_control_blocked"
+                return None
+
+            # 人工验证进行中时跳过自动 Token 刷新 —— 自动滑块和人工验证共用
+            # browser_limit 全局信号量（默认 3 槽位），自动滑块占满槽位后人工验证
+            # 会在 launch_browser 里等 300 秒超时，前端弹窗卡在白屏 loading。
+            if getattr(self, 'manual_captcha_in_progress', False):
+                logger.info(f"【{self.cookie_id}】人工滑块验证进行中，跳过本次自动 Token 刷新")
+                self.last_token_refresh_status = "skipped_manual_captcha"
                 return None
 
             # 检查滑块验证重试次数，防止无限递归

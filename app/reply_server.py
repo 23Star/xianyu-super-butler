@@ -8892,10 +8892,24 @@ async def start_manual_captcha(
             detail="该账号当前不处于风控状态，无需人工验证",
         )
 
-    timeout = max(60, min(int(timeout or 300), 900))
-    result = await open_manual_session(
-        cookie_id, user_cookies[cookie_id], timeout=timeout
-    )
+    # 暂停该账号的自动 Token 刷新/滑块循环。自动滑块和人工验证共用
+    # browser_limit 全局信号量（默认 3 槽位），自动滑块占满槽位后人工验证
+    # 会在 launch_browser 里等 300 秒超时，前端弹窗就卡在白屏 loading。
+    _instance = None
+    if cookie_manager.manager is not None:
+        _instance = cookie_manager.manager.instances.get(cookie_id)
+        if _instance is not None:
+            _instance.manual_captcha_in_progress = True
+            log_with_user('info', f"账号 {cookie_id} 已暂停自动验证，等待人工完成", current_user)
+
+    try:
+        timeout = max(60, min(int(timeout or 300), 900))
+        result = await open_manual_session(
+            cookie_id, user_cookies[cookie_id], timeout=timeout
+        )
+    finally:
+        if _instance is not None:
+            _instance.manual_captcha_in_progress = False
 
     if result['success']:
         # 拿到 x5sec 后必须清掉 x5secdata 等挑战标记，否则闲鱼会认为验证仍未完成，
