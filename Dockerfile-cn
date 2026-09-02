@@ -68,7 +68,9 @@ RUN apt-get update && \
         libgl1 \
         libglib2.0-0 \
         xvfb \
-        x11-utils && \
+        x11-utils \
+        nodejs \
+        npm && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
