@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="480" viewBox="0 0 900 480" role="img" aria-labelledby="title desc">
   <title id="title">Fork network star summary for 23Star/xianyu-super-butler</title>
-  <desc id="desc">2,765 stars across the main repository and 583 public forks.</desc>
+  <desc id="desc">2,766 stars across the main repository and 583 public forks.</desc>
   <style>
     .bg { fill: #ffffff; stroke: #d0d7de; }
     .title { fill: #1f2328; font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -21,7 +21,7 @@
   </style>
   <rect x="0.5" y="0.5" width="899" height="479" rx="8" class="bg"/>
   <text x="32" y="44" class="title">Fork Network Stars</text>
-  <text x="32" y="104" class="total">2,765</text>
+  <text x="32" y="104" class="total">2,766</text>
   <text x="32" y="130" class="label">combined stars across the main repository and public forks</text>
 
   <rect x="32" y="154" width="256" height="76" rx="6" class="card"/>
@@ -34,9 +34,9 @@
 
   <rect x="580" y="154" width="288" height="76" rx="6" class="card"/>
   <text x="596" y="181" class="label">Stars received by forks</text>
-  <text x="596" y="213" class="metric">1,894 on 11 forks</text>
+  <text x="596" y="213" class="metric">1,895 on 11 forks</text>
 
   <text x="32" y="258" class="label">Most-starred forks</text>
-  <text x="32" y="278" class="repo">Mxucc/xianyu-super-butler</text><rect x="500" y="262" width="300" height="14" rx="3" class="bar"/><text x="820" y="278" text-anchor="end" class="count">1,884</text><text x="32" y="320" class="repo">Elichenx/xianyu-super-butler</text><rect x="500" y="304" width="8" height="14" rx="3" class="bar"/><text x="820" y="320" text-anchor="end" class="count">1</text><text x="32" y="362" class="repo">founderqiang/xianyu-super-butler</text><rect x="500" y="346" width="8" height="14" rx="3" class="bar"/><text x="820" y="362" text-anchor="end" class="count">1</text><text x="32" y="404" class="repo">goman-X/xianyu-super-butler</text><rect x="500" y="388" width="8" height="14" rx="3" class="bar"/><text x="820" y="404" text-anchor="end" class="count">1</text><text x="32" y="446" class="repo">hzy632932-bit/xianyu-super-butler</text><rect x="500" y="430" width="8" height="14" rx="3" class="bar"/><text x="820" y="446" text-anchor="end" class="count">1</text>
-  <text x="868" y="462" text-anchor="end" class="label">Updated 2026-09-02 16:39 UTC</text>
+  <text x="32" y="278" class="repo">Mxucc/xianyu-super-butler</text><rect x="500" y="262" width="300" height="14" rx="3" class="bar"/><text x="820" y="278" text-anchor="end" class="count">1,885</text><text x="32" y="320" class="repo">Elichenx/xianyu-super-butler</text><rect x="500" y="304" width="8" height="14" rx="3" class="bar"/><text x="820" y="320" text-anchor="end" class="count">1</text><text x="32" y="362" class="repo">founderqiang/xianyu-super-butler</text><rect x="500" y="346" width="8" height="14" rx="3" class="bar"/><text x="820" y="362" text-anchor="end" class="count">1</text><text x="32" y="404" class="repo">goman-X/xianyu-super-butler</text><rect x="500" y="388" width="8" height="14" rx="3" class="bar"/><text x="820" y="404" text-anchor="end" class="count">1</text><text x="32" y="446" class="repo">hzy632932-bit/xianyu-super-butler</text><rect x="500" y="430" width="8" height="14" rx="3" class="bar"/><text x="820" y="446" text-anchor="end" class="count">1</text>
+  <text x="868" y="462" text-anchor="end" class="label">Updated 2026-09-02 21:06 UTC</text>
 </svg>
