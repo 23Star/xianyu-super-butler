@@ -24,6 +24,7 @@ from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
 from app.routers.delivery_block import create_delivery_block_router
+from app.routers.logistics_quote import create_logistics_quote_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
@@ -337,6 +338,9 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 
+app.include_router(create_logistics_quote_router(get_current_user, db_manager))
+logger.info("已注册物流报价解析路由")
+
 # 初始化文件日志收集器
 setup_file_logging()
 
@@ -435,7 +439,9 @@ async def serve_frontend():
     index_path = os.path.join(static_dir, 'index.html')
     if os.path.exists(index_path):
         with open(index_path, 'r', encoding='utf-8') as f:
-            return HTMLResponse(f.read())
+            # index.html 引用带哈希的静态资源，本身禁用缓存，
+            # 避免发新版后浏览器仍加载旧页面（哈希资源本身可正常缓存）。
+            return HTMLResponse(f.read(), headers={'Cache-Control': 'no-cache'})
     else:
         return HTMLResponse('<h3>Frontend not found. Please build the frontend first.</h3>')
 

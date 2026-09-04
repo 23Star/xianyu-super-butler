@@ -306,6 +306,30 @@ class DBManager:
                 "ON personal_blacklist(owner_id, buyer_id, is_enabled)"
             )
 
+            # 创建物流报价表识别结果表（仅保存解析摘要，不保存原始文件）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '',
+                book_kind TEXT,
+                service_count INTEGER DEFAULT 0,
+                route_count INTEGER DEFAULT 0,
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, sha256),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_books_user "
+                "ON logistics_quote_books(user_id, updated_at DESC)"
+            )
+
             # 检查并添加 is_bargain 列（用于标记小刀订单）
             try:
                 self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")

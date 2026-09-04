@@ -4,6 +4,7 @@ import {
   Bot,
   Box,
   CreditCard,
+  Calculator,
   LayoutDashboard,
   ListFilter,
   LogOut,
@@ -50,6 +51,12 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         { id: 'messages', icon: ListFilter, label: '消息中心' },
         { id: 'auto-reply', icon: MessageSquare, label: '自动回复' },
         { id: 'ai-reply', icon: Bot, label: 'AI 回复' },
+      ],
+    },
+    {
+      label: '经营工具',
+      items: [
+        { id: 'logistics-quotes', icon: Calculator, label: '物流报价' },
       ],
     },
     {

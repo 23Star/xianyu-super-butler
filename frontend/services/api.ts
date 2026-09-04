@@ -1093,3 +1093,119 @@ export const clearDefaultReplyRecords = async (cookieId: string): Promise<ApiRes
 export const getAnnouncement = async (force = false): Promise<AnnouncementPayload> => {
   return get('/api/announcement', force ? { force: true } : undefined);
 };
+
+// 物流报价表解析（识别结果持久化，支持多份报价表）
+export interface LogisticsQuoteTier {
+  min_exclusive_kg?: number;
+  max_inclusive_kg?: number;
+  price_per_kg: number;
+}
+
+export interface LogisticsQuoteFixedTier {
+  up_to_kg: number;
+  price: number;
+}
+
+export interface LogisticsQuoteCarrier {
+  name: string;
+  sheets: string[];
+  source: 'sheet_name' | 'carrier_column' | 'mixed';
+  carrier_column: string | null;
+  first_source_row: number | null;
+}
+
+export interface LogisticsQuoteParseRow {
+  id: string;
+  sheet: string;
+  source_row: number;
+  seller: string | null;
+  channel: string | null;
+  carrier: string | null;
+  carrier_source: string | null;
+  route: string | null;
+  eta: string | null;
+  origin_province: string | null;
+  origin_city: string | null;
+  origin: string | null;
+  destination_province: string | null;
+  destination_city: string | null;
+  destination: string | null;
+  first_weight_kg: number | null;
+  first_price: number | null;
+  continued_unit_kg: number | null;
+  continued_price: number | null;
+  continued_tiers: LogisticsQuoteTier[] | null;
+  fixed_tiers: LogisticsQuoteFixedTier[] | null;
+  rule_type: 'first_additional' | 'fixed_tiers' | 'fixed_tiers_overflow' | 'banded_additional' | 'minimum_then_per_kg' | null;
+  book_kind: 'express' | 'logistics' | null;
+  quote: number | null;
+  confidence: number;
+  review_state: 'valid' | 'review' | 'rejected';
+  issues: string[];
+  raw: Record<string, string>;
+}
+
+export interface LogisticsQuoteParseResponse {
+  success: boolean;
+  mode?: 'carrier_only' | 'rate_book_summary';
+  source: {
+    filename: string;
+    size: number;
+    sha256: string;
+    content_type: string | null;
+    file_type: 'xlsx' | 'xlsm' | 'xls' | 'csv';
+    parser_version: string;
+    status: 'parsed' | 'needs_review';
+  };
+  mapping: { matched: Record<string, string>; unmatched: string[] };
+  summary: { total: number; valid: number; review: number; rejected: number };
+  book_kind: 'express' | 'logistics' | null;
+  service_count: number;
+  route_count: number;
+  services: Array<{
+    name: string;
+    sheet_name: string;
+    row_count: number;
+    route_count: number;
+    rule_type: string;
+    book_kind: 'express' | 'logistics' | null;
+    mapping: Record<string, string>;
+  }>;
+  carriers: LogisticsQuoteCarrier[];
+  rows: LogisticsQuoteParseRow[];
+  warning_count: number;
+  warnings: string[];
+}
+
+export const parseQuoteSource = async (file: File): Promise<LogisticsQuoteParseResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return post('/api/logistics/quote-sources/parse', formData);
+};
+
+export interface LogisticsQuoteBook {
+  id: number;
+  filename: string;
+  file_type: string;
+  size_bytes: number;
+  sha256: string;
+  book_kind: 'express' | 'logistics' | null;
+  service_count: number;
+  route_count: number;
+  payload: Omit<LogisticsQuoteParseResponse, 'success'>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const listQuoteBooks = async (): Promise<{ success: boolean; books: LogisticsQuoteBook[] }> =>
+  get('/api/logistics/quote-books');
+
+export const createQuoteBook = async (file: File): Promise<{ success: boolean; book: LogisticsQuoteBook }> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return post('/api/logistics/quote-books', formData);
+};
+
+export const deleteQuoteBook = async (bookId: number): Promise<{ success: boolean }> =>
+  del(`/api/logistics/quote-books/${bookId}`);
+
