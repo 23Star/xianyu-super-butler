@@ -25,6 +25,8 @@
 
 ## 核心功能
 
+物流报价 Agent 工具与 JSON 命令行调用见 [workflows/README.md](workflows/README.md)。
+
 | 模块 | 能力 |
 | --- | --- |
 | 总览 | 汇总营收、账号、订单、卡密库存和运行状态 |

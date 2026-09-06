@@ -119,7 +119,7 @@ def _add_rate_book_summary_row(
         context["column_specs"],
         context["sheet_carrier"],
     )
-    if state["sample_row"] is None:
+    if state["sample_row"] is None and result["review_state"] != "rejected":
         state["sample_row"] = result
     state[result["review_state"]] += 1
     state["total_rows"] += 1

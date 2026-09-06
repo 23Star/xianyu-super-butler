@@ -2045,6 +2045,51 @@ aside nav:hover::-webkit-scrollbar-thumb {
   transform: translateY(-1px);
 }
 
+.quote-sim-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, .85fr); border-top: 1px solid var(--border); }
+.quote-sim-chat { min-width: 0; background: var(--surface); }
+.quote-sim-chat__topline { display: flex; min-height: 70px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 14px 18px; }
+.quote-sim-chat__topline > div { min-width: 0; flex: 1; }
+.quote-sim-chat__topline strong { display: block; color: var(--text); font-size: 13px; font-weight: 780; }
+.quote-sim-chat__topline small { display: block; margin-top: 3px; color: var(--text-soft); font-size: 10px; }
+.quote-sim-avatar { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 10px; background: var(--brand-soft); color: var(--brand-ink); font-size: 13px; font-weight: 800; }
+.quote-sim-live { display: inline-flex; align-items: center; gap: 5px; color: var(--success); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.quote-sim-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.quote-sim-thread { display: flex; min-height: 310px; flex-direction: column; justify-content: flex-end; gap: 14px; padding: 20px 18px; background: var(--surface-subtle); }
+.quote-sim-bubble { display: flex; max-width: 86%; flex-direction: column; gap: 7px; border: 1px solid var(--border); border-radius: 5px 13px 13px 13px; padding: 12px 14px; color: var(--text); font-size: 12px; line-height: 1.7; box-shadow: var(--shadow-sm); overflow-wrap: anywhere; }
+.quote-sim-bubble time { color: var(--text-soft); font-size: 9px; line-height: 1; }
+.quote-sim-bubble--buyer { align-self: flex-end; border-color: var(--border-brand); border-radius: 13px 5px 13px 13px; background: var(--brand-soft); }
+.quote-sim-bubble--assistant { align-self: flex-start; background: var(--surface); }
+.quote-sim-compose { border-top: 1px solid var(--border); padding: 14px 18px 16px; }
+.quote-sim-compose textarea { display: block; width: 100%; resize: vertical; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); padding: 11px 12px; color: var(--text); font-size: 12px; line-height: 1.6; outline: 0; }
+.quote-sim-compose textarea:focus { border-color: var(--brand-text); box-shadow: 0 0 0 2px var(--brand-soft); }
+.quote-sim-compose__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.quote-sim-compose__footer span { color: var(--text-soft); font-size: 10px; }
+.quote-sim-inspector { display: flex; min-width: 0; flex-direction: column; gap: 14px; border-left: 1px solid var(--border); background: var(--surface-subtle); padding: 18px; }
+.quote-sim-inspector__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.quote-sim-kicker { color: var(--text-soft); font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.quote-sim-inspector h3 { margin-top: 3px; color: var(--text); font-size: 17px; font-weight: 800; }
+.quote-sim-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 8px; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.quote-sim-status--pass { background: var(--success-soft); color: var(--success-ink); }
+.quote-sim-status--review { background: var(--warning-soft); color: var(--warning-ink); }
+.quote-sim-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.quote-sim-param { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 9px 10px; }
+.quote-sim-param span, .quote-sim-calc span, .quote-sim-source > span { display: block; color: var(--text-soft); font-size: 10px; }
+.quote-sim-param strong { display: block; margin-top: 4px; color: var(--text); font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
+.quote-sim-calc { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); padding: 12px; }
+.quote-sim-calc > div:not(.quote-sim-calc__title) { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.quote-sim-calc b { color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.quote-sim-calc__title { display: flex; align-items: center; gap: 6px; color: var(--brand-text); }
+.quote-sim-calc__title strong { color: var(--text); font-size: 12px; }
+.quote-sim-missing, .quote-sim-ready { display: flex; align-items: flex-start; gap: 7px; border-radius: 8px; padding: 10px 11px; font-size: 11px; line-height: 1.5; }
+.quote-sim-missing { background: var(--warning-soft); color: var(--warning-ink); }
+.quote-sim-ready { background: var(--success-soft); color: var(--success-ink); }
+.quote-sim-source { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--border); padding-top: 12px; }
+.quote-sim-source strong { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.quote-sim-source small { color: var(--text-soft); font-size: 10px; }
+
+@media (max-width: 900px) { .quote-sim-layout { grid-template-columns: minmax(0, 1fr); } .quote-sim-inspector { border-top: 1px solid var(--border); border-left: 0; } }
+@media (max-width: 520px) { .quote-sim-compose__footer { align-items: stretch; flex-direction: column; } .quote-sim-compose__footer button { width: 100%; justify-content: center; } .quote-sim-params { grid-template-columns: minmax(0, 1fr); } .quote-sim-thread { min-height: 260px; } }
+
 @keyframes floating-save-pulse {
   0%, 100% { box-shadow: var(--shadow-brand); }
   50% { box-shadow: 0 6px 26px rgba(255, 214, 0, 0.55); }

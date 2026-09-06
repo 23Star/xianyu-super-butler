@@ -1,0 +1,117 @@
+{
+  "name": "logistics_quote",
+  "description": "使用已确认线路的承运商费率进行确定性运费计算。调用方提供真实费率；结果包含计费重、金额、支付拆分和错误。success=false 时应处理缺参或错误后重算。",
+  "parameters": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["quote_config"],
+    "anyOf": [
+      { "required": ["weight_kg"], "properties": { "weight_kg": { "type": "number", "exclusiveMinimum": 0 } } },
+      { "required": ["length_cm", "width_cm", "height_cm"], "properties": {
+        "length_cm": { "type": "number", "exclusiveMinimum": 0 },
+        "width_cm": { "type": "number", "exclusiveMinimum": 0 },
+        "height_cm": { "type": "number", "exclusiveMinimum": 0 }
+      } }
+    ],
+    "allOf": [{
+      "if": { "anyOf": [
+        { "required": ["length_cm"], "properties": { "length_cm": { "type": "number" } } },
+        { "required": ["width_cm"], "properties": { "width_cm": { "type": "number" } } },
+        { "required": ["height_cm"], "properties": { "height_cm": { "type": "number" } } }
+      ] },
+      "then": {
+        "required": ["length_cm", "width_cm", "height_cm"],
+        "properties": {
+          "length_cm": { "type": "number", "exclusiveMinimum": 0 },
+          "width_cm": { "type": "number", "exclusiveMinimum": 0 },
+          "height_cm": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    }],
+    "properties": {
+      "sender": { "type": "string", "description": "寄件地备注；调用方须事先匹配线路费率。" },
+      "receiver": { "type": "string", "description": "收件地备注；计算引擎不查询线路。" },
+      "weight_kg": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+      "length_cm": { "type": ["number", "null"], "exclusiveMinimum": 0, "description": "提供尺寸时长宽高必须齐全。" },
+      "width_cm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+      "height_cm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+      "carrier_payment_mode": { "type": "string", "enum": ["offline", "online"], "description": "承运商侧支付方式；未传时按线上抛比计算。" },
+      "quote_config": {
+        "type": "object", "additionalProperties": false, "required": ["carriers"],
+        "properties": {
+          "price_basis": { "type": "string", "enum": ["cost", "markup"] },
+          "carriers": {
+            "type": "object", "minProperties": 1,
+            "propertyNames": { "pattern": "\\S" },
+            "description": "键为承运商名称；值为调用方已匹配线路、服务类别并确认的报价配置。",
+            "additionalProperties": { "$ref": "#/$defs/carrier" }
+          },
+          "default_volume_ratios": {
+            "type": "object", "description": "键使用规范名称，例如百世快运、顺心捷达。承运商自身 volume_ratio 优先。",
+            "additionalProperties": { "$ref": "#/$defs/ratioRule" }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "ratioRule": {
+        "oneOf": [
+          { "type": "number", "exclusiveMinimum": 0 },
+          {
+            "type": "object", "additionalProperties": false, "required": ["basis", "threshold_kg", "light", "heavy"],
+            "properties": {
+              "basis": { "const": "weight" },
+              "threshold_kg": { "type": "number", "minimum": 0, "description": "按实重判断；纯体积输入实重视为 0。" },
+              "light": { "type": "number", "exclusiveMinimum": 0 },
+              "heavy": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          },
+          {
+            "type": "object", "additionalProperties": false, "required": ["basis", "offline", "online"],
+            "properties": {
+              "basis": { "const": "payment" },
+              "offline": { "type": "number", "exclusiveMinimum": 0 },
+              "online": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        ]
+      },
+      "carrier": {
+        "type": "object", "additionalProperties": false, "required": ["price_table"],
+        "properties": {
+          "volume_ratio": { "type": "number", "exclusiveMinimum": 0 },
+          "price_table": { "$ref": "#/$defs/priceTable" },
+          "markup_cost": { "type": "number" },
+          "markup_manual": { "type": "number" },
+          "discount_rate": { "type": "number", "minimum": 0, "maximum": 100, "description": "减免百分比；10 表示打九折。" },
+          "discount_amount": { "type": "number", "minimum": 0 },
+          "payment_mode": { "type": "string", "enum": ["direct", "smart", "supplement"] },
+          "coupon_max_amount": { "type": "number", "minimum": 0, "description": "smart 模式必填。" },
+          "paid_amount": { "type": "number", "minimum": 0, "description": "supplement 模式必填。" }
+        },
+        "allOf": [
+          { "if": { "required": ["payment_mode"], "properties": { "payment_mode": { "const": "smart" } } }, "then": { "required": ["coupon_max_amount"] } },
+          { "if": { "required": ["payment_mode"], "properties": { "payment_mode": { "const": "supplement" } } }, "then": { "required": ["paid_amount"] } }
+        ]
+      },
+      "priceTable": {
+        "type": "object", "additionalProperties": false,
+        "anyOf": [
+          { "required": ["tiers"] },
+          { "required": ["first_weight_price", "continued_weight_price"] },
+          { "required": ["minimum_price", "per_kg_price"] }
+        ],
+        "properties": {
+          "tiers": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "type": "number", "minimum": 0 }, "description": "精确整数公斤档；未命中时尝试首续重，再尝试最低价。" },
+          "first_weight": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
+          "first_weight_price": { "type": "number", "minimum": 0 },
+          "continued_unit": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
+          "continued_weight_price": { "type": "number", "minimum": 0 },
+          "minimum_price": { "type": "number", "minimum": 0 },
+          "per_kg_price": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

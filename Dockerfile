@@ -14,6 +14,7 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+COPY workflows/ /workflows/
 RUN VITE_OUT_DIR=dist npm run build
 
 FROM base AS builder

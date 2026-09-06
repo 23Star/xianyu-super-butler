@@ -118,7 +118,7 @@ const LogisticsQuotes = () => {
       <PageHeader
         icon={Calculator}
         title="物流报价"
-        description="维护承运商报价数据：先识别报价表，再配置报价设置与消息模板，最后进行完整功能检测。识别结果会保存在本机，可随时管理。"
+        description="维护承运商报价数据：先识别报价表，再配置报价设置与消息模板，最后用模拟会话验证参数识别与回复。识别结果会保存在本机，可随时管理。"
       />
 
       <ol className="grid gap-3 sm:grid-cols-4" aria-label="物流报价流程">

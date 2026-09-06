@@ -35,8 +35,8 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     id: 'diagnose',
-    label: '功能检测',
-    description: '对识别、计价与消息模板做完整功能检测，确认报价配置可正常生效',
+    label: '模拟会话',
+    description: '模拟买家询价，识别收发地、重量和尺寸并预览自动回复',
     icon: ClipboardCheck,
     implemented: true,
   },
