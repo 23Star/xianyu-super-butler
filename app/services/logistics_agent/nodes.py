@@ -177,9 +177,15 @@ def check_missing_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
             "reason": "",
             "events": [event],
         }
+    follow_up = follow_up_field(gaps)
+    if "地址确认" in gaps and session.address_candidates:
+        candidate = next((item for item in session.address_candidates if item.needs_confirmation), None)
+        if candidate:
+            options = candidate.normalized or "、".join([candidate.raw])
+            follow_up = f"您说的是“{options}”吗？请确认地址"
     return {
         "missing_fields": gaps,
-        "follow_up": follow_up_field(gaps),
+        "follow_up": follow_up,
         "action": "reply",
         "reason": "missing_params",
         "events": [event],

@@ -43,6 +43,29 @@ class ExtractedQuote(BaseModel):
         description='本条消息明确修改的字段：sender/receiver/weight/dimensions',
     )
     notes: str | None = None
+    packages: list["ExtractedPackage"] = Field(default_factory=list, description="同一消息中的多个包裹")
+    address_candidates: list["AddressCandidate"] = Field(default_factory=list)
+    unit_issues: list[str] = Field(default_factory=list)
+
+
+class ExtractedPackage(BaseModel):
+    """单个包裹的识别结果；缺失字段保持为空，禁止猜测。"""
+
+    package_id: str = ""
+    weight_kg: float | None = Field(default=None, gt=0)
+    length_cm: float | None = Field(default=None, gt=0)
+    width_cm: float | None = Field(default=None, gt=0)
+    height_cm: float | None = Field(default=None, gt=0)
+    quantity: int = Field(default=1, ge=1)
+    unit_issues: list[str] = Field(default_factory=list)
+
+
+class AddressCandidate(BaseModel):
+    field: Literal["sender", "receiver"]
+    raw: str
+    normalized: str | None = None
+    confidence: float = Field(default=0, ge=0, le=1)
+    needs_confirmation: bool = True
 
 
 class SessionState(BaseModel):
@@ -64,6 +87,9 @@ class SessionState(BaseModel):
     state_version: int = 1
     round_id: int = 1
     status: str = SESSION_COLLECTING
+    packages: list[ExtractedPackage] = Field(default_factory=list)
+    address_candidates: list[AddressCandidate] = Field(default_factory=list)
+    unit_issues: list[str] = Field(default_factory=list)
 
     def dimensions(self) -> list[float | None]:
         return [self.length_cm, self.width_cm, self.height_cm]

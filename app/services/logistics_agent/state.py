@@ -46,6 +46,12 @@ def merge_state(current: SessionState | None, extracted: ExtractedQuote, message
     由 finalize 节点在完整跑完后写入，中途失败的执行不占用幂等凭据。
     """
     state = current.model_copy(deep=True) if current else SessionState()
+    if extracted.packages:
+        state.packages = extracted.packages
+    if extracted.address_candidates:
+        state.address_candidates = extracted.address_candidates
+    if extracted.unit_issues:
+        state.unit_issues = list(dict.fromkeys([*state.unit_issues, *extracted.unit_issues]))
     if state.status in _FINISHED_STATUSES:
         # 上一轮已完结：除非明确修改旧单，否则一律开新一轮。
         if not _is_modification(extracted):
@@ -117,6 +123,9 @@ def _new_round(prev: SessionState, *, bump_round: bool) -> SessionState:
     nxt.quantity = 1
     nxt.carrier = None
     nxt.payment_mode = None
+    nxt.packages = []
+    nxt.address_candidates = []
+    nxt.unit_issues = []
     nxt.status = SESSION_COLLECTING
     return nxt
 
@@ -124,6 +133,8 @@ def _new_round(prev: SessionState, *, bump_round: bool) -> SessionState:
 def missing_fields(state: SessionState) -> list[str]:
     """当前最小缺口，按追问优先级排序（发货地 → 收货地 → 实重/尺寸）。"""
     gaps: list[str] = []
+    if any(candidate.needs_confirmation for candidate in state.address_candidates):
+        gaps.append("地址确认")
     if not state.sender:
         gaps.append("发货地")
     if not state.receiver:
