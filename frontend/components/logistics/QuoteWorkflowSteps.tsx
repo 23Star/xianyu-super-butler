@@ -1,6 +1,6 @@
-import { Bot, ClipboardCheck, FileSpreadsheet, SlidersHorizontal, type LucideIcon } from 'lucide-react';
+import { Bot, ClipboardCheck, FileSpreadsheet, SlidersHorizontal, Sparkles, type LucideIcon } from 'lucide-react';
 
-export type StepId = 'recognition' | 'settings' | 'apply' | 'diagnose';
+export type StepId = 'recognition' | 'settings' | 'apply' | 'diagnose' | 'agent';
 
 export interface WorkflowStep {
   id: StepId;
@@ -38,6 +38,13 @@ export const workflowSteps: WorkflowStep[] = [
     label: '模拟会话',
     description: '模拟买家询价，识别收发地、重量和尺寸并预览自动回复',
     icon: ClipboardCheck,
+    implemented: true,
+  },
+  {
+    id: 'agent',
+    label: '物流 Agent',
+    description: '按账号启用自动报价：导入线路明细、配置模型与模板，检测就绪后自动报价发货',
+    icon: Sparkles,
     implemented: true,
   },
 ];

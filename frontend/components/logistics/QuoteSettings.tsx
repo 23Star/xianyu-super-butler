@@ -13,6 +13,7 @@ import QuoteBasicSection from './QuoteBasicSection';
 import QuoteScopeSection from './QuoteScopeSection';
 import QuoteSmartCalcSection from './QuoteSmartCalcSection';
 import QuoteVolumeRatioSection from './QuoteVolumeRatioSection';
+import QuoteCarrierConfigSection from './QuoteCarrierConfigSection';
 
 const QuoteSettings = () => {
   const [form, setForm] = useState<QuoteSettingsData>(() => loadQuoteSettings());
@@ -53,6 +54,7 @@ const QuoteSettings = () => {
       />
       <QuoteSmartCalcSection form={form} onChangeField={updateField} onNumberFieldChange={updateNumberField} />
       <QuoteVolumeRatioSection form={form} onNumberFieldChange={updateNumberField} />
+      <QuoteCarrierConfigSection form={form} onChange={(value) => updateField('carrier_config', value)} />
       <QuoteBasicSection form={form} onChangeField={updateField} />
 
       <section className="section-panel">

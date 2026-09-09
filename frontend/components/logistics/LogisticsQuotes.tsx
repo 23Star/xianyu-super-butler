@@ -12,6 +12,7 @@ import {
 } from '../../services/logisticsQuote';
 import { confirmLeaveUnsaved } from '../../services/unsavedChanges';
 import { EmptyState, PageHeader } from '../ui';
+import QuoteAgentPanel from './agent/QuoteAgentPanel';
 import QuoteAutoReply from './QuoteAutoReply';
 import QuoteBookList from './QuoteBookList';
 import QuoteDiagnostics from './QuoteDiagnostics';
@@ -27,6 +28,7 @@ const LogisticsQuotes = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeletingId, setIsDeletingId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
 
   const refreshBooks = useCallback(async () => {
     try {
@@ -74,17 +76,25 @@ const LogisticsQuotes = () => {
     if (!selectedFiles.length || isRecognizing) return;
     setIsRecognizing(true);
     setErrorMessage('');
+    setInfoMessage('');
     const failures: string[] = [];
+    const synced: string[] = [];
     try {
       for (const file of selectedFiles) {
         try {
           const response = await createQuoteBook(file);
           setBooks((prev) => [response.book, ...prev.filter((book) => book.id !== response.book.id)]);
+          if (response.route_import) {
+            synced.push(`「${file.name}」已同步 ${response.route_import.route_count} 条线路明细到第五步物流 Agent`);
+          } else if (response.route_warning) {
+            synced.push(`「${file.name}」${response.route_warning}`);
+          }
         } catch (error) {
           failures.push(`「${file.name}」${extractParseError(error)}`);
         }
       }
       if (failures.length) setErrorMessage(failures.join('；'));
+      if (synced.length) setInfoMessage(synced.join('；'));
     } finally {
       setIsRecognizing(false);
       clearSelection();
@@ -118,10 +128,10 @@ const LogisticsQuotes = () => {
       <PageHeader
         icon={Calculator}
         title="物流报价"
-        description="维护承运商报价数据：先识别报价表，再配置报价设置与消息模板，最后用模拟会话验证参数识别与回复。识别结果会保存在本机，可随时管理。"
+        description="维护承运商报价数据：先识别报价表，再配置报价设置与消息模板，最后在物流 Agent 按账号启用自动报价。识别报价表时线路明细会自动同步到第五步。"
       />
 
-      <ol className="grid gap-3 sm:grid-cols-4" aria-label="物流报价流程">
+      <ol className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5" aria-label="物流报价流程">
         {workflowSteps.map((step, index) => (
           <li key={step.id} aria-current={activeStep === step.id ? 'step' : undefined}>
             <StepCard
@@ -140,6 +150,8 @@ const LogisticsQuotes = () => {
         <QuoteAutoReply />
       ) : activeStep === 'diagnose' ? (
         <QuoteDiagnostics />
+      ) : activeStep === 'agent' ? (
+        <QuoteAgentPanel onNavigateStep={(step) => void handleSelectStep(step)} />
       ) : activeStep === 'recognition' ? (
         <>
           <QuoteRecognitionPanel
@@ -157,6 +169,15 @@ const LogisticsQuotes = () => {
               role="alert"
             >
               {errorMessage}
+            </p>
+          )}
+
+          {infoMessage && (
+            <p
+              className="rounded-md border border-[color:color-mix(in_srgb,var(--brand)_34%,var(--border))] bg-[var(--brand-soft)] px-3 py-2.5 text-[13px] leading-normal text-[var(--brand-text)]"
+              role="status"
+            >
+              {infoMessage}
             </p>
           )}
 

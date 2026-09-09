@@ -54,5 +54,6 @@ export const extractParseError = (error: unknown): string => {
       .find((item): item is string => typeof item === 'string' && item.trim().length > 0);
     if (message) return message;
   }
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
   return '报价表识别失败，请检查文件后重试';
 };

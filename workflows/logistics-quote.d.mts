@@ -49,6 +49,10 @@ export interface PriceTable {
   first_weight_price?: number;
   continued_unit?: number;
   continued_weight_price?: number;
+  /** 分段续重：键为续重部分（计费重 - 首重）上界公斤数，值为该段每公斤价格。 */
+  continued_tiers?: Record<number, number>;
+  /** 续重部分超过最大分段上界时的每公斤价格；使用 continued_tiers 时必填。 */
+  overflow_continued_price?: number;
   minimum_price?: number;
   per_kg_price?: number;
 }

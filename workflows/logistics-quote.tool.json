@@ -99,15 +99,18 @@
         "type": "object", "additionalProperties": false,
         "anyOf": [
           { "required": ["tiers"] },
+          { "required": ["continued_tiers", "first_weight", "first_weight_price", "overflow_continued_price"] },
           { "required": ["first_weight_price", "continued_weight_price"] },
           { "required": ["minimum_price", "per_kg_price"] }
         ],
         "properties": {
-          "tiers": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "type": "number", "minimum": 0 }, "description": "精确整数公斤档；未命中时尝试首续重，再尝试最低价。" },
+          "tiers": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "type": "number", "minimum": 0 }, "description": "精确整数公斤档；未命中时尝试分段续重/首续重，再尝试最低价。" },
           "first_weight": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
           "first_weight_price": { "type": "number", "minimum": 0 },
           "continued_unit": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
           "continued_weight_price": { "type": "number", "minimum": 0 },
+          "continued_tiers": { "type": "object", "propertyNames": { "pattern": "^[1-9][0-9]*$" }, "additionalProperties": { "type": "number", "minimum": 0 }, "description": "分段续重：键为续重部分（计费重-首重）的上界公斤数，值为该段每公斤价格；须同时提供 overflow_continued_price。" },
+          "overflow_continued_price": { "type": "number", "minimum": 0, "description": "续重部分超过最大分段上界时的每公斤价格。" },
           "minimum_price": { "type": "number", "minimum": 0 },
           "per_kg_price": { "type": "number", "minimum": 0 }
         }

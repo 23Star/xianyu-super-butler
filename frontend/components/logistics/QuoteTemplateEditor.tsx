@@ -34,7 +34,7 @@ interface QuoteTemplateEditorProps {
 
 /**
  * 回复模板编辑器：文本框 + 参数插入 + 实时预览。
- * 第二步「回复消息自定义」与第三步「消息模板设置」的各条文案共用。
+ * 第三步消息模板编辑器：统一处理参数插入、预览和恢复默认。
  */
 const QuoteTemplateEditor = ({
   id,

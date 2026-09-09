@@ -1201,7 +1201,17 @@ export interface LogisticsQuoteBook {
 export const listQuoteBooks = async (): Promise<{ success: boolean; books: LogisticsQuoteBook[] }> =>
   get('/api/logistics/quote-books');
 
-export const createQuoteBook = async (file: File): Promise<{ success: boolean; book: LogisticsQuoteBook }> => {
+export interface QuoteBookRouteSync {
+  id: number;
+  route_count: number;
+}
+
+export const createQuoteBook = async (file: File): Promise<{
+  success: boolean;
+  book: LogisticsQuoteBook;
+  route_import: QuoteBookRouteSync | null;
+  route_warning: string;
+}> => {
   const formData = new FormData();
   formData.append('file', file);
   return post('/api/logistics/quote-books', formData);

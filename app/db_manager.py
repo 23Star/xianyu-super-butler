@@ -330,6 +330,151 @@ class DBManager:
                 "ON logistics_quote_books(user_id, updated_at DESC)"
             )
 
+            # 物流报价线路明细：按报价表导入批次保存规范化线路，供地址匹配与计费查询
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_route_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
+                sha256 TEXT NOT NULL,
+                book_kind TEXT,
+                service_count INTEGER DEFAULT 0,
+                route_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                warnings TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, sha256),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_route_imports_user "
+                "ON logistics_quote_route_imports(user_id, created_at DESC)"
+            )
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                import_id INTEGER NOT NULL,
+                carrier TEXT NOT NULL,
+                book_kind TEXT,
+                origin_province TEXT DEFAULT '',
+                origin_city TEXT DEFAULT '',
+                dest_province TEXT DEFAULT '',
+                dest_city TEXT DEFAULT '',
+                price_model TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (import_id) REFERENCES logistics_quote_route_imports(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_routes_match "
+                "ON logistics_quote_routes(user_id, book_kind, carrier, "
+                "origin_province, origin_city, dest_province, dest_city)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_routes_city "
+                "ON logistics_quote_routes(user_id, origin_city)"
+            )
+
+            # 物流 Agent 按账号（cookie）保存的第五步配置
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_settings (
+                cookie_id TEXT PRIMARY KEY,
+                enabled INTEGER DEFAULT 0,
+                model_name TEXT DEFAULT 'deepseek-v4-flash',
+                book_ids TEXT DEFAULT '[]',
+                auto_send INTEGER DEFAULT 0,
+                recommend_mode TEXT DEFAULT 'lowest',
+                no_route_policy TEXT DEFAULT 'manual',
+                item_scope TEXT DEFAULT 'all',
+                item_ids TEXT DEFAULT '[]',
+                carrier_config TEXT DEFAULT '{}',
+                default_volume_ratios TEXT DEFAULT '{}',
+                pricing_config TEXT DEFAULT '{}',
+                templates TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
+            # 物流询价会话状态：按 cookie + 会话 + 商品隔离，多轮合并参数
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                item_id TEXT DEFAULT '',
+                state TEXT NOT NULL DEFAULT '{}',
+                state_version INTEGER DEFAULT 1,
+                status TEXT DEFAULT 'active',
+                last_message_id TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cookie_id, chat_id, item_id)
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_sessions_updated "
+                "ON logistics_quote_sessions(cookie_id, updated_at DESC)"
+            )
+
+            # 物流报价发送记录：幂等与审计（消息 ID、状态版本、报价表版本）
+            # status：pending=已登记待发送，sent=已发送，failed=发送失败。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_send_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                item_id TEXT DEFAULT '',
+                message_id TEXT DEFAULT '',
+                state_version INTEGER DEFAULT 0,
+                book_sha256 TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_training_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                buyer_message TEXT NOT NULL,
+                agent_reply TEXT NOT NULL,
+                decision_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, thread_id, buyer_message, agent_reply)
+            )
+            ''')
+            # 兼容旧库：已存在的表补 status 列。
+            try:
+                self._execute_sql(cursor, "SELECT status FROM logistics_quote_send_logs LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 logistics_quote_send_logs 表添加 status 列...")
+                self._execute_sql(
+                    cursor,
+                    "ALTER TABLE logistics_quote_send_logs ADD COLUMN status TEXT DEFAULT 'pending'",
+                )
+                logger.info("logistics_quote_send_logs 表 status 列添加完成")
+            # 同一条买家消息只允许一条待发送/已发送记录（唯一键防重发）。
+            try:
+                self._execute_sql(
+                    cursor,
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_logistics_quote_send_logs_unique "
+                    "ON logistics_quote_send_logs(cookie_id, chat_id, item_id, message_id) "
+                    "WHERE message_id != ''",
+                )
+            except sqlite3.OperationalError as e:
+                logger.warning(f"创建物流发送记录唯一索引失败（可能存在历史重复数据）: {e}")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_send_logs_chat "
+                "ON logistics_quote_send_logs(cookie_id, chat_id, created_at DESC)"
+            )
+
             # 检查并添加 is_bargain 列（用于标记小刀订单）
             try:
                 self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")
@@ -1868,6 +2013,18 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有Cookie失败: {e}")
                 return {}
+
+    def get_cookie_owner_user(self, cookie_id: str) -> Optional[int]:
+        """获取Cookie归属的系统用户ID；账号不存在时返回 None。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "SELECT user_id FROM cookies WHERE id = ?", (cookie_id,))
+                row = cursor.fetchone()
+                return int(row[0]) if row else None
+            except Exception as e:
+                logger.error(f"获取Cookie归属用户失败: {e}")
+                return None
 
 
 

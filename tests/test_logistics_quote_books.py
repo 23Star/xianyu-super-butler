@@ -50,6 +50,33 @@ class QuoteBookTestDatabase:
                 UNIQUE(user_id, sha256),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+            CREATE TABLE logistics_quote_route_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
+                sha256 TEXT NOT NULL,
+                book_kind TEXT,
+                service_count INTEGER DEFAULT 0,
+                route_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                warnings TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, sha256)
+            );
+            CREATE TABLE logistics_quote_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                import_id INTEGER NOT NULL,
+                carrier TEXT NOT NULL,
+                book_kind TEXT,
+                origin_province TEXT DEFAULT '',
+                origin_city TEXT DEFAULT '',
+                dest_province TEXT DEFAULT '',
+                dest_city TEXT DEFAULT '',
+                price_model TEXT NOT NULL DEFAULT '{}'
+            );
             """
         )
 

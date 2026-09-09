@@ -290,6 +290,52 @@ class ThreeCarrierLayoutTests(unittest.TestCase):
         self.assertEqual(row["review_state"], "review")
         self.assertTrue(any("阶梯" in issue for issue in row["issues"]))
 
+    def test_tiered_continued_headers_without_slash_are_recognized(self):
+        """真实报价表的分段续重表头用换行分隔、没有斜杠，也必须识别为阶梯。"""
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "百世快运"
+        sheet.append([
+            "出发省", "到达省", "首重（KG）", "首重价格(元)",
+            "0<续重重量≤100kg\n续重价格\n（元/KG）",
+            "100<续重重量≤500kg\n续重价格\n（元/KG）",
+            "续重重量>500kg\n续重价格\n（元/KG）",
+        ])
+        sheet.append(["安徽省", "上海", 30, 42, 1.36, 1.28, 1.18])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+
+        result = parser.parse_quote_file(buffer.getvalue(), "物流价格.xlsx")
+        row = result["rows"][0]
+        self.assertEqual(row["rule_type"], "banded_additional")
+        tiers = row["continued_tiers"]
+        self.assertEqual(
+            [tier["price_per_kg"] for tier in tiers], [1.36, 1.28, 1.18]
+        )
+        self.assertIsNone(tiers[2].get("max_inclusive_kg"))
+        self.assertEqual(row["continued_price"], None)
+        self.assertEqual(row["book_kind"], "logistics")
+
+    def test_duplicate_field_columns_keep_only_the_first(self):
+        """同一字段出现多列时只保留首列并给出告警，不允许后列覆盖前列。"""
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "重复列"
+        sheet.append(["发货地", "目的地", "首重价格", "首重价格", "续重价格"])
+        sheet.append(["杭州", "上海", 12, 99, 4.8])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+
+        result = parser.parse_quote_file(buffer.getvalue(), "重复.xlsx")
+        row = result["rows"][0]
+        self.assertEqual(row["first_price"], 12.0)
+        self.assertNotEqual(row["first_price"], 99.0)
+        self.assertTrue(any("重复" in warning for warning in result["warnings"]))
+
     def test_anomalous_numeric_header_becomes_candidate_origin(self):
         result = self.parse()
         row = self.rows_by_sheet(result)["顺心捷达"][0]
@@ -328,7 +374,9 @@ class ThreeCarrierLayoutTests(unittest.TestCase):
         buffer = io.BytesIO()
         workbook.save(buffer)
 
-        with mock.patch.object(parser, "MAX_ROWS_PER_SHEET", 4):
+        from app.services.logistics_quote_parser import readers
+
+        with mock.patch.object(readers, "MAX_ROWS_PER_SHEET", 4):
             result = parser.parse_quote_file(buffer.getvalue(), "截断.xlsx")
         self.assertEqual(result["summary"]["total"], 3)
         self.assertTrue(any("仅解析前 4 行" in warning for warning in result["warnings"]))
@@ -444,8 +492,10 @@ class ReportCompatibleRecognitionTests(unittest.TestCase):
     def test_xls_uses_legacy_parser_when_ole_magic_and_extension_match(self):
         from unittest import mock
 
+        from app.services.logistics_quote_parser import spreadsheet
+
         sheets = [("旧版报价", [["承运商", "首重价", "续重价"], ["中通", 12, 4.8]], True)]
-        with mock.patch.object(parser, "_iter_xls_rows", return_value=(sheets, [])):
+        with mock.patch.object(spreadsheet, "_iter_xls_rows", return_value=(sheets, [])):
             result = parser.parse_quote_file(parser.OLD_XLS_MAGIC + b"legacy", "报价.xls")
 
         self.assertEqual(result["source"]["file_type"], "xls")

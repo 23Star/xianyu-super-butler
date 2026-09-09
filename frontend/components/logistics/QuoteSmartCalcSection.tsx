@@ -24,13 +24,13 @@ const QuoteSmartCalcSection = ({ form, onChangeField, onNumberFieldChange }: Quo
     <section className="section-panel" aria-labelledby="smart-calc-title">
       <SectionHeader
         title="智能计算"
-        description="配置报价的加价参数：面值、平台支付与各项加价，保存后由智能计算统一套用。"
+        description="报价表提供券原价；这里设置优惠券抵扣与加价，最终报价为券原价加价后减去抵扣。"
         icon={Sparkles}
       />
       <div className="grid gap-4 p-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <label>
-            <span className="field-label">卡密面值（元）</span>
+            <span className="field-label">券原价预览（元，实际来自报价表）</span>
             <input
               type="text"
               inputMode="decimal"
@@ -41,7 +41,7 @@ const QuoteSmartCalcSection = ({ form, onChangeField, onNumberFieldChange }: Quo
             />
           </label>
           <label>
-            <span className="field-label">平台支付面值（元）</span>
+            <span className="field-label">优惠券抵扣（元）</span>
             <input
               type="text"
               inputMode="decimal"
@@ -98,15 +98,15 @@ const QuoteSmartCalcSection = ({ form, onChangeField, onNumberFieldChange }: Quo
           <div className="border-t border-[var(--border)] p-3.5">
             <div className="logistics-breakdown" aria-live="polite">
               <div>
-                <span>卡密面值</span>
+                <span>券原价（来自报价表）</span>
                 <strong>{money(card)}</strong>
               </div>
               <div>
-                <span>运费（来自已识别报价表，需结合买家信息核价）</span>
+                <span>报价表运费 / 券原价（需结合买家信息核价）</span>
                 <strong>待核价</strong>
               </div>
               <div>
-                <span>利润加价</span>
+                <span>自定义加价</span>
                 <strong>{profit === null ? '待配置' : `+¥${profit.toFixed(2)}`}</strong>
               </div>
               <div>
@@ -116,8 +116,8 @@ const QuoteSmartCalcSection = ({ form, onChangeField, onNumberFieldChange }: Quo
             </div>
             <div className="logistics-total mt-3">
               <div>
-                <span>买家应付合计</span>
-                <small>平台支付 {money(platform)}；完成买家信息识别后，按报价表实际线路计算</small>
+                <span>买家应付报价</span>
+                <small>优惠券抵扣 {money(platform)}；券原价加价后扣除抵扣</small>
               </div>
               <strong>待核价</strong>
             </div>

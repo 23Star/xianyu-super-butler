@@ -350,6 +350,39 @@ export const test10_complex_scenario = {
   },
 };
 
+// 测试用例 11：分段续重（百世快运式：首重30KG + 续重部分分档计价）
+export const test11_banded_continued_tiers = {
+  input: {
+    weight_kg: 35,
+    quote_config: {
+      carriers: {
+        百世快运: {
+          price_table: {
+            first_weight: 30,
+            first_weight_price: 42,
+            continued_unit: 1,
+            continued_tiers: { 100: 1.36, 500: 1.28 },
+            overflow_continued_price: 1.18,
+          },
+          payment_mode: 'direct',
+        },
+      },
+    },
+  },
+  expected: {
+    success: true,
+    route_weight_kg: 35,
+    category: 'freight',
+    quotes: [
+      {
+        carrier: '百世快运',
+        chargeable_weight_kg: 35,
+        base_price: 48.8, // 续重部分 5kg ≤ 100，42 + 5 * 1.36 = 48.8
+      },
+    ],
+  },
+};
+
 function assertExpected(actual, expected) {
   if (expected !== null && typeof expected === 'object') {
     assert.ok(actual !== null && typeof actual === 'object');
@@ -364,9 +397,52 @@ for (const [name, sample] of Object.entries({
   test1_pure_weight_express, test2_pure_volume_freight, test3_weight_volume_max,
   test4_boundary_30kg, test5_tier_pricing, test6_smart_payment, test7_supplement_payment,
   test8_missing_params, test9_dynamic_ratio, test10_complex_scenario,
+  test11_banded_continued_tiers,
 })) {
   test(name, () => assertExpected(calculateLogisticsQuote(sample.input), sample.expected));
 }
+
+test('banded continued tiers select rates by continued weight and overflow', () => {
+  const build = (weight_kg, dims = {}) => calculateLogisticsQuote({
+    weight_kg, ...dims,
+    quote_config: {
+      carriers: {
+        百世快运: {
+          price_table: {
+            first_weight: 30, first_weight_price: 42, continued_unit: 1,
+            continued_tiers: { 100: 1.36, 500: 1.28 }, overflow_continued_price: 1.18,
+          },
+          payment_mode: 'direct',
+        },
+      },
+    },
+  });
+  assert.equal(build(30).quotes[0].base_price, 42); // 计费重等于首重，不加续重
+  assert.equal(build(120).quotes[0].base_price, 164.4); // 续重 90 ≤ 100 → 42 + 90 * 1.36
+  assert.equal(build(200).quotes[0].base_price, 259.6); // 续重 170 ≤ 500 → 42 + 170 * 1.28
+  assert.equal(build(600).quotes[0].base_price, 714.6); // 续重 570 > 500 → 42 + 570 * 1.18
+  const volumed = build(80, { length_cm: 100, width_cm: 80, height_cm: 100 });
+  assert.equal(volumed.quotes[0].chargeable_weight_kg, 160); // ceil(800000 / 5000)，实重 80 > 70 用重抛比
+  assert.equal(volumed.quotes[0].base_price, 208.4); // 续重 130 ≤ 500 → 42 + 130 * 1.28
+});
+
+test('exact tier still wins over banded continued at same weight', () => {
+  const result = calculateLogisticsQuote(input({
+    price_table: {
+      tiers: { 5: 20 },
+      first_weight: 2, first_weight_price: 10,
+      continued_tiers: { 100: 2 }, overflow_continued_price: 3,
+    },
+  }));
+  assert.equal(result.quotes[0].base_price, 20); // 计费重 5 命中精确档
+  assert.equal(calculateLogisticsQuote(input({
+    price_table: {
+      tiers: { 5: 20 },
+      first_weight: 2, first_weight_price: 10,
+      continued_tiers: { 100: 2 }, overflow_continued_price: 3,
+    },
+  }, { weight_kg: 7 })).quotes[0].base_price, 20); // 续重 5 → 10 + 5 * 2
+});
 
 const input = (carrier = {}, shipment = {}) => ({
   weight_kg: 5, ...shipment,
@@ -453,6 +529,10 @@ for (const carrier of [
   { price_table: {} }, { price_table: { minimum_price: -1, per_kg_price: 2 } },
   { price_table: { tiers: { '2.5': 10 } } }, { price_table: { tiers: { 3: 10 } } },
   { price_table: { first_weight_price: 5, continued_weight_price: 1, continued_unit: 0 } },
+  { price_table: { continued_tiers: { '2.5': 10 }, first_weight: 30, first_weight_price: 40, overflow_continued_price: 1 } },
+  { price_table: { continued_tiers: { 100: '1.3' }, first_weight: 30, first_weight_price: 40, overflow_continued_price: 1 } },
+  { price_table: { continued_tiers: { 100: 1.3 } } },
+  { price_table: { continued_tiers: { 100: 1.3 }, first_weight: 30, first_weight_price: 40 } },
 ]) {
   test(`reject invalid carrier: ${JSON.stringify(carrier)}`, () => {
     const request = input(carrier);

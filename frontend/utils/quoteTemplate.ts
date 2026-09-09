@@ -91,15 +91,14 @@ export const buildSampleValues = (
   form: QuoteSettings,
   context?: QuotePreviewContext | null,
 ): Record<string, string> => {
-  const card = parsePositive(form.cardFaceValue);
   const platform = parsePositive(form.platformFaceValue);
   const profit = parsePositive(form.profitMarkup);
   const continuedMarkup = parsePositive(form.continuedMarkup);
   const freight = typeof context?.freight === 'number' && Number.isFinite(context.freight)
     ? context.freight
     : null;
-  const total = freight === null || card === null || profit === null ? null : card + freight + profit;
-  const remaining = total === null || platform === null ? null : Math.max(0, total - platform);
+  const total = freight === null || profit === null ? null : Math.max(0, freight + profit - (platform || 0));
+  const remaining = total;
   const formatMoney = (value: number | null) => value === null ? '待核价' : `¥${value.toFixed(2)}`;
   const service = context?.service?.trim() || '已识别报价服务';
   const route = context?.route?.trim() || [context?.origin, context?.destination].filter(Boolean).join('→');
@@ -124,7 +123,9 @@ export const buildSampleValues = (
     最优渠道: context ? `${service} ${formatMoney(freight)}` : '待核价',
     快递总价: formatMoney(freight),
     闲鱼已付: platform === null ? '待配置' : `¥${platform.toFixed(2)}`,
-    卡密面值: card === null ? '待配置' : `¥${card.toFixed(2)}`,
+    卡密面值: freight === null ? '待核价' : `¥${freight.toFixed(2)}`,
+    券原价: freight === null ? '待核价' : `¥${freight.toFixed(2)}`,
+    优惠券抵扣: platform === null ? '待配置' : `¥${platform.toFixed(2)}`,
     补差价: formatMoney(remaining),
     分隔符: '\n―――――――\n',
     平台支付面值: platform === null ? '待配置' : `¥${platform.toFixed(2)}`,

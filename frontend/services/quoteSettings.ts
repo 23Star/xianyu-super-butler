@@ -55,13 +55,23 @@ export interface QuoteSettings {
   scope: QuoteScope;
   /** scope 为 custom 时生效，元素为 `cookie_id:item_id` 的商品键。 */
   selectedItemKeys: string[];
+  carrier_config: Record<string, QuoteCarrierConfig>;
+}
+
+export interface QuoteCarrierConfig {
+  volume_ratio: number | null;
+  markup_cost: number;
+  markup_manual: number;
+  discount_rate: number;
+  discount_amount: number;
+  quote_line_template: string;
 }
 
 const STORAGE_KEY = 'logistics_quote_settings_v1';
 
 export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
   cardFaceValue: '100',
-  platformFaceValue: '100',
+  platformFaceValue: '0',
   profitMarkup: '5',
   continuedMarkup: '2',
   expressVolumeRatio: '8000',
@@ -74,8 +84,9 @@ export const DEFAULT_QUOTE_SETTINGS: QuoteSettings = {
   defaultOneKg: true,
   scope: 'all',
   selectedItemKeys: [],
+  carrier_config: {},
   replyTemplate:
-    '亲，运费报价这样算哦：\n卡密面值 {卡密面值} + 运费 {运费} = 合计 {合计}\n平台支付 {平台支付面值}，余款 {余款} 拍下后联系客服补差～\n包裹重量未能识别时，将按{默认重量}计费。',
+    '亲，运费报价这样算哦：\n券原价 {券原价} - 优惠券抵扣 {优惠券抵扣} = 报价 {合计}\n包裹重量未能识别时，将按{默认重量}计费。',
 };
 
 const normalizeScope = (value: unknown): QuoteScope => (value === 'custom' ? 'custom' : 'all');
@@ -103,6 +114,8 @@ export const loadQuoteSettings = (): QuoteSettings => {
       ...parsed,
       scope: normalizeScope(parsed?.scope),
       selectedItemKeys: normalizeItemKeys(parsed?.selectedItemKeys),
+      carrier_config: parsed?.carrier_config && typeof parsed.carrier_config === 'object'
+        ? parsed.carrier_config as QuoteSettings['carrier_config'] : {},
     };
     for (const field of QUOTE_NUMBER_FIELDS) {
       merged[field] = normalizeNumberText(parsed?.[field], DEFAULT_QUOTE_SETTINGS[field]);

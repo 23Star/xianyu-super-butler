@@ -121,14 +121,13 @@ class LogisticsQuoteBookService:
                 ),
             )
             self.db.conn.commit()
-            row_id = cursor.lastrowid
-            if not row_id:
-                cursor = self.db.conn.execute(
-                    "SELECT id FROM logistics_quote_books WHERE user_id = ? AND sha256 = ?",
-                    (user_id, sha256),
-                )
-                found = cursor.fetchone()
-                row_id = found[0] if found else None
+            # 冲突走 UPDATE 分支时不产生新 insert，lastrowid 不可信，按唯一键回查。
+            cursor = self.db.conn.execute(
+                "SELECT id FROM logistics_quote_books WHERE user_id = ? AND sha256 = ?",
+                (user_id, sha256),
+            )
+            found = cursor.fetchone()
+            row_id = found[0] if found else None
         return self.get_book(user_id, row_id) if row_id else None
 
     def get_book(self, user_id: int, book_id: int) -> dict[str, Any] | None:

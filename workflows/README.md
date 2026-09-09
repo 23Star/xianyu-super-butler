@@ -112,13 +112,14 @@ print(completed.returncode, result)
 1. 提供正实重，或完整的正长宽高；尺寸一旦填写就必须齐全。单位为 kg、cm、元。数值字符串、非有限数、负重量、非法抛比、未知字段均会失败。
 2. 路由计费重 `ceil(max(实重, 长×宽×高/8000))`；小于 30 为 `express`，否则 `freight`。因此 29.01kg 向上取整后属于 `freight`。
 3. 每个承运商计费重 `ceil(max(实重, 体积/承运商抛比))`。抛比优先级：自身 `volume_ratio` → `default_volume_ratios` → 内置默认。
-4. 基础价格优先精确命中 `tiers[计费重]`，其次首重续重，最后 `max(minimum_price, 计费重×per_kg_price)`。无适用价格模型时返回承运商错误；零元费率有效。
+4. 基础价格优先精确命中 `tiers[计费重]`，其次分段续重，再次首重续重，最后 `max(minimum_price, 计费重×per_kg_price)`。无适用价格模型时返回承运商错误；零元费率有效。
 5. `first_weight` 和 `continued_unit` 缺省均为 1；续重份数向上取整。所有已填写的价格参数必须有效。
-6. 仅 `price_basis='cost'` 计入 `markup_cost`；始终计入 `markup_manual`。`discount_rate=10` 表示减免 10%；之后再减 `discount_amount`，总价最低为 0。加价字段允许有符号调整。
-7. 金额按阶段四舍五入到分：基础价与金额配置、调整后价、折后总价、支付余额。负调整金额按绝对值四舍五入后恢复符号。
-8. `direct`（默认）平台支付等于总价；`smart` 平台支付为 `min(总价,coupon_max_amount)`；`supplement` 平台支付等于 `paid_amount`。后两种模式对应金额必须显式提供，可以是 0。剩余应付 `max(总价-平台支付,0)`；已付超过总价时保留已付记录。
+6. 分段续重 `continued_tiers` 面向"首重30KG + 续重分档"类报价表（如百世快运）：计费重不高于 `first_weight` 时只收首重价；否则续重部分 = 计费重 − `first_weight`，按续重部分所在区间取单价（键为区间上界公斤数，升序取第一个 ≥ 续重部分的键），超过最大上界用 `overflow_continued_price`。该形态必须同时提供 `first_weight`、`first_weight_price`、`overflow_continued_price`。
+7. 仅 `price_basis='cost'` 计入 `markup_cost`；始终计入 `markup_manual`。`discount_rate=10` 表示减免 10%；之后再减 `discount_amount`，总价最低为 0。加价字段允许有符号调整。
+8. 金额按阶段四舍五入到分：基础价与金额配置、调整后价、折后总价、支付余额。负调整金额按绝对值四舍五入后恢复符号。
+9. `direct`（默认）平台支付等于总价；`smart` 平台支付为 `min(总价,coupon_max_amount)`；`supplement` 平台支付等于 `paid_amount`。后两种模式对应金额必须显式提供，可以是 0。剩余应付 `max(总价-平台支付,0)`；已付超过总价时保留已付记录。
 
-`sender`、`receiver` 是备注字段。`category` 是计算结果中的分类；引擎会计算传入的每个承运商，不执行地址查询或自动选择快递/物流报价表。调用方应先选好对应线路、服务类别和费率。阶梯续重区间、偏远费、保价、多件等规则不在当前价格模型内，应先扩展模型与测试再接入这些报价表。
+`sender`、`receiver` 是备注字段。`category` 是计算结果中的分类；引擎会计算传入的每个承运商，不执行地址查询或自动选择快递/物流报价表。调用方应先选好对应线路、服务类别和费率。偏远费、保价、多件等规则不在当前价格模型内，应先扩展模型与测试再接入这些报价表。
 
 ### 抛比默认值
 

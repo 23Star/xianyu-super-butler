@@ -66,13 +66,13 @@ _HEADER_FIELD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"续重.*(重量|kg|公斤)", re.IGNORECASE), "continued_unit_kg"),
 )
 
-# 阶梯续重表头（如"0<续重重量≤100kg / 续重价格"），返回 (下界, 上界)；开放档上界为 None。
+# 阶梯续重表头（如"0<续重重量≤100kg / 续重价格"或"0<续重重量≤100kg续重价格"），返回 (下界, 上界)；开放档上界为 None。
 _TIER_HEADER_RE = re.compile(
-    r"^(?:(\d+(?:\.\d+)?)\s*<\s*)?续重(?:重量)?\s*(?:≤|<=)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)\s*/",
+    r"^(?:(\d+(?:\.\d+)?)\s*<\s*)?续重(?:重量)?\s*(?:≤|<=)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
     re.IGNORECASE,
 )
 _TIER_OPEN_HEADER_RE = re.compile(
-    r"^续重(?:重量)?\s*>\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)\s*/",
+    r"^续重(?:重量)?\s*>\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
     re.IGNORECASE,
 )
 _FIXED_TIER_HEADER_RE = re.compile(
@@ -167,7 +167,12 @@ def _detect_header(
             field, conflict = _match_header_field(header)
             if conflict:
                 ambiguous.append(_cell_text(cell))
-            elif field and field not in mapping:
+            elif field and field in mapping.values():
+                # 同一字段出现多列时只取第一列，避免后列覆盖前列的值。
+                row_warnings.append(
+                    f"表头「{_cell_text(row[column])}」与已识别字段「{field}」重复，仅保留首列"
+                )
+            elif field:
                 mapping[column] = field
         if (
             "origin_city" in mapping.values()

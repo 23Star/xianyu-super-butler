@@ -1,7 +1,7 @@
 /** Deterministic logistics pricing. All rates are supplied by the caller. */
 export const meta = Object.freeze({
   name: 'logistics_quote',
-  version: '1.0.0',
+  version: '1.1.0',
   phases: ['Validate', 'Route', 'Calculate', 'Adjust'],
 });
 
@@ -115,6 +115,7 @@ function validateCarrier(config) {
   object(table, 'price_table', [
     'tiers', 'first_weight', 'first_weight_price', 'continued_unit',
     'continued_weight_price', 'minimum_price', 'per_kg_price',
+    'continued_tiers', 'overflow_continued_price',
   ]);
   for (const [key, value] of Object.entries(table)) {
     if (key === 'tiers') {
@@ -125,14 +126,44 @@ function validateCarrier(config) {
         }
         number(price, `price_table.tiers.${weight}`, 0);
       }
+    } else if (key === 'continued_tiers') {
+      object(value, 'price_table.continued_tiers');
+      for (const [threshold, price] of Object.entries(value)) {
+        if (!/^[1-9]\d*$/.test(threshold) || !Number.isSafeInteger(Number(threshold))) {
+          fail('price_table_invalid', 'price_table.continued_tiers', '分段续重门槛必须为正安全整数');
+        }
+        number(price, `price_table.continued_tiers.${threshold}`, 0);
+      }
     } else {
       number(value, `price_table.${key}`, 0, key === 'first_weight' || key === 'continued_unit');
+    }
+  }
+  if (own(table, 'continued_tiers')) {
+    for (const key of ['first_weight', 'first_weight_price', 'overflow_continued_price']) {
+      if (!own(table, key)) {
+        fail('price_table_invalid', `price_table.${key}`, `分段续重价格表必须提供 ${key}`);
+      }
     }
   }
 }
 
 function basePrice(weight, table) {
   if (table.tiers && own(table.tiers, weight)) return money(table.tiers[weight]);
+  if (table.continued_tiers) {
+    // 分段续重：续重部分 = 计费重 - 首重，按续重部分所在区间取单价。
+    if (weight <= table.first_weight) return money(table.first_weight_price);
+    const continued = weight - table.first_weight;
+    const thresholds = Object.keys(table.continued_tiers).map(Number).sort((a, b) => a - b);
+    let rate = table.overflow_continued_price;
+    for (const threshold of thresholds) {
+      if (continued <= threshold) {
+        rate = table.continued_tiers[threshold];
+        break;
+      }
+    }
+    const count = Math.ceil(continued / (table.continued_unit ?? 1));
+    return money(table.first_weight_price + count * rate);
+  }
   if (table.first_weight_price !== undefined && table.continued_weight_price !== undefined) {
     const count = Math.ceil(Math.max(0, weight - (table.first_weight ?? 1)) / (table.continued_unit ?? 1));
     return money(table.first_weight_price + count * table.continued_weight_price);
