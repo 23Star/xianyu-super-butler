@@ -85,7 +85,7 @@ def extract_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, Any]:
         (extracted.intent == "logistics_quote" or session.has_shipment_params())
         and extracted.weight_kg is None
         and settings.pricing.default_one_kg
-        and re.search(r"(?:不知道|不清楚|不确定|无法确认|没称过|没有称|不晓得).{0,8}(?:重|重量|公斤|kg)", state["message"], re.I)
+        and re.search(r"(?:不知道|不清楚|不确定|无法确认|没称过|没有称|不晓得).{0,8}(?:重|重量|多重|几重|公斤|kg)", state["message"], re.I)
     ):
         extracted.weight_kg = 1.0
         extracted.weight_confidence = max(extracted.weight_confidence, 0.9)

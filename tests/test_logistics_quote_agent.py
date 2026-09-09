@@ -531,6 +531,21 @@ class AgentServiceTests(unittest.TestCase):
         second = self._run("20*30*80，2公斤", message_id="m2", sender="江西省赣州市", receiver="河北省石家庄市", weight_kg=2, length_cm=20, width_cm=30, height_cm=80)
         self.assertEqual(second.reason, "quoted")
 
+    def test_unknown_how_heavy_uses_default_one_kg(self):
+        first = self._run(
+            "江西抚州到广东佛山小东西多少钱", message_id="m1",
+            sender="江西省抚州市", receiver="广东省佛山市", weight_kg=None,
+            length_cm=None, width_cm=None, height_cm=None,
+        )
+        self.assertEqual(first.reason, "missing_params")
+        second = self._run(
+            "不知道多重", message_id="m2",
+            sender=None, receiver=None, weight_kg=None,
+            length_cm=None, width_cm=None, height_cm=None,
+        )
+        self.assertNotEqual(second.reason, "missing_params")
+        self.assertEqual(second.fields["weight_kg"], 1.0)
+
     def test_province_only_message_asks_city_for_city_level_books(self):
         """省级地址 + 物流表只有市级线路：追问城市而不是转人工。"""
         decision = self._run("江西寄河北，130公斤", message_id="m1", sender="江西省", receiver="河北省", weight_kg=130)
