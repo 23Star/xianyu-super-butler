@@ -11,6 +11,7 @@ import {
   Settings as SettingsIcon,
   ShieldCheck,
   Sparkles,
+  Truck,
   UserRound,
   Zap,
 } from 'lucide-react';
@@ -346,6 +347,23 @@ const Settings: React.FC = () => {
                 </button>
               </div>
             </div>
+          </section>
+
+          <section className="section-panel">
+            <SectionHeader
+              title="自动发货"
+              description="付款后自动发送卡密给买家。默认只发卡密、不在闲鱼自动点发货，由卖家在订单页手动点发货。"
+              icon={Truck}
+            />
+            <SettingToggle
+              title="付款后自动在闲鱼点发货"
+              description="开启后恢复旧行为：自动发送卡密并同时点闲鱼“发货”。关闭（默认）时只发送卡密，订单保持待发货，你可在订单页手动点发货；此全局开关需同时开启该账号的「自动确认发货」开关才生效。"
+              checked={toBool(settings.auto_confirm_ship_enabled, false)}
+              onChange={() => setSettings({
+                ...settings,
+                auto_confirm_ship_enabled: !toBool(settings.auto_confirm_ship_enabled, false),
+              })}
+            />
           </section>
 
           <section className="section-panel">

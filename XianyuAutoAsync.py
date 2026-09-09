@@ -956,6 +956,28 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】获取自动确认发货设置失败: {self._safe_str(e)}")
             return True  # 出错时默认启用
 
+    def is_auto_ship_enabled(self) -> bool:
+        """付款自动发货后是否在闲鱼点“发货”（全局开关 && 账号级开关）。
+
+        全局开关 auto_confirm_ship_enabled 默认关闭：买家付款后只发送卡密、
+        不自动点发货，订单保持待发货，由卖家后续在订单页手动发货。
+        """
+        try:
+            from app.db_manager import db_manager
+            from app.services.delivery_ship_policy import (
+                AUTO_CONFIRM_SHIP_SETTING_KEY,
+                parse_setting_bool,
+            )
+            account_enabled = db_manager.get_auto_confirm(self.cookie_id)
+            global_enabled = parse_setting_bool(
+                db_manager.get_system_setting(AUTO_CONFIRM_SHIP_SETTING_KEY),
+                default=False,
+            )
+            return global_enabled and bool(account_enabled)
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】获取自动发货设置失败: {self._safe_str(e)}")
+            return False  # 出错时默认不点发货，避免误操作
+
     async def _merge_mtop_response_cookies(self, response, source: str) -> None:
         """合并 mtop 响应中的 Cookie，并同步到当前会话和数据库。"""
         if 'set-cookie' not in response.headers:
@@ -1240,6 +1262,353 @@ class XianyuLive:
             return False
 
         return True
+
+    async def _maybe_deliver_pending_on_message(self, message: dict, msg_time: str, websocket=None) -> None:
+        """任意已识别 orderId 的消息处理完后，兜底检查本地待发货未发卡单。
+
+        覆盖闲鱼只推骨架红点/「拍下待付款」卡片的场景：付款卡片没有来，但本地订单
+        状态已可能变成 pending_ship；这里不依赖消息文案，只依赖本地 DB 判断。
+        """
+        if not isinstance(message, dict):
+            return
+        try:
+            order_id = self._extract_order_id(message)
+        except Exception as exc:
+            logger.warning(f"【{self.cookie_id}】兜底补发-提取订单ID失败: {self._safe_str(exc)}")
+            return
+        if not order_id:
+            return
+        await self._try_deliver_pending_order_after_detail(order_id, msg_time)
+
+
+    @staticmethod
+    def _extract_sid_from_message(message) -> str:
+        """从推送消息里提取会话 sid（红点骨架消息为 message['1'] 字符串）。
+
+        闲鱼付款后有时只推 ``{'1': 'sid@goofish', '3': {'redReminder': '等待卖家发货'}}``，
+        没有订单号/卡片；会话 sid 用于回填订单 chat_id，确保发卡能发到正确会话。
+        """
+        try:
+            if not isinstance(message, dict):
+                return ""
+            msg1 = message.get("1")
+            if isinstance(msg1, str) and "@" in msg1:
+                return msg1.split("@")[0].strip()
+            if isinstance(msg1, dict):
+                # 卡片消息 message['1']['2'] 是会话 sid
+                raw = msg1.get("2", "")
+                if raw:
+                    return str(raw).split("@")[0].strip()
+            return ""
+        except Exception:
+            return ""
+
+
+    async def _try_deliver_pending_order_after_detail(self, order_id: str, msg_time: str) -> None:
+        """订单详情/卡片落库后，若本地已是待发货且未发卡，则补发卡密（不点发货）。
+
+        闲鱼新版推送不稳定：付款后可能漏发「我已付款」卡片，但订单详情已把本地状态
+        更新成 pending_ship。此钩子不依赖消息文案/买家上下文，只按本地 DB 判断，
+        命中待发货未发卡就补发，避免漏单。
+        """
+        if not order_id:
+            return
+        from app.db_manager import db_manager
+        try:
+            current = db_manager.get_order_by_id(order_id)
+        except Exception as exc:
+            logger.warning(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 读取失败，跳过补发检查: {self._safe_str(exc)}")
+            return
+        if not current:
+            return
+        if str(current.get('cookie_id') or '') != str(self.cookie_id):
+            return
+        if current.get('system_shipped'):
+            return
+        if current.get('order_status') != 'pending_ship':
+            return
+        logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 已是待发货且未发卡，触发兜底发卡")
+        try:
+            await self._deliver_single_pending_order(current, msg_time)
+        except Exception as exc:
+            logger.error(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 兜底发卡异常: {self._safe_str(exc)}")
+
+    async def _deliver_pending_ship_orders(self, msg_time: str, session_id: str = None) -> dict:
+        """收到「等待卖家发货」提醒时，对本地待发货且未发卡订单补发卡密。
+
+        设计要点：
+        - 以本地 DB 的 pending_ship 为准（system_shipped=0 才处理），已取消/已完成/已发卡不会误发；
+        - 实测闲鱼付款后可能只推骨架红点（只有 sid、无订单号/卡片），本地订单又常停在
+          processing（被「拍下待付款」覆盖）。因此同时把最近未发卡的 processing 单纳入候选，
+          用卖家端接口复核，确认已付款后才补发，避免把未付款单误发；
+        - 骨架消息的 sid 用于回填缺失的会话 chat_id，保证发卡能定位到会话；
+        - 只发卡密，不调用平台「确认发货」；
+        - 复用 can_auto_delivery / delivery_sent_orders 防重。
+        """
+        from app.db_manager import db_manager
+        sent_ids = []
+        failed = []
+        sid = None
+        if session_id:
+            sid = str(session_id).split('@')[0].strip() or None
+
+        try:
+            candidates = db_manager.get_unshipped_recent_orders(self.cookie_id, limit=30)
+        except Exception as exc:
+            logger.error(f"【{self.cookie_id}】获取待复核订单失败: {self._safe_str(exc)}")
+            return {"sent": [], "failed": []}
+
+        if not candidates:
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】等待卖家发货提醒：暂无未发卡候选订单，跳过兜底补发")
+            return {"sent": [], "failed": []}
+
+        # 一次提醒对应最近一两个订单；只处理最近 3 单，避免把很久以前的空会话单误绑定到本次 sid。
+        recent = candidates[:3]
+        logger.info(f"[{msg_time}] 【{self.cookie_id}】等待卖家发货提醒：最近未发卡候选 {len(recent)} 单，开始复核补发")
+
+        for order in recent:
+            order_id = order.get('order_id')
+            if not order_id:
+                continue
+            try:
+                order_for_delivery = dict(order)
+                if not order_for_delivery.get('chat_id') and sid:
+                    try:
+                        db_manager.backfill_orders_chat_id(
+                            self.cookie_id, sid, order_ids=[order_id]
+                        )
+                        order_for_delivery['chat_id'] = sid
+                        logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 会话已回填: {sid}")
+                    except Exception as exc:
+                        logger.warning(f"[{msg_time}] 【{self.cookie_id}】回填订单 {order_id} 会话失败: {self._safe_str(exc)}")
+
+                if order_for_delivery.get('order_status') == 'processing':
+                    refreshed = await self._refresh_pending_order_status(order_for_delivery, msg_time)
+                    if not refreshed:
+                        logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 复核后仍非待发货，跳过")
+                        continue
+                    order_for_delivery = refreshed
+
+                ok = await self._deliver_single_pending_order(order_for_delivery, msg_time)
+                if ok:
+                    sent_ids.append(order_id)
+                    # 发成一单即说明本次提醒已闭环，避免继续把更早候选误绑定到本次 sid。
+                    break
+                else:
+                    failed.append(order_id)
+            except Exception as exc:
+                logger.error(f"[{msg_time}] 【{self.cookie_id}】补发订单 {order_id} 异常: {self._safe_str(exc)}")
+                failed.append(order_id)
+
+        if sent_ids:
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】等待卖家发货兜底补发完成：成功 {len(sent_ids)} 笔：{sent_ids}")
+        if failed:
+            logger.warning(f"[{msg_time}] 【{self.cookie_id}】等待卖家发货兜底补发失败 {len(failed)} 笔：{failed}")
+        return {"sent": sent_ids, "failed": failed}
+
+    async def _refresh_pending_order_status(self, order: dict, msg_time: str):
+        """复核本地 processing 订单在卖家端的真实状态。
+
+        只允许 processing -> pending_ship 一种推进：确认已付款才可发卡，
+        否则继续等待。返回更新后的订单 dict，未确认时返回 None。
+        """
+        from app.db_manager import db_manager
+        order_id = order.get('order_id')
+        item_id = order.get('item_id')
+        buyer_id = order.get('buyer_id')
+        if not order_id or not item_id or not buyer_id:
+            return None
+        try:
+            await self.fetch_order_detail_info(order_id, item_id, buyer_id)
+        except Exception as exc:
+            logger.warning(f"[{msg_time}] 【{self.cookie_id}】复核订单 {order_id} 卖家端状态失败: {self._safe_str(exc)}")
+            return None
+
+        try:
+            current = db_manager.get_order_by_id(order_id)
+        except Exception:
+            current = None
+        if not current:
+            return None
+        if current.get('order_status') == 'pending_ship':
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 复核为待发货，可以补发卡密")
+            return current
+        logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 复核后状态为 {current.get('order_status') or 'unknown'}，仍不可发卡")
+        return None
+
+    async def _deliver_single_pending_order(self, order: dict, msg_time: str) -> bool:
+        """补发单笔待发货订单的卡密（不点平台发货）。成功返回 True。"""
+        from app.db_manager import db_manager
+
+        order_id = order.get('order_id')
+        item_id = order.get('item_id')
+        buyer_id = order.get('buyer_id')
+        chat_id = order.get('chat_id') or ''
+        cookie_id = order.get('cookie_id') or self.cookie_id
+
+        # 仅处理属于当前账号且系统尚未发卡的待发货订单
+        if not order_id or not item_id or not buyer_id:
+            logger.warning(f"[{msg_time}] 【{self.cookie_id}】待发货订单缺字段，跳过: order={order_id} item={item_id} buyer={buyer_id}")
+            return False
+        if str(cookie_id) != str(self.cookie_id):
+            logger.warning(f"[{msg_time}] 【{self.cookie_id}】待发货订单 {order_id} 不属于当前账号，跳过")
+            return False
+        if order.get('system_shipped'):
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 系统已发卡，跳过补发")
+            return False
+        if not self.can_auto_delivery(order_id):
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 处于防重/冷却，跳过补发")
+            return False
+
+        lock_key = order_id
+        async with self._order_locks[lock_key]:
+            # 锁内二次防重
+            if not self.can_auto_delivery(order_id):
+                logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 锁内防重检查未通过，跳过补发")
+                return False
+            if order.get('system_shipped'):
+                current = db_manager.get_order_by_id(order_id)
+                if current and current.get('system_shipped'):
+                    logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 已被标记系统发货，跳过补发")
+                    return False
+
+            # 实时确认仍是待发货（避免同步延迟导致误发）
+            try:
+                live_order = db_manager.get_order_by_id(order_id)
+                if live_order and live_order.get('order_status') not in (None, 'pending_ship'):
+                    logger.info(
+                        f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 当前状态为 "
+                        f"{live_order.get('order_status')}，跳过补发"
+                    )
+                    return False
+            except Exception as e:
+                logger.warning(f"[{msg_time}] 【{self.cookie_id}】复核订单 {order_id} 状态失败，继续补发: {self._safe_str(e)}")
+
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】开始补发待发货订单 {order_id} 卡密 (item={item_id}, buyer={buyer_id})")
+
+            # 若订单没存 chat_id，尝试按 buyer 查找历史会话
+            if not chat_id:
+                try:
+                    chat_id = db_manager.find_chat_id_by_buyer(cookie_id, buyer_id) or ''
+                except Exception as e:
+                    logger.warning(f"[{msg_time}] 【{self.cookie_id}】查找买家会话失败: {self._safe_str(e)}")
+
+            # 取卡与发送需要 live ws；无 ws/chat_id 时记录失败（保留给手动入口）
+            if not chat_id:
+                logger.warning(
+                    f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 找不到买家会话(chat_id)，"
+                    f"无法自动发送卡密，请手动在订单页处理"
+                )
+                return False
+
+            if not self.ws or self.ws.closed:
+                logger.warning(f"[{msg_time}] 【{self.cookie_id}】WebSocket 未连接，无法自动发送卡密（订单 {order_id}）")
+                return False
+
+            # 多数量/规格等发货数量逻辑（与 _handle_auto_delivery 保持一致）
+            quantity_to_send = 1
+            order_detail = None
+            try:
+                multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(cookie_id, item_id)
+                if multi_quantity_delivery:
+                    try:
+                        order_detail = await self.fetch_order_detail_info(order_id, item_id, buyer_id)
+                        if order_detail and order_detail.get('quantity'):
+                            try:
+                                qty = int(order_detail['quantity'])
+                                if qty > 1:
+                                    quantity_to_send = qty
+                            except (ValueError, TypeError):
+                                pass
+                    except Exception as e:
+                        logger.warning(f"[{msg_time}] 【{self.cookie_id}】获取订单数量失败，使用默认1: {self._safe_str(e)}")
+            except Exception as e:
+                logger.warning(f"[{msg_time}] 【{self.cookie_id}】检查多数量发货失败，使用默认1: {self._safe_str(e)}")
+
+            delivery_contents = []
+            delivery_context = {}
+            try:
+                first_content = await self._auto_delivery(
+                    item_id,
+                    '',
+                    order_id,
+                    buyer_id,
+                    order_detail=order_detail,
+                    delivery_context=delivery_context,
+                    requested_item_quantity=quantity_to_send,
+                )
+                if first_content:
+                    delivery_contents.append(first_content)
+                    quantity_to_send *= max(1, int(delivery_context.get("delivery_count") or 1))
+            except Exception as e:
+                logger.error(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 获取第 1 条卡密失败: {self._safe_str(e)}")
+
+            for i in range(1, quantity_to_send):
+                if not delivery_contents:
+                    break
+                try:
+                    content = await self._auto_delivery(
+                        item_id,
+                        '',
+                        order_id,
+                        buyer_id,
+                        order_detail=order_detail,
+                        delivery_context=delivery_context,
+                    )
+                    if content:
+                        delivery_contents.append(content)
+                except Exception as e:
+                    logger.error(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 获取第 {i+1} 条卡密失败: {self._safe_str(e)}")
+
+            if not delivery_contents:
+                logger.error(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 未获取到任何卡密，补发失败")
+                return False
+
+            sent_count = 0
+            send_errors = []
+            for idx, content in enumerate(delivery_contents):
+                try:
+                    if content.startswith("__IMAGE_SEND__"):
+                        image_data = content.replace("__IMAGE_SEND__", "")
+                        card_id = None
+                        image_url = image_data
+                        if "|" in image_data:
+                            card_id_str, image_url = image_data.split("|", 1)
+                            try:
+                                card_id = int(card_id_str)
+                            except ValueError:
+                                card_id = None
+                        await self.send_image_msg(self.ws, chat_id, buyer_id, image_url, card_id=card_id)
+                    else:
+                        await self.send_msg(self.ws, chat_id, buyer_id, content)
+                    sent_count += 1
+                except Exception as e:
+                    send_errors.append(f"第{idx + 1}条: {self._safe_str(e)}")
+                    logger.error(f"[{msg_time}] 【{self.cookie_id}】发送第 {idx+1} 条卡密失败: {self._safe_str(e)}")
+
+            acquired_all = len(delivery_contents) == quantity_to_send
+            sent_all = sent_count == len(delivery_contents)
+            if not (acquired_all and sent_all):
+                detail = f"应发{quantity_to_send}条，获取{len(delivery_contents)}条，成功发送{sent_count}条"
+                if send_errors:
+                    detail += f"；{('；'.join(send_errors))}"
+                logger.warning(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 补发未完成：{detail}")
+                self.delivery_blocked_orders.add(order_id)
+                self.last_delivery_time[order_id] = time.time()
+                return False
+
+            # 只发卡密、不点平台发货：update_order_status=False 保持本地 pending_ship
+            self.mark_delivery_sent(order_id, update_order_status=False)
+            try:
+                db_manager.insert_or_update_order(
+                    order_id=order_id,
+                    system_shipped=True,
+                    chat_id=chat_id,
+                )
+                logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 兜底补发卡密完成，已标记 system_shipped=1（保持待发货）")
+            except Exception as db_e:
+                logger.error(f"[{msg_time}] 【{self.cookie_id}】更新订单 {order_id} system_shipped 失败: {self._safe_str(db_e)}")
+            return True
 
     def mark_delivery_sent(self, order_id: str, update_order_status: bool = True):
         """标记订单已发货"""
@@ -1744,6 +2113,15 @@ class XianyuLive:
                     logger.error(f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 买家归属不一致，拒绝自动发货')
                     return
 
+            # 系统已发送过卡密（system_shipped=1）的订单不再重复自动发货，
+            # 避免“只发卡密不点发货”场景下重启后买家再次发言导致重复发卡。
+            if current_order and current_order.get('system_shipped'):
+                logger.info(
+                    f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 系统已发送过卡密'
+                    f'（system_shipped=1），跳过自动发货；如需发货请在订单页手动操作'
+                )
+                return
+
             order_status = (current_order or {}).get('order_status')
             order_detail = None
             if order_status != 'pending_ship':
@@ -1975,7 +2353,7 @@ class XianyuLive:
                         sent_all = sent_count == len(delivery_contents)
 
                         if acquired_all and sent_all:
-                            confirm_required = self.is_auto_confirm_enabled() and not card_only_delivery
+                            confirm_required = self.is_auto_ship_enabled() and not card_only_delivery
                             platform_confirmed = False
                             confirm_error = None
 
@@ -10052,7 +10430,14 @@ class XianyuLive:
                 elif red_reminder == '等待卖家发货':
                     user_url = f'https://www.goofish.com/personal?userId={user_id}'
                     logger.info(f'[{msg_time}] 【系统】交易成功 {user_url} 等待卖家发货')
-                    # return
+                    # 闲鱼付款后有时只推这条红点提醒（不带订单卡片/标准触发文案），
+                    # 这里做兜底：扫描本地待发货且未发卡的订单自动补发卡密（不点发货）。
+                    try:
+                        if red_reminder and message:
+                            await self._deliver_pending_ship_orders(msg_time, session_id=self._extract_sid_from_message(message))
+                    except Exception as e:
+                        logger.error(f'[{msg_time}] 【{self.cookie_id}】等待卖家发货兜底补发异常: {self._safe_str(e)}')
+                    return
             except:
                 pass
 
@@ -10090,6 +10475,13 @@ class XianyuLive:
             msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_time/1000))
 
 
+
+
+            # 兜底：本地订单若已是待发货且未发卡，自动补发卡密（不依赖标准付款卡片文案）
+            try:
+                await self._maybe_deliver_pending_on_message(message, msg_time, websocket)
+            except Exception as _hook_e:
+                logger.warning(f'[{msg_time}] 【{self.cookie_id}】消息兜底补发检查异常: {self._safe_str(_hook_e)}')
 
             # 判断消息方向
             if send_user_id == self.myid:

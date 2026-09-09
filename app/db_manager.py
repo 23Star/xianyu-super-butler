@@ -729,7 +729,8 @@ class DBManager:
             ('qq_reply_secret_key', 'xianyu_qq_reply_2024', 'QQ回复消息API秘钥'),
             ('item_sync_enabled', 'true', '是否启用定时自动同步商品'),
             ('item_sync_interval', '600', '商品同步间隔时间（秒）'),
-            ('item_sync_max_pages', '5', '每次最多同步的页数')
+            ('item_sync_max_pages', '5', '每次最多同步的页数'),
+            ('auto_confirm_ship_enabled', 'false', '付款自动发货后是否在闲鱼点发货（false=只发卡密不点发货）')
             ''')
 
             # 检查并升级数据库
@@ -823,6 +824,12 @@ class DBManager:
             if 'item_sync_max_pages' not in existing_keys:
                 logger.info("添加商品同步配置：item_sync_max_pages...")
                 cursor.execute("INSERT INTO system_settings (key, value, description) VALUES ('item_sync_max_pages', '5', '每次最多同步的页数')")
+
+            # 确保全局“自动确认发货”开关存在（默认关闭：付款后只发卡密，不自动点发货）
+            cursor.execute("SELECT key FROM system_settings WHERE key = 'auto_confirm_ship_enabled'")
+            if not cursor.fetchone():
+                logger.info("添加自动发货设置：auto_confirm_ship_enabled=false...")
+                cursor.execute("INSERT INTO system_settings (key, value, description) VALUES ('auto_confirm_ship_enabled', 'false', '付款自动发货后是否在闲鱼点发货（false=只发卡密不点发货）')")
 
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
@@ -6365,7 +6372,8 @@ class DBManager:
                 # 先尝试查询包含version的订单
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id,
+                       system_shipped
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
@@ -6387,7 +6395,8 @@ class DBManager:
                         'created_at': row[10],
                         'updated_at': row[11],
                         'version': row[12] if len(row) > 12 else 1,  # 默认版本为1
-                        'chat_id': row[13] if len(row) > 13 else ''
+                        'chat_id': row[13] if len(row) > 13 else '',
+                        'system_shipped': bool(row[14]) if len(row) > 14 and row[14] is not None else False
                     }
                 return None
 
@@ -6410,6 +6419,140 @@ class DBManager:
                 logger.error(f"删除订单失败: {order_id} - {e}")
                 self.conn.rollback()
                 return False
+
+    def get_unshipped_recent_orders(self, cookie_id: str, limit: int = 50) -> list:
+        """获取指定账号下未发卡、可能待发货的近期订单。
+
+        正常路径订单状态是 pending_ship；但实测闲鱼会先推「拍下待付款」把本地
+        订单覆盖成 processing，付款后的红点又常不带订单号，导致自动发卡漏触发。
+        这里把 processing 的未发卡订单一并返回，由调用方复核后再决定是否补发，
+        避免仅凭本地 processing 状态误发尚未付款的订单。
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                sql = (
+
+                    'SELECT order_id, item_id, buyer_id, spec_name, spec_value,'
+
+                    '       quantity, amount, order_status, cookie_id, is_bargain,'
+
+                    '       created_at, updated_at, chat_id, system_shipped'
+
+                    ' FROM orders'
+
+                    ' WHERE cookie_id = ?'
+
+                    "  AND order_status IN ('pending_ship', 'processing')"
+
+                    '  AND (system_shipped IS NULL OR system_shipped = 0)'
+
+                    ' ORDER BY updated_at DESC LIMIT ?'
+
+                )
+                cursor.execute(sql, (cookie_id, int(limit)))
+                rows = cursor.fetchall()
+                orders = []
+                for row in rows:
+                    orders.append({
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'spec_name': row[3],
+                        'spec_value': row[4],
+                        'quantity': row[5],
+                        'amount': row[6],
+                        'order_status': row[7],
+                        'cookie_id': row[8],
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11],
+                        'chat_id': row[12] if len(row) > 12 else '',
+                        'system_shipped': bool(row[13]) if len(row) > 13 and row[13] is not None else False,
+                    })
+                return orders
+            except Exception as e:
+                logger.error(f"获取待复核订单失败: {e}")
+                return []
+
+    def backfill_orders_chat_id(self, cookie_id: str, chat_id: str, order_ids=None) -> int:
+        """把消息会话 ID 回填到未发卡订单的 chat_id（仅补空值）。
+
+        付款骨架消息只带会话 sid、不带订单号，而发卡必须知道会话；
+        对一批候选订单把空 chat_id 补成 sid，避免自动发卡因找不到会话而失败。
+        """
+        if not chat_id or not cookie_id:
+            return 0
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if order_ids:
+                    placeholders = ",".join("?" for _ in order_ids)
+                    sql = (
+                        "UPDATE orders SET chat_id = ? "
+                        "WHERE cookie_id = ? AND order_id IN (" + placeholders + ") "
+                        "AND (chat_id IS NULL OR chat_id = '')"
+                    )
+                    params = [chat_id, cookie_id] + list(order_ids)
+                else:
+                    sql = (
+                        "UPDATE orders SET chat_id = ? "
+                        "WHERE cookie_id = ? AND (chat_id IS NULL OR chat_id = '') "
+                        "AND order_status IN ('pending_ship', 'processing') "
+                        "AND (system_shipped IS NULL OR system_shipped = 0)"
+                    )
+                    params = [chat_id, cookie_id]
+                cursor.execute(sql, params)
+                self.conn.commit()
+                return cursor.rowcount or 0
+            except Exception as e:
+                logger.error(f"回填订单会话失败: {e}")
+                self.conn.rollback()
+                return 0
+
+    def get_pending_ship_orders(self, cookie_id: str) -> list:
+        """获取指定账号下待发货且系统尚未发卡的订单。
+
+        用于“买家已付款但系统只收到等待发货提醒、未收到标准发卡触发消息”
+        的兜底补发：只有 pending_ship 且 system_shipped=0 的订单才会被自动发卡，
+        已取消/已完成/已发卡的订单不会误发。
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                       quantity, amount, order_status, cookie_id, is_bargain,
+                       created_at, updated_at, chat_id, system_shipped
+                FROM orders
+                WHERE cookie_id = ?
+                  AND order_status = 'pending_ship'
+                  AND (system_shipped IS NULL OR system_shipped = 0)
+                ORDER BY created_at DESC
+                ''', (cookie_id,))
+                rows = cursor.fetchall()
+                orders = []
+                for row in rows:
+                    orders.append({
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'spec_name': row[3],
+                        'spec_value': row[4],
+                        'quantity': row[5],
+                        'amount': row[6],
+                        'order_status': row[7],
+                        'cookie_id': row[8],
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11],
+                        'chat_id': row[12] if len(row) > 12 else '',
+                        'system_shipped': bool(row[13]) if len(row) > 13 and row[13] is not None else False,
+                    })
+                return orders
+            except Exception as e:
+                logger.error(f"获取待发货订单失败: {e}")
+                return []
 
     def get_recent_order_by_item_and_buyer(self, item_id: str, buyer_id: str):
         """根据商品ID和买家ID获取最近的订单

@@ -516,6 +516,9 @@ export interface SystemSettings {
   auto_rate_enabled?: boolean;
   // 订单页评价框的预填文案，避免每单重复手打
   auto_rate_template?: string;
+  // 付款后是否自动在闲鱼点“发货”。默认关闭：只发送卡密，不点发货，
+  // 由卖家后续在订单页手动操作（订单保持待发货、系统已发卡）。
+  auto_confirm_ship_enabled?: boolean | string;
   /** 确认收货致谢文案，全账号共用 */
   auto_thanks_template?: string;
   /** 买家互动兜底轮询间隔（秒）。确认收货已由消息事件即时触发，这里只是兜底。 */
