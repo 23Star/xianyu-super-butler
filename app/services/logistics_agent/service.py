@@ -22,7 +22,7 @@ from loguru import logger
 
 from app.services.logistics_agent import history
 from app.services.logistics_agent.checkpointer import get_checkpointer
-from app.services.logistics_agent.extractor import extract_from_model, looks_like_logistics
+from app.services.logistics_agent.extractor import extract_from_model
 from app.services.logistics_agent.graph import build_logistics_graph
 from app.services.logistics_agent.graph_state import (
     ENTRY_PRODUCTION,
@@ -99,8 +99,6 @@ class LogisticsQuoteAgent:
         thread_id = history.production_thread_id(cookie_id, chat_id, item_id)
         with _thread_lock(thread_id):
             session = self._load_session(thread_id, enforce_ttl=True)
-            if not looks_like_logistics(message) and not (session and session.has_shipment_params()):
-                return None
             if session and session.has_processed_message(message_id):
                 # 同一条消息已由 Agent 处理过：不重复报价，也不回退到通用 AI。
                 return AgentDecision(action="ignore", reason="duplicate_message", intent=INTENT_LOGISTICS)

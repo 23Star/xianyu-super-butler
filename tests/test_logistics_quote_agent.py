@@ -579,6 +579,22 @@ class AgentServiceTests(unittest.TestCase):
             )
         self.assertIsNone(decision)
 
+    def test_implicit_logistics_message_reaches_extractor(self):
+        """正式入口不再用固定关键词拦截省略口语，交给模型结合上下文判断。"""
+        calls = []
+
+        def _fake_extract(cookie_id, settings, text, session):
+            calls.append(text)
+            return ExtractedQuote(intent="other")
+
+        with mock.patch(_EXTRACT_TARGET, side_effect=_fake_extract):
+            decision = self.agent.handle_message(
+                message="走哪个划算？", chat_id="chat-implicit", cookie_id="acc1",
+                item_id="item1", message_id="implicit-1",
+            )
+        self.assertIsNone(decision)
+        self.assertEqual(calls, ["走哪个划算？"])
+
 
 class AgentGraphSessionTests(unittest.TestCase):
     """LangGraph 会话：多轮上下文、隔离、幂等、恢复、模板参数与审计事件。"""
