@@ -1189,3 +1189,19 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 
 ### 已知限制
 - 当前提交完成识别契约、状态保存和地址确认闸门；计费节点仍以单个 `SessionState` 调用 Workflow，多包裹逐包计费与合计回复尚需下一步在 graph/tools/render 中接入。
+
+## 多包裹 Workflow 逐包报价（2026-09-10）
+
+### 实施变化
+- `tools.py` 新增 `call_workflow_for_packages`：复用同一报价配置，按 `SessionState.packages` 逐个调用 Node Workflow，保留 package_id 并汇总错误。
+- `nodes.py`：检测到两个及以上包裹时切换逐包调用；单包裹仍走原路径。
+- `render.py`：多包裹报价行增加“包裹 N”标识，避免结果混淆。
+- `state.py`：多包裹中任一包裹缺重量/完整尺寸时继续追问。
+
+### 验证
+- `.venv-win`：`python -m unittest tests.test_logistics_quote_agent -q`，77 项通过。
+- 未新增依赖。
+
+### 约束
+- 多个包裹共用当前会话识别出的发货地、收货地和承运商筛选；每个包裹独立调用 Workflow。
+- 包裹格式和识别由模型结构化输出中的 `packages` 字段提供；不满足每包裹必要重量/尺寸时不会计费。
