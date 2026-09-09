@@ -52,6 +52,7 @@ from app.services.logistics_agent.tools import (
     build_quote_config,
     build_workflow_input,
     call_workflow,
+    call_workflow_for_packages,
     selected_book_sha,
 )
 
@@ -277,7 +278,11 @@ def call_workflow_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
 
     try:
         quote_config = build_quote_config(settings, resolution.matched)
-        result = call_workflow(build_workflow_input(session, quote_config))
+        if len(session.packages) > 1:
+            quotes, package_errors = call_workflow_for_packages(session.packages, session, quote_config)
+            result = {"success": bool(quotes), "quotes": quotes, "errors": package_errors}
+        else:
+            result = call_workflow(build_workflow_input(session, quote_config))
     except (WorkflowError, WorkflowUnavailable) as exc:
         logger.warning(f"物流 Workflow 调用失败：{exc}")
         return _finish("workflow_failed", error=str(exc))
@@ -298,7 +303,7 @@ def call_workflow_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
             "call_workflow",
             message_id=message_id,
             state_version=session.state_version,
-            detail=f"quotes={len(quotes)} carriers={carriers}",
+            detail=f"quotes={len(quotes)} packages={len(session.packages) or 1} carriers={carriers}",
             elapsed_ms=(time.perf_counter() - started) * 1000,
         )],
     }

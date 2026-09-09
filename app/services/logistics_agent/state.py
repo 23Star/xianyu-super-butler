@@ -141,6 +141,11 @@ def missing_fields(state: SessionState) -> list[str]:
         gaps.append("收货地")
     if not state.has_weight() and not state.has_complete_dimensions():
         gaps.append("包裹重量或长宽高")
+    if len(state.packages) > 1:
+        incomplete = [str(index) for index, package in enumerate(state.packages, 1)
+                      if not package.weight_kg and not all(getattr(package, field, None) for field in ("length_cm", "width_cm", "height_cm"))]
+        if incomplete:
+            gaps.append(f"包裹{','.join(incomplete)}的重量或长宽高")
     elif state.has_weight() and _has_partial_dimensions(state):
         # 重量与部分尺寸并存：以实重为准，不再追问缺的尺寸。
         pass

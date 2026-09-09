@@ -83,13 +83,15 @@ def build_quote_values(
         quote_match = routes.get(quote.get("carrier", ""), {})
         route_text = _route_text(quote_match, origin, destination)
         config = (carrier_config or {}).get(quote.get("carrier", "")) or CarrierPricingConfig()
-        lines.append(render_template(config.quote_line_template, {
+        line = render_template(config.quote_line_template, {
             "渠道": quote.get("carrier", ""),
             "运费": f"{quote['total_price']:.2f}".rstrip("0").rstrip("."),
             "计费规则": price_rule_text(quote_match.get("price_model") or {}),
             "计费重量": format_weight(quote.get("chargeable_weight_kg")),
             "线路": route_text,
-        }))
+        })
+        package_id = quote.get("package_id")
+        lines.append(f"包裹{package_id}：{line}" if package_id else line)
     route_text = _route_text(match, origin, destination)
 
     freight = float(chosen.get("total_price") or 0)

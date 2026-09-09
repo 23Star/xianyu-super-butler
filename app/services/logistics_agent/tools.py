@@ -178,3 +178,32 @@ def build_workflow_input(state: Any, quote_config: dict[str, Any]) -> dict[str, 
     if state.payment_mode:
         input_payload["carrier_payment_mode"] = state.payment_mode
     return input_payload
+
+
+def call_workflow_for_packages(
+    packages: list[Any],
+    base_state: Any,
+    quote_config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """逐包调用同一确定性 Workflow，保留包裹边界并汇总错误。"""
+    quotes: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for index, package in enumerate(packages, 1):
+        payload = base_state.model_copy(deep=True)
+        for field in ("weight_kg", "length_cm", "width_cm", "height_cm", "quantity"):
+            value = getattr(package, field, None)
+            if value is not None:
+                setattr(payload, field, value)
+        try:
+            result = call_workflow(build_workflow_input(payload, quote_config))
+        except (WorkflowError, WorkflowUnavailable) as exc:
+            errors.append(f"包裹{index}：{exc}")
+            continue
+        if not result.get("success") and not result.get("partial"):
+            errors.append(f"包裹{index}：{result.get('reason') or '计算失败'}")
+            continue
+        for quote in result.get("quotes", []):
+            item = dict(quote)
+            item["package_id"] = getattr(package, "package_id", "") or str(index)
+            quotes.append(item)
+    return quotes, errors
