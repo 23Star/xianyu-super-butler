@@ -1396,7 +1396,7 @@ class DBManager:
         的账号默认关闭（与「有实际影响的动作默认关闭」保持一致）。
         """
         added = []
-        for column in ('auto_rate_enabled', 'auto_flower_enabled', 'auto_thanks_enabled'):
+        for column in ('auto_rate_enabled', 'auto_flower_enabled', 'auto_thanks_enabled', 'auto_receive_flower_enabled'):
             try:
                 self._execute_sql(cursor, f"SELECT {column} FROM cookies LIMIT 1")
             except sqlite3.OperationalError:
@@ -1423,6 +1423,7 @@ class DBManager:
         'auto_rate_enabled': False,
         'auto_flower_enabled': False,
         'auto_thanks_enabled': False,
+        'auto_receive_flower_enabled': False,
     }
 
     def get_buyer_interaction_settings(self, cookie_id: str) -> dict:
@@ -1432,7 +1433,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 self._execute_sql(
                     cursor,
-                    "SELECT auto_rate_enabled, auto_flower_enabled, auto_thanks_enabled "
+                    "SELECT auto_rate_enabled, auto_flower_enabled, auto_thanks_enabled, auto_receive_flower_enabled "
                     "FROM cookies WHERE id = ?",
                     [cookie_id]
                 )
@@ -1443,6 +1444,7 @@ class DBManager:
                 'auto_rate_enabled': bool(row[0]),
                 'auto_flower_enabled': bool(row[1]),
                 'auto_thanks_enabled': bool(row[2]),
+                'auto_receive_flower_enabled': bool(row[3]),
             }
         except Exception as e:
             logger.error(f"读取账号买家互动开关失败 {cookie_id}: {e}")
@@ -1451,7 +1453,7 @@ class DBManager:
 
     def update_buyer_interaction_settings(
         self, cookie_id: str, auto_rate_enabled=None, auto_flower_enabled=None,
-        auto_thanks_enabled=None
+        auto_thanks_enabled=None, auto_receive_flower_enabled=None
     ) -> bool:
         """更新指定账号的买家互动开关，未传的字段保持不变。"""
         updates = []
@@ -1460,6 +1462,7 @@ class DBManager:
             ('auto_rate_enabled', auto_rate_enabled),
             ('auto_flower_enabled', auto_flower_enabled),
             ('auto_thanks_enabled', auto_thanks_enabled),
+            ('auto_receive_flower_enabled', auto_receive_flower_enabled),
         ):
             if value is not None:
                 updates.append(f"{column} = ?")

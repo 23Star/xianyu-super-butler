@@ -31,6 +31,25 @@ const MODEL_OPTIONS = [
   { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro（更准）' },
 ];
 
+const ACCOUNT_STORAGE_KEY = 'logistics_quote_agent_account_v1';
+
+/** 记住上次选择的账号，刷新或切换步骤回来时默认选中同一账号。 */
+const loadStoredAccountId = (): string => {
+  try {
+    return window.localStorage.getItem(ACCOUNT_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+};
+
+const storeAccountId = (cookieId: string) => {
+  try {
+    window.localStorage.setItem(ACCOUNT_STORAGE_KEY, cookieId);
+  } catch {
+    // localStorage 不可用（如隐私模式）时退化为本次会话内生效。
+  }
+};
+
 /** 仅 Agent 独有的文案；报价、差价、引导、追问、首次回复沿用第二/三步配置。 */
 const TEMPLATE_FIELDS: Array<{ key: keyof AgentSettings['templates']; label: string; hint: string }> = [
   { key: 'no_route', label: '无匹配线路', hint: '查不到线路时发送，{发货省} {收货省} 为买家地址' },
@@ -127,12 +146,22 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
           label: account.nickname || account.remark || account.id,
         }));
         setAccounts(mapped);
-        if (mapped.length) setCookieId((current) => current || mapped[0].id);
+        if (mapped.length) {
+          const stored = loadStoredAccountId();
+          setCookieId((current) => {
+            if (current) return current;
+            return mapped.some((account) => account.id === stored) ? stored : mapped[0].id;
+          });
+        }
       } catch {
         setErrorMessage('读取账号列表失败，请刷新重试');
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (cookieId) storeAccountId(cookieId);
+  }, [cookieId]);
 
   useEffect(() => {
     if (cookieId) void loadForAccount(cookieId);

@@ -1292,3 +1292,56 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 - 尚未进行真实闲鱼账号、真实买家消息和实际发送验收；这需要外部账号状态、人工滑块验证及可用报价表。
 - 物流 Agent 提示词目前仍主要使用结构化会话摘要，复杂省略语/指代的最近原文窗口可在取得真实样本后继续增强。
 - 工作区仍保留本轮之前的未提交业务改动和静态构建变更，未执行提交或回滚。
+
+## 自动收下小红花（2026-09-10）
+
+### 任务目标
+在买家互动页面增加“自动收下小红花”按账号开关，并提供收花接口，复用现有买家互动开关与闲鱼 API 框架。
+
+### 实施记录
+- `app/db_manager.py`：为 cookies 增加 `auto_receive_flower_enabled` 迁移、读取和更新支持。
+- `app/reply_server.py`：买家互动状态接口返回/更新新开关；新增 `POST /api/orders/{order_id}/receive-flower`，校验账号开关后调用收花 API。
+- `utils/xianyu_seller_api.py`：新增 `receive_flower`，调用 `mtop.taobao.red.flower.seller.receive`。
+- `frontend/components/BuyerInteraction.tsx`：账号表新增“自动收下小红花”按钮，复用现有 switch。
+- `frontend/services/api.ts`：补充类型字段和 `receiveOrderFlower` API。
+
+### 验证记录
+待执行 TypeScript 检查与 Python 编译检查。
+
+### 已知风险与后续步骤
+当前项目为 Python 闲鱼框架，未发现参考文档中 Rust/bridge 实时 IM 事件链路；本次先提供按账号开关及订单收花接口，自动事件触发需结合现有消息结构继续接入。
+- `XianyuAutoAsync.py`：系统消息包含“收到小红花”且能提取 6–24 位订单号时，按新开关实时调用收花接口。
+- 前端构建与 TypeScript 检查已通过；Python 文件编译已通过。
+
+## 滑块验证失败诊断（2026-09-10）
+
+### 任务目标
+
+分析账号 `2222597651726` 当前滑块验证反复失败的直接原因，基于运行日志和实现代码定位失败层级；本轮不修改业务代码。
+
+### 诊断结论
+
+- 失败不是浏览器启动故障：19:19、19:23、19:37、19:50 均显示 Patchright 启动成功、浏览器上下文创建成功。
+- 失败发生在服务端验证结果层。拖动后滑块容器仍存在，脚本只能判定为失败；部分轮次明确返回 `验证失败，点击框体重试(error:BQex9/WrAz9/3Ppg9)`，另一些轮次停留在“请按住滑块”或“加载中”。
+- 轨迹落点被记录为 `最终位置=0px`，说明松手后组件归位，不能证明服务端接受了拖动。多次目标距离稳定约 `258.67px`，而页面持续不放行，指向风控/挑战票据或轨迹可信度被拒，而非单纯像素距离误差。
+- 当前实现把惩罚 URL 原样导航到 `h5api.m.goofish.com`，并把账号 Cookie 传入；但日志显示页面只剩 1 个 frame、元素动态重建（`Element is not attached to the DOM`），重试复用旧 frame 后出现“未找到滑块”。这会造成后续重试失效，但不是首轮服务端拒绝的唯一原因。
+- 19:23 轮次出现 `Page.goto: net::ERR_ABORTED`；19:50 轮次出现悬停元素已脱离 DOM，均说明挑战页面在重载/异步更新，当前查找与重试逻辑存在竞态。
+- Token 接口最终返回 HTTP 200 但业务码 `FAIL_SYS_USER_VALIDATE`，并伴随 `RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试`；这不是网络成功，仍是平台风控拒绝。WebSocket 未连接只是通知通道状态，不是滑块失败根因。
+
+### 重要文件
+
+- `utils/xianyu_slider_stealth.py`：轨迹、元素查找、成功判定、重试与 Cookie 提取。
+- `XianyuAutoAsync.py`：挑战触发、滑块调用、失败熔断。
+- `logs/xianyu_2026-09-10.log`：本次账号运行证据。
+
+### 验证记录
+
+- 检索代码中的滑块、x5sec、惩罚页和失败判定逻辑。
+- 检查 2026-09-10 账号日志：多轮 3 次重试均失败；确认 Patchright/浏览器初始化正常、挑战 URL 带 `x5secdata/x5step=2/action=captcha`、服务端返回 `FAIL_SYS_USER_VALIDATE`。
+- 未修改业务代码，未运行会改变运行状态的操作。
+
+### 已知风险与下一步
+
+- 需要在单次挑战中抓取挑战页网络响应、最终 Set-Cookie、页面 frame 生命周期和拖动事件时间序列，才能区分“挑战票据已失效/会话绑定不一致”与“轨迹被风控拒绝”。
+- 优先修复重试竞态：每次失败重新获取完整挑战 URL、等待新 frame/元素稳定后再拖动，禁止复用已脱离 DOM 的 ElementHandle/Frame。
+- 账号已进入风险冷却（日志显示 1200 秒），继续自动重试会延长冷却；应先人工完成一次干净挑战并保存成功 Cookie，再做无浏览器请求验证。

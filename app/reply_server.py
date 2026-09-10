@@ -7535,6 +7535,7 @@ async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current
         'auto_rate_enabled': any(v['auto_rate_enabled'] for v in per_account.values()),
         'auto_flower_enabled': any(v['auto_flower_enabled'] for v in per_account.values()),
         'auto_thanks_enabled': any(v['auto_thanks_enabled'] for v in per_account.values()),
+        'auto_receive_flower_enabled': any(v['auto_receive_flower_enabled'] for v in per_account.values()),
         'auto_rate_template': _rate_template(),
     }
 
@@ -7543,6 +7544,7 @@ class BuyerInteractionUpdate(BaseModel):
     auto_rate_enabled: Optional[bool] = None
     auto_flower_enabled: Optional[bool] = None
     auto_thanks_enabled: Optional[bool] = None
+    auto_receive_flower_enabled: Optional[bool] = None
 
 
 @app.put('/api/seller-features/{cookie_id}')
@@ -7551,7 +7553,7 @@ async def update_seller_features(
     payload: BuyerInteractionUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """按账号更新评价/求花开关。"""
+    """按账号更新买家互动开关。"""
     from app.db_manager import db_manager
 
     if cookie_id not in (db_manager.get_all_cookies(current_user['user_id']) or {}):
@@ -7562,11 +7564,12 @@ async def update_seller_features(
         auto_rate_enabled=payload.auto_rate_enabled,
         auto_flower_enabled=payload.auto_flower_enabled,
         auto_thanks_enabled=payload.auto_thanks_enabled,
+        auto_receive_flower_enabled=payload.auto_receive_flower_enabled,
     )
     log_with_user(
         'info',
         f"更新账号 {cookie_id} 买家互动开关: rate={payload.auto_rate_enabled}, "
-        f"flower={payload.auto_flower_enabled}, thanks={payload.auto_thanks_enabled}",
+        f"flower={payload.auto_flower_enabled}, receive_flower={payload.auto_receive_flower_enabled}, thanks={payload.auto_thanks_enabled}",
         current_user
     )
     return {"success": True, **db_manager.get_buyer_interaction_settings(cookie_id)}
@@ -9328,6 +9331,31 @@ async def require_order_flower(
         return JSONResponse({'success': True, 'data': data})
     except SellerApiError as exc:
         log_with_user('warning', f"订单 {order_id} 求花失败: {exc}", current_user)
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
+@app.post('/api/orders/{order_id}/receive-flower')
+async def receive_order_flower(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """收下买家赠送的小红花，需按账号开启自动收花开关。"""
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+    if not db_manager.get_buyer_interaction_settings(cid)['auto_receive_flower_enabled']:
+        raise HTTPException(status_code=403, detail="该账号未开启自动收下小红花功能")
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = await api.receive_flower(order_id)
+        log_with_user('info', f'订单 {order_id} 已收下小红花', current_user)
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        log_with_user('warning', f'订单 {order_id} 收花失败: {exc}', current_user)
         return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
     finally:
         await api.close()

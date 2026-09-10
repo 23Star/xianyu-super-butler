@@ -359,14 +359,6 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
           <div ref={bottomRef} />
         </div>
 
-        <QuoteAgentTraining
-          cookieId={cookieId} threadId={threadId} busy={busy} saving={savingTraining}
-          messages={turns.flatMap((turn, position) => turn.training ? [{ role: turn.role, content: turn.text, position, ...(turn.decision ? { decision: turn.decision } : {}) }] : [])}
-          onSaving={setSavingTraining}
-          onSaved={() => setTurns((prev) => prev.map((turn) => ({ ...turn, training: false })))}
-          onSelectAll={(training) => setTurns((prev) => prev.map((turn) => ({ ...turn, training })))}
-        />
-
         {errorMessage && (
           <p className="rounded-md border border-[color:color-mix(in_srgb,var(--danger)_34%,var(--border))] bg-[var(--danger-soft)] px-3 py-2.5 text-[13px] text-[var(--danger-ink)]" role="alert">
             {errorMessage}
@@ -380,8 +372,13 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
             value={message}
             disabled={busy}
             onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              void send();
+            }}
             rows={2}
-            placeholder="例如：赣州到广州130kg"
+            placeholder="例如：赣州到广州130kg（回车试算，Shift+回车换行）"
             className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
           />
           <button
@@ -410,6 +407,14 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
           </div>
         )}
         {lastDecision && <DecisionDetails decision={lastDecision} />}
+
+        <QuoteAgentTraining
+          cookieId={cookieId} threadId={threadId} busy={busy} saving={savingTraining}
+          messages={turns.flatMap((turn, position) => turn.training ? [{ role: turn.role, content: turn.text, position, ...(turn.decision ? { decision: turn.decision } : {}) }] : [])}
+          onSaving={setSavingTraining}
+          onSaved={() => setTurns((prev) => prev.map((turn) => ({ ...turn, training: false })))}
+          onSelectAll={(training) => setTurns((prev) => prev.map((turn) => ({ ...turn, training })))}
+        />
       </div>
     </section>
   );
