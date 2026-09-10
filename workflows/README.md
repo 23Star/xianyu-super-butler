@@ -10,6 +10,7 @@
 | `logistics-quote.d.mts` | TypeScript 输入、输出和配置类型 |
 | `logistics-quote.cli.mjs` | 单次 JSON 命令行调用 |
 | `logistics-quote.tool.json` | 通用 Agent 工具定义：`name`、`description`、`parameters`（JSON Schema） |
+| `logistics-package-plan.mjs` | 多包裹合并/逐包报价优先级决策 Workflow |
 | `logistics-quote.example.json` | 可直接运行的合成费率示例，仅用于验证调用 |
 | `logistics-quote.test.mjs` | 原十组样例及输入、金额、抛比、错误和 CLI 回归测试 |
 
@@ -28,6 +29,7 @@ node workflows/logistics-quote.cli.mjs --schema
 
 # 运行实际断言测试
 node --test workflows/logistics-quote.test.mjs
+node --test workflows/logistics-package-plan.test.mjs
 ```
 
 示例输入为实重 5kg、首重 1kg/12 元、续重 4.8 元/kg、成本加价 2 元、减免 10%。结果：计费重 5kg，基础运费 31.20 元，调整后 33.20 元，总价和平台支付均为 **29.88 元**，剩余应付 0 元。

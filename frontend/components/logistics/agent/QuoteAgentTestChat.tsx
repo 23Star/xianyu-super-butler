@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Eraser, LoaderCircle, MessagesSquare, Plus, ScanSearch, GraduationCap } from 'lucide-react';
+import { Check, CheckCircle2, Eraser, LoaderCircle, MessagesSquare, Plus, ScanSearch } from 'lucide-react';
 import {
   createAgentThread,
   deleteAgentThread,
   fetchAgentThread,
   runAgentTest,
-  saveAgentTrainingSamples,
   type AgentTestDecision,
 } from '../../../services/logisticsAgent';
 import { SectionHeader } from '../../ui';
+import QuoteAgentTraining from './QuoteAgentTraining';
 
 interface TestTurn {
   role: 'buyer' | 'agent';
@@ -259,26 +259,11 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
     }
   }, [cookieId, threadId]);
 
-  const saveTraining = useCallback(async () => {
-    const samples = turns.reduce<Array<{thread_id:string; buyer_message:string; agent_reply:string; decision?: AgentTestDecision}>>((acc, turn, i) => {
-      if (turn.role === 'agent' && turn.training) {
-        const buyer = turns[i - 1];
-        if (buyer?.role === 'buyer') acc.push({ thread_id: threadId, buyer_message: buyer.text, agent_reply: turn.text, decision: turn.decision });
-      }
-      return acc;
-    }, []);
-    if (!samples.length || savingTraining) return;
-    setSavingTraining(true);
-    try { const result = await saveAgentTrainingSamples(cookieId, samples); setNotice(`已保存 ${result.saved} 条训练样本`); }
-    catch (error) { setErrorMessage(error instanceof Error ? error.message : '保存训练样本失败'); }
-    finally { setSavingTraining(false); }
-  }, [cookieId, savingTraining, threadId, turns]);
-
   const fields = (lastDecision?.fields ?? {}) as Record<string, unknown>;
   const statusText = lastDecision
     ? STATUS_LABELS[lastDecision.session_status] || lastDecision.session_status
     : '';
-  const busy = isRunning || isLoading || threadAction !== null;
+  const busy = isRunning || isLoading || threadAction !== null || savingTraining;
   const channelResults = lastDecision?.channel_results || [];
   const lowestPrice = channelResults.find((item) => item.status === 'quoted')?.total_price;
 
@@ -352,12 +337,19 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
           )}
           {turns.map((turn, index) => (
             <div key={index} className={`quote-sim-bubble ${turn.role === 'buyer' ? 'quote-sim-bubble--buyer' : 'quote-sim-bubble--assistant'}`}>
+              <button
+                type="button" role="checkbox" aria-checked={Boolean(turn.training)}
+                aria-label={`第 ${index + 1} 条${turn.role === 'buyer' ? '买家消息' : '试算回复'}纳入训练`}
+                className="mb-1 flex min-h-[44px] items-center gap-2 rounded px-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50"
+                disabled={busy}
+                onClick={() => setTurns((prev) => prev.map((item, pos) => pos === index ? { ...item, training: !item.training } : item))}
+              >
+                <span aria-hidden="true" className={`inline-flex h-4 w-4 items-center justify-center rounded border ${turn.training ? 'border-current' : 'border-[var(--border-strong)]'}`}>{turn.training && <Check className="h-3.5 w-3.5" />}</span>
+                #{index + 1} {turn.role === 'buyer' ? '买家模拟消息' : '试算模拟回复'} · {turn.training ? '已勾选训练' : '纳入训练'}
+              </button>
               <span className="whitespace-pre-wrap">{turn.text}</span>
               {turn.decision && (
                 <small className="mt-1.5 block text-[11px] text-[var(--text-muted)]">
-                  <button type="button" role="checkbox" aria-checked={Boolean(turn.training)} className="mr-2 inline-flex items-center gap-1 cursor-pointer" onClick={() => setTurns((prev) => prev.map((item, pos) => pos === index ? { ...item, training: !item.training } : item))}>
-                    <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${turn.training ? 'border-[var(--brand)] bg-[var(--brand)] text-white' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>{turn.training ? '✓' : ''}</span>纳入训练
-                  </button>
                   {ACTION_LABELS[turn.decision.action] || turn.decision.action} · {turn.decision.reason}
                   {turn.decision.routes.length > 0 && ` · 命中线路：${turn.decision.routes.map((route) => route.carrier).join('、')}`}
                 </small>
@@ -367,9 +359,13 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
           <div ref={bottomRef} />
         </div>
 
-        <button type="button" className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm" onClick={() => void saveTraining()} disabled={savingTraining || !turns.some((turn) => turn.training)}>
-          <GraduationCap className="h-4 w-4" />{savingTraining ? '保存中' : '保存勾选训练样本'}
-        </button>
+        <QuoteAgentTraining
+          cookieId={cookieId} threadId={threadId} busy={busy} saving={savingTraining}
+          messages={turns.flatMap((turn, position) => turn.training ? [{ role: turn.role, content: turn.text, position, ...(turn.decision ? { decision: turn.decision } : {}) }] : [])}
+          onSaving={setSavingTraining}
+          onSaved={() => setTurns((prev) => prev.map((turn) => ({ ...turn, training: false })))}
+          onSelectAll={(training) => setTurns((prev) => prev.map((turn) => ({ ...turn, training })))}
+        />
 
         {errorMessage && (
           <p className="rounded-md border border-[color:color-mix(in_srgb,var(--danger)_34%,var(--border))] bg-[var(--danger-soft)] px-3 py-2.5 text-[13px] text-[var(--danger-ink)]" role="alert">

@@ -50,6 +50,7 @@ class PricingConfig(BaseModel):
     coupon_discount: float | None = Field(default=None, ge=0, description="优惠券抵扣，元")
     profit_markup: float = Field(default=0, ge=0, description="每单利润加价，元")
     continued_markup: float = Field(default=0, ge=0, description="每公斤续重加价，元")
+    first_order_eligible: bool = Field(default=False, description="当前买家享有首单特惠")
     default_one_kg: bool = True
 
     @property

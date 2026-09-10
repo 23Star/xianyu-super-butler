@@ -31,6 +31,19 @@ class WorkflowError(RuntimeError):
     """Workflow 调用失败（输入被拒、解析失败或超时）。"""
 
 
+def plan_package_quote_mode(weights: list[float | None], *, first_order_eligible: bool) -> dict[str, Any]:
+    """Apply multi-package priority rules before any carrier quote is calculated."""
+    clean = [float(weight) for weight in weights if weight is not None and float(weight) > 0]
+    if not clean:
+        raise WorkflowError("没有可报价的包裹重量")
+    total = sum(clean)
+    if total >= 30:
+        return {"mode": "merge", "weight_kg": total, "reason": "total_weight_at_least_30kg", "notice": f"已合并为{total:g}kg，按物流报价"}
+    if first_order_eligible and all(weight <= 30 for weight in clean):
+        return {"mode": "merge", "weight_kg": total, "reason": "first_order_express", "notice": f"已合并为{total:g}kg，享首单特惠"}
+    return {"mode": "separate", "weight_kg": total, "reason": "separate_packages", "notice": ""}
+
+
 def _resolve_node() -> str:
     node = shutil.which("node")
     if not node:

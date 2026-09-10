@@ -72,6 +72,7 @@ class LogisticsGraphState(TypedDict, total=False):
     follow_up: str
     routes: Any
     quotes: list[dict[str, Any]]
+    package_plan: dict[str, Any]
     book_sha256: str
 
     # 最终输出。

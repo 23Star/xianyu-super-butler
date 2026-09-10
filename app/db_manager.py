@@ -450,6 +450,33 @@ class DBManager:
                 UNIQUE(user_id, thread_id, buyer_message, agent_reply)
             )
             ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_training_rounds (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_logistics_training_rounds_owner
+            ON logistics_agent_training_rounds(user_id, cookie_id, created_at DESC)
+            ''')
+            # 旧问答仍可回看、导出；固定来源 ID 保证重复启动不会重复迁移。
+            cursor.execute('''
+            INSERT OR IGNORE INTO logistics_agent_training_rounds
+                (id,user_id,cookie_id,thread_id,name,messages_json,created_at)
+            SELECT 'legacy-' || id,user_id,cookie_id,thread_id,'历史训练样本 ' || id,
+                json_array(
+                    json_object('role','buyer','content',buyer_message,'position',0),
+                    json_object('role','agent','content',agent_reply,'position',1,
+                        'decision',json(CASE WHEN json_valid(decision_json) THEN decision_json ELSE '{}' END))
+                ),created_at
+            FROM logistics_agent_training_samples
+            ''')
             # 兼容旧库：已存在的表补 status 列。
             try:
                 self._execute_sql(cursor, "SELECT status FROM logistics_quote_send_logs LIMIT 1")

@@ -55,6 +55,8 @@ from app.services.logistics_agent.tools import (
     call_workflow_for_packages,
     selected_book_sha,
 )
+from app.services.logistics_agent.extractor import parse_package_weights
+from app.services.logistics_agent.models import ExtractedPackage
 
 # 渲染为追问的失败原因（其余 reason 走失败模板）。
 _FOLLOW_UP_REASONS = ("missing_params", "ambiguous_city", "missing_city")
@@ -78,6 +80,15 @@ def extract_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, Any]:
     session: SessionState = state.get("session") or SessionState()
     settings = deps.settings_store.load(state["cookie_id"])
     extracted = deps.extract_fn(state["cookie_id"], settings, state["message"], session)
+    # Models occasionally collapse “第一个23kg第二个130kg” into one weight.
+    # A deterministic pass preserves every explicit package boundary.
+    explicit_weights = parse_package_weights(state["message"])
+    if len(explicit_weights) > 1:
+        extracted.packages = [
+            ExtractedPackage(package_id=str(index), weight_kg=weight)
+            for index, weight in enumerate(explicit_weights, 1)
+        ]
+        extracted.weight_kg = sum(explicit_weights)
     # 买家常用“我不知道/不清楚重量”等自然语言回答上一轮追问。
     # 这不是缺少意图，而是接受按默认 1kg 计费的明确语义；补入结构化
     # 字段后才能继续线路与 Workflow，而不会重复发送同一条追问。
@@ -117,6 +128,7 @@ def merge_state_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, A
     # 本轮瞬时结果：新消息一律从空开始，旧轮次报价只存在于历史事件里。
     ephemeral_reset: dict[str, Any] = {
         "quotes": [],
+        "package_plan": {},
         "routes": None,
         "book_sha256": "",
         "rendered_messages": [],
@@ -279,8 +291,20 @@ def call_workflow_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
     try:
         quote_config = build_quote_config(settings, resolution.matched)
         if len(session.packages) > 1:
-            quotes, package_errors = call_workflow_for_packages(session.packages, session, quote_config)
-            result = {"success": bool(quotes), "quotes": quotes, "errors": package_errors}
+            from app.services.logistics_agent.tools import plan_package_quote_mode
+            plan = plan_package_quote_mode(
+                [package.weight_kg for package in session.packages],
+                first_order_eligible=settings.pricing.first_order_eligible,
+            )
+            if plan["mode"] == "merge":
+                merged = session.model_copy(deep=True)
+                merged.packages = []
+                merged.weight_kg = plan["weight_kg"]
+                result = call_workflow(build_workflow_input(merged, quote_config))
+                result["package_plan"] = plan
+            else:
+                quotes, package_errors = call_workflow_for_packages(session.packages, session, quote_config)
+                result = {"success": bool(quotes), "quotes": quotes, "errors": package_errors, "package_plan": plan}
         else:
             result = call_workflow(build_workflow_input(session, quote_config))
     except (WorkflowError, WorkflowUnavailable) as exc:
@@ -297,6 +321,7 @@ def call_workflow_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
     carriers = ",".join(quote.get("carrier", "") for quote in quotes)
     return {
         "quotes": quotes,
+        "package_plan": result.get("package_plan", {}),
         "action": "reply",
         "reason": "quoted",
         "events": [graph_event(
@@ -336,6 +361,9 @@ def render_reply_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, 
     elif reason == "quoted":
         try:
             messages = _render_quote(settings, state, session)
+            notice = (state.get("package_plan") or {}).get("notice")
+            if notice:
+                messages.insert(0, notice)
         except RenderError:
             messages = [render_failure_message(settings.templates.failure)]
             action = "manual"

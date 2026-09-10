@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from fastapi.responses import Response
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services import logistics_quote_parser
 from app.services.logistics_agent import LogisticsQuoteAgent
@@ -50,6 +52,43 @@ class AgentTrainingSample(BaseModel):
     buyer_message: str = Field(min_length=1, max_length=2000)
     agent_reply: str = Field(min_length=1, max_length=5000)
     decision: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentTrainingMessage(BaseModel):
+    role: Literal["buyer", "agent"]
+    content: str = Field(min_length=1, max_length=20000)
+    position: int = Field(ge=0)
+    decision: dict[str, Any] | None = None
+
+    @field_validator("content")
+    @classmethod
+    def nonblank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("训练消息不能为空")
+        return value
+
+
+class AgentTrainingRound(BaseModel):
+    id: uuid.UUID
+    thread_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=100)
+    messages: list[AgentTrainingMessage] = Field(min_length=2, max_length=200)
+
+    @field_validator("name", "thread_id")
+    @classmethod
+    def nonblank_label(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("训练回合名称和会话 ID 不能为空")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_conversation(self):
+        if self.messages[0].role != "buyer" or self.messages[-1].role != "agent":
+            raise ValueError("训练回合需以买家消息开始、以试算回复结束")
+        positions = [message.position for message in self.messages]
+        if positions != sorted(set(positions)):
+            raise ValueError("训练消息必须按原会话顺序选择且不能重复")
+        return self
 
 
 def create_logistics_agent_router(
@@ -320,17 +359,95 @@ def create_logistics_agent_router(
         if db_manager is None:
             raise HTTPException(status_code=503, detail="物流 Agent 存储未启用")
         _require_user_cookie(cookie_id, current_user)
-        import json
-        with db_manager.lock:
+        for sample in payload:
+            _load_owned_thread_snapshot(sample.thread_id, cookie_id)
+        saved = 0
+        with db_manager.lock, db_manager.conn:
             for sample in payload:
-                db_manager.conn.execute(
+                cursor = db_manager.conn.execute(
                     "INSERT OR IGNORE INTO logistics_agent_training_samples "
                     "(user_id,cookie_id,thread_id,buyer_message,agent_reply,decision_json) VALUES (?,?,?,?,?,?)",
                     (current_user["user_id"], cookie_id, sample.thread_id, sample.buyer_message,
                      sample.agent_reply, json.dumps(sample.decision, ensure_ascii=False)),
                 )
-            db_manager.conn.commit()
-        return {"success": True, "saved": len(payload)}
+                saved += cursor.rowcount
+        return {"success": True, "saved": saved}
+
+    # 一次保存对应一个命名回合；消息快照独立于可清空的测试会话。
+    def _training_round(row):
+        return {
+            "id": row[0], "thread_id": row[1], "name": row[2],
+            "messages": json.loads(row[3]), "created_at": row[4],
+            "status": "collected",
+        }
+
+    @router.post("/api/logistics/agent/training-rounds")
+    def save_training_round(
+        payload: AgentTrainingRound,
+        cookie_id: str,
+        current_user: dict[str, Any] = Depends(get_current_user),
+    ):
+        if db_manager is None:
+            raise HTTPException(status_code=503, detail="物流 Agent 存储未启用")
+        _require_user_cookie(cookie_id, current_user)
+        _load_owned_thread_snapshot(payload.thread_id, cookie_id)
+        messages_json = json.dumps([m.model_dump(exclude_none=True) for m in payload.messages], ensure_ascii=False)
+        with db_manager.lock, db_manager.conn:
+            existing = db_manager.conn.execute(
+                "SELECT user_id,cookie_id,thread_id,name,messages_json FROM logistics_agent_training_rounds WHERE id=?",
+                (str(payload.id),),
+            ).fetchone()
+            values = (current_user["user_id"], cookie_id, payload.thread_id, payload.name, messages_json)
+            if existing and tuple(existing) != values:
+                raise HTTPException(status_code=409, detail="保存标识已使用，请重新保存本回合")
+            if not existing:
+                db_manager.conn.execute(
+                    "INSERT INTO logistics_agent_training_rounds (id,user_id,cookie_id,thread_id,name,messages_json) "
+                    "VALUES (?,?,?,?,?,?)", (str(payload.id), *values),
+                )
+            row = db_manager.conn.execute(
+                "SELECT id,thread_id,name,messages_json,created_at FROM logistics_agent_training_rounds WHERE id=?",
+                (str(payload.id),),
+            ).fetchone()
+        return {"success": True, "round": _training_round(row), "created": not bool(existing)}
+
+    @router.get("/api/logistics/agent/training-rounds")
+    def list_training_rounds(
+        cookie_id: str,
+        current_user: dict[str, Any] = Depends(get_current_user),
+    ):
+        if db_manager is None:
+            raise HTTPException(status_code=503, detail="物流 Agent 存储未启用")
+        _require_user_cookie(cookie_id, current_user)
+        with db_manager.lock:
+            rows = db_manager.conn.execute(
+                "SELECT id,thread_id,name,messages_json,created_at FROM logistics_agent_training_rounds "
+                "WHERE user_id=? AND cookie_id=? ORDER BY created_at DESC, rowid DESC LIMIT 50",
+                (current_user["user_id"], cookie_id),
+            ).fetchall()
+        return {"success": True, "rounds": [_training_round(row) for row in rows]}
+
+    @router.get("/api/logistics/agent/training-rounds/{round_id}/export")
+    def export_training_round(
+        round_id: str,
+        cookie_id: str,
+        current_user: dict[str, Any] = Depends(get_current_user),
+    ):
+        if db_manager is None:
+            raise HTTPException(status_code=503, detail="物流 Agent 存储未启用")
+        _require_user_cookie(cookie_id, current_user)
+        with db_manager.lock:
+            row = db_manager.conn.execute(
+                "SELECT messages_json FROM logistics_agent_training_rounds WHERE id=? AND user_id=? AND cookie_id=?",
+                (round_id, current_user["user_id"], cookie_id),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="训练回合不存在")
+        messages = [
+            {"role": "user" if m["role"] == "buyer" else "assistant", "content": m["content"]}
+            for m in json.loads(row[0])
+        ]
+        return Response(json.dumps({"messages": messages}, ensure_ascii=False) + "\n", media_type="application/x-ndjson")
 
     # ---------- 试算 ----------
 

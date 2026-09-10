@@ -171,6 +171,7 @@ const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
     try {
       const body = await response.json();
       if (typeof body?.detail === 'string') detail = body.detail;
+      else if (Array.isArray(body?.detail)) detail = body.detail.map((item: { msg: string }) => item.msg).join('；');
     } catch {
       // 保持默认错误文案
     }
@@ -263,9 +264,32 @@ export const deleteAgentThread = async (threadId: string, cookieId: string): Pro
   );
 };
 
-export const saveAgentTrainingSamples = async (cookieId: string, samples: Array<{
-  thread_id: string; buyer_message: string; agent_reply: string; decision?: AgentTestDecision;
-}>): Promise<{ saved: number }> => request(
-  `/api/logistics/agent/training-samples?cookie_id=${encodeURIComponent(cookieId)}`,
-  { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(samples) },
+export interface AgentTrainingMessage {
+  role: 'buyer' | 'agent';
+  content: string;
+  position: number;
+  decision?: AgentTestDecision;
+}
+
+export interface AgentTrainingRound {
+  id: string;
+  thread_id: string;
+  name: string;
+  messages: AgentTrainingMessage[];
+  created_at: string;
+  status: 'collected';
+}
+
+export const saveAgentTrainingRound = async (
+  cookieId: string,
+  payload: Pick<AgentTrainingRound, 'id' | 'thread_id' | 'name' | 'messages'>,
+): Promise<{ success: boolean; round: AgentTrainingRound; created: boolean }> => request(
+  `/api/logistics/agent/training-rounds?cookie_id=${encodeURIComponent(cookieId)}`,
+  { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(payload), signal: AbortSignal.timeout(30000) },
 );
+
+export const listAgentTrainingRounds = async (cookieId: string): Promise<{ rounds: AgentTrainingRound[] }> =>
+  request(`/api/logistics/agent/training-rounds?cookie_id=${encodeURIComponent(cookieId)}`);
+
+export const exportAgentTrainingRound = async (cookieId: string, roundId: string): Promise<{ messages: Array<{ role: string; content: string }> }> =>
+  request(`/api/logistics/agent/training-rounds/${encodeURIComponent(roundId)}/export?cookie_id=${encodeURIComponent(cookieId)}`);

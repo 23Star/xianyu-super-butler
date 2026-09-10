@@ -9580,6 +9580,39 @@ class XianyuLive:
             reply = None
             reply_strategy = "none"
             matched_keyword = None
+
+            # 让物流 Agent 先看到原始买家消息；API/关键词先返回会把物流询价截走。
+            logistics_result = await self.get_logistics_reply(
+                message_data, send_user_name, send_user_id, send_message, item_id, chat_id, websocket
+            )
+            if logistics_result is not None:
+                reply_strategy = "logistics_agent"
+                if logistics_result["send"]:
+                    self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="success",
+                        decision_reason=f"logistics_{logistics_result['reason']}",
+                        reply_strategy=reply_strategy,
+                        reply_text="\n".join(logistics_result["messages"]),
+                        send_status="success",
+                    )
+                    msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    logger.info(f"【物流Agent发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 共 {len(logistics_result['messages'])} 条消息")
+                else:
+                    self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="skipped",
+                        decision_reason=f"logistics_{logistics_result['reason']}",
+                        reply_strategy=reply_strategy,
+                        reply_text="\n".join(logistics_result["messages"]),
+                        send_status="unknown",
+                    )
+                    msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    logger.info(f"【{self.cookie_id}】物流Agent未发送（{logistics_result['reason']}），不回退到通用AI")
+                return
+
             # 判断是否启用API回复
             if AUTO_REPLY.get('api', {}).get('enabled', False):
                 reply = await self.get_api_reply(
@@ -9617,38 +9650,7 @@ class XianyuLive:
                     reply_strategy = "keyword"
                     matched_keyword = self._find_reply_keyword(send_message, item_id)
                 else:
-                    # 2. 关键词匹配失败，先尝试物流报价 Agent，再尝试 AI 回复
-                    logistics_result = await self.get_logistics_reply(
-                        message_data, send_user_name, send_user_id, send_message, item_id, chat_id, websocket
-                    )
-                    if logistics_result is not None:
-                        reply_strategy = "logistics_agent"
-                        # 发送已在 get_logistics_reply 内完成并带回最终状态。
-                        if logistics_result["send"]:
-                            self._add_reply_decision_log(
-                                message_data,
-                                **log_context,
-                                process_status="success",
-                                decision_reason=f"logistics_{logistics_result['reason']}",
-                                reply_strategy=reply_strategy,
-                                reply_text="\n".join(logistics_result["messages"]),
-                                send_status="success",
-                            )
-                            msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                            logger.info(f"[{msg_time}] 【物流Agent发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 共 {len(logistics_result['messages'])} 条消息")
-                        else:
-                            self._add_reply_decision_log(
-                                message_data,
-                                **log_context,
-                                process_status="skipped",
-                                decision_reason=f"logistics_{logistics_result['reason']}",
-                                reply_strategy=reply_strategy,
-                                reply_text="\n".join(logistics_result["messages"]),
-                                send_status="unknown",
-                            )
-                            msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                            logger.info(f"[{msg_time}] 【{self.cookie_id}】物流Agent未发送（{logistics_result['reason']}），不回退到通用AI")
-                        return
+                    # 2. 关键词匹配失败后再交给通用 AI 回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复

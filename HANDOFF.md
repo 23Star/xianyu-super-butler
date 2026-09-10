@@ -1211,3 +1211,84 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 - 扩展“不知道多重/几重”等表达的识别正则；抽取节点在已有物流会话且 `default_one_kg=true` 时写入 1kg。
 - 增加“江西抚州到广东佛山小东西多少钱”后回复“不知道多重”的连续会话回归测试，确保不再重复 `missing_params` 追问。
 - 测试中线路数据不匹配时允许 `route_not_found`，但断言重量已落为 1kg。
+
+## 物流 Agent 入口顺序修复（2026-09-10）
+
+### 任务目标
+
+解释并修复物流 Agent 没有真正理解买家消息的现象，确保启用物流报价的消息先经过结构化识别，再决定是否交给通用 API、关键词或普通 AI。
+
+### 实施变化
+
+- `XianyuAutoAsync.py`：将 `get_logistics_reply()` 从“关键词失败后”提前到自动回复/暂停检查之后、通用 API 和关键词匹配之前。这样物流 Agent 可以先看到原始买家消息；模型判断为 `other` 时才回到原有 API/关键词/普通 AI 链路。
+- 保留原有发送闸门、物流 Agent 的草稿/人工处理语义和回复决策日志；仅调整入口优先级，避免重复调用物流 Agent。
+
+### 根因确认
+
+- 旧入口顺序是：通用 API → 关键词 → 物流 Agent → 普通 AI。任一 API 或关键词命中都会直接返回，物流模型根本没有机会识别。
+- LangGraph 的抽取节点确实调用 `ChatDeepSeek` 并返回结构化 `ExtractedQuote`；本地真实账号试算“江西抚州到广东佛山小东西多少钱”成功抽取收发地并进入缺参追问。
+- 模型调用失败时当前实现会记录 `ModelCallError`/`ModelNotConfigured` 并返回人工/草稿故障文案；历史日志已出现“识别超时”，这类情况不是模型理解结果。
+- 抽取提示当前只传当前消息和已合并字段，不传历史买家原文；复杂省略语或指代仍可能受上下文不足影响，后续需单独补充会话文本窗口。
+
+### 重要文件
+
+- `XianyuAutoAsync.py`
+- `app/services/logistics_agent/service.py`
+- `app/services/logistics_agent/extractor.py`
+- `app/services/logistics_agent/prompts.py`
+- `realtime.log`
+
+### 验证记录
+
+- `.venv-win\\Scripts\\python.exe -X utf8 -m unittest tests.test_logistics_quote_agent -q`：78 项全部通过。
+- `python -m py_compile XianyuAutoAsync.py`：通过。
+- 使用当前数据库真实凭据直接调用 Agent 试算：模型返回 `intent=logistics_quote`，正确识别“江西抚州”和“广东佛山”，缺少重量时返回缺参追问。
+- 检查 `realtime.log`：确认旧链路存在模型超时记录，也确认试算请求确实进入物流 Agent。
+
+### 已知风险与后续步骤
+
+- 现在每条已启用且商品匹配的买家消息都会先触发一次物流模型调用，成本和延迟会增加；这是为了保证省略物流口语不被通用 API/关键词抢走。
+- 模型提示仍未携带最近买家原文，只携带结构化会话字段；若要提高“这个/还是刚才那个/改成这里”等指代理解，应在 `extract_node` 到 `build_extraction_user_prompt` 之间加入最近几轮消息窗口并补充回归样本。
+- 服务进程需重启后才会加载入口顺序修改；真实验收应检查回复决策日志中的 `reply_strategy=logistics_agent`、Agent 事件、发送审计状态和买家实际收到内容。
+
+## 多包裹报价 Workflow（2026-09-10）
+
+### 任务目标
+
+支持一条买家消息识别多个包裹重量，并按首单特惠、总重 30kg 门槛和逐包报价规则决定报价方式，避免只报价第一个包裹。
+
+### 实施记录
+
+- `app/services/logistics_agent/extractor.py` 新增 `parse_package_weights`，本地兜底解析保留所有显式重量；模型结果进入节点后也做确定性多重量校正，生成 `ExtractedPackage` 列表并将会话总重设为各包裹重量之和。
+- `app/services/logistics_agent/tools.py` 新增 `plan_package_quote_mode`：总重 ≥30kg 合并走物流；首单资格且每包 ≤30kg、总重 <30kg 合并并标记首单特惠；其余逐包报价。
+- `app/services/logistics_agent/nodes.py` 按计划执行合并或逐包 Workflow；合并结果在报价前追加“已合并为 Xkg ...”提示，逐包报价沿用包裹编号行。
+- `app/services/logistics_agent/settings.py` 在 `PricingConfig` 增加 `first_order_eligible` 开关，作为当前买家首单资格输入。
+- 新增 `workflows/logistics-package-plan.mjs` 及 `workflows/logistics-package-plan.test.mjs`，可被后续调用方独立复用。
+
+### 验证记录
+
+- `node --test workflows/logistics-package-plan.test.mjs`：3 项通过。
+- `python -m py_compile app/services/logistics_agent/extractor.py app/services/logistics_agent/nodes.py app/services/logistics_agent/tools.py app/services/logistics_agent/settings.py`：通过。
+- 全量 pytest 未能收集：当前终端缺少既有依赖 `execjs`；物流 Agent 测试另缺少 `langchain_core`，与本次改动无关。
+
+### 已知风险与后续步骤
+
+- `first_order_eligible` 当前是 Agent 配置项，真实生产链路需要在买家身份/首单资格系统接入后按会话动态写入。
+- 文本中存在多个重量但无法可靠分配包裹边界时，当前按出现顺序建立包裹；复杂自然语言仍应由模型输出 `packages` 后结合业务样本回归。
+
+## 接手复核与构建验收（2026-09-10）
+
+### 本次处理
+
+- 接手检查了最新未提交改动，确认物流 Agent 多包裹识别、逐包/合并计费、训练回合 API 与前端训练组件均已落地；未发现仍标记为 TODO 的业务阻断项。
+- 使用 `.venv-win` 执行 `tests.test_logistics_quote_agent` 与 `tests.test_logistics_training_rounds`，共 82 项全部通过。
+- 对 `app/services/logistics_agent` 执行 Python 编译检查；单文件通配符调用在 PowerShell 下不适用，随后通过模块导入和 Uvicorn 应用加载完成等价验证。
+- 执行 `git diff --check` 通过。
+- 执行前端 `npm run build` 成功，已刷新 `static/index.html` 与 `static/assets/` 构建产物。
+- 验证 `app.reply_server:app` 可被 `uvicorn.Config.load()` 正常加载，说明当前 `websockets==16.1.1` / `uvicorn==0.50.1` 兼容修复已覆盖启动路径。
+
+### 当前剩余事项
+
+- 尚未进行真实闲鱼账号、真实买家消息和实际发送验收；这需要外部账号状态、人工滑块验证及可用报价表。
+- 物流 Agent 提示词目前仍主要使用结构化会话摘要，复杂省略语/指代的最近原文窗口可在取得真实样本后继续增强。
+- 工作区仍保留本轮之前的未提交业务改动和静态构建变更，未执行提交或回滚。

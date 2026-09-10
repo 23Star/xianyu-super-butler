@@ -78,6 +78,16 @@ def parse_weight_kg(text: str) -> float | None:
     return result if result > 0 else None
 
 
+def parse_package_weights(text: str) -> list[float]:
+    """Parse every explicit weight, preserving message order."""
+    weights = []
+    for match in _WEIGHT_RE.finditer(text or ""):
+        value = float(match.group(1)) * _UNIT_TO_KG.get(match.group(2).lower(), 1.0)
+        if value > 0:
+            weights.append(value)
+    return weights
+
+
 def extract_fields(model: Any, message: str, state: Any) -> ExtractedQuote:
     """调用模型完成结构化识别；失败抛 ModelCallError / ModelNotConfigured。"""
     user_prompt = build_extraction_user_prompt(message, summarize_state_for_prompt(state))
@@ -102,9 +112,13 @@ def extract_with_fallback(model: Any, message: str, state: Any) -> ExtractedQuot
         return extract_fields(model, message, state)
     except (ModelCallError, ModelNotConfigured):
         dims = parse_dimensions(message)
+        weights = parse_package_weights(message)
+        from app.services.logistics_agent.models import ExtractedPackage
         return ExtractedQuote(
             intent="logistics_quote",
-            weight_kg=parse_weight_kg(message),
+            weight_kg=weights[0] if len(weights) == 1 else None,
+            packages=[ExtractedPackage(package_id=str(index), weight_kg=weight)
+                      for index, weight in enumerate(weights, 1)],
             length_cm=dims[0] if dims else None,
             width_cm=dims[1] if dims else None,
             height_cm=dims[2] if dims else None,
