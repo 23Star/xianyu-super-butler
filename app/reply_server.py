@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9390,17 +9390,20 @@ async def rate_orders(
         await api.close()
 
 
-@app.get('/{path:path}', response_class=HTMLResponse)
-async def catch_all_route(path: str):
+@app.api_route(
+    '/{path:path}',
+    methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    response_class=HTMLResponse,
+)
+async def catch_all_route(path: str, request: Request):
     """
-    Catch-all 路由：处理所有未匹配的 GET 请求
-    如果是 API 请求，返回 404；否则返回前端 index.html
+    Catch-all 路由：处理所有未匹配的请求
+    未匹配的 API 路径与非 GET 请求返回 404，浏览器 GET 前端路由返回 index.html
     """
-    full_path = f'/{path}'
     root_segment = path.split('/', 1)[0]
-    if root_segment in API_ROOTS:
+    if root_segment in API_ROOTS or request.method not in ('GET', 'HEAD'):
         raise HTTPException(status_code=404, detail="Not Found")
-    
+
     # 返回前端页面
     return await serve_frontend()
 
