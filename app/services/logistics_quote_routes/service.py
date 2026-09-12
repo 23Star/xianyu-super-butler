@@ -36,6 +36,17 @@ _LEVEL_LABELS = {
 _BATCH_SIZE = 5_000
 
 
+_MUNICIPALITIES = {"北京", "上海", "天津", "重庆"}
+
+
+def _is_province_only(region: dict[str, str]) -> bool:
+    """地址只有省级信息（直辖市 city 与 province 同名，等同省级）。"""
+    city = region.get("city", "")
+    if not city:
+        return True
+    return city == region.get("province", "") and city in _MUNICIPALITIES
+
+
 def _decode(value: Any, default: Any) -> Any:
     if isinstance(value, dict | list):
         return value
@@ -333,6 +344,44 @@ class LogisticsRouteService:
                     }
                     if hit_level is None:
                         hit_level = level_key
+
+            # Province-only inquiries still need every available carrier. Some
+            # books store a province pair with empty cities, while others only
+            # have city rows. Use one deterministic province-pair row per
+            # carrier as a provisional quote until the buyer supplies cities.
+            # Municipalities carry their own name as city (上海/上海), which is
+            # already fully determined by the province and must not block the
+            # fallback.
+            if _is_province_only(origin) and _is_province_only(destination):
+                cursor = self.db.conn.execute(
+                    f"""
+                    SELECT carrier, import_id, origin_province, origin_city,
+                           dest_province, dest_city, price_model
+                    FROM logistics_quote_routes
+                    WHERE user_id = ? AND book_kind = ?
+                      AND origin_province = ? AND dest_province = ?
+                      {import_filter}{carrier_filter}
+                    ORDER BY carrier, origin_city, dest_city, import_id
+                    """,
+                    (
+                        user_id, book_kind,
+                        origin.get("province", ""), destination.get("province", ""),
+                        *import_params, *carrier_params,
+                    ),
+                )
+                for row in cursor.fetchall():
+                    matches.setdefault(row[0], {
+                        "carrier": row[0],
+                        "import_id": row[1],
+                        "origin": {"province": row[2], "city": row[3]},
+                        "destination": {"province": row[4], "city": row[5]},
+                        "price_model": _decode(row[6], {}),
+                        "match_level": "province_province",
+                        "match_level_label": _LEVEL_LABELS["province_province"],
+                        "provisional": True,
+                    })
+                if matches:
+                    hit_level = "province_province"
 
         all_carriers = self.carriers_for_books(user_id, import_ids or [], book_kind)
         if carriers:

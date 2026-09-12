@@ -281,15 +281,41 @@ class RouteServiceTests(unittest.TestCase):
         )
         self.assertEqual(set(result["matched"]), {"圆通"})
 
-    def test_unmatched_city_carriers_reported_as_needs_city(self):
-        """买家只给省级地址时，市级粒度承运商提示补充城市而不是无线路。"""
+    def test_province_only_falls_back_to_sample_city_for_city_level_carriers(self):
+        """买家只给省级地址时，市级粒度承运商按示例城市预报价（标 provisional）。"""
         result = self.service.match_routes(
             1, {"province": "江西", "city": ""}, {"province": "河北", "city": ""}, "logistics",
             import_ids=[self.banded_import["id"]],
         )
-        self.assertEqual(result["matched"], {})
-        self.assertEqual(result["needs_city_carriers"], ["百世快运"])
+        self.assertEqual(set(result["matched"]), {"百世快运"})
+        match = result["matched"]["百世快运"]
+        self.assertTrue(match["provisional"])
+        self.assertEqual(match["origin"], {"province": "江西", "city": "赣州"})
+        self.assertEqual(result["match_level"], "province_province")
+        self.assertEqual(result["needs_city_carriers"], [])
         self.assertFalse(result["route_not_found"])
+
+    def test_municipality_destination_still_uses_province_fallback(self):
+        """收货地是直辖市（上海/上海）时，等同于省级询价，不能挡住备用匹配。"""
+        result = self.service.match_routes(
+            1, {"province": "安徽", "city": ""}, {"province": "上海", "city": "上海"}, "logistics",
+            import_ids=[self.banded_import["id"]],
+        )
+        self.assertEqual(set(result["matched"]), {"百世快运"})
+        match = result["matched"]["百世快运"]
+        self.assertTrue(match["provisional"])
+        self.assertEqual(match["origin"], {"province": "安徽", "city": "合肥"})
+        self.assertEqual(match["destination"], {"province": "上海", "city": "上海"})
+
+    def test_province_exact_rows_are_not_provisional(self):
+        """有省级线路的承运商走精确匹配，不标 provisional。"""
+        result = self.service.match_routes(
+            1, {"province": "江西", "city": ""}, {"province": "河北", "city": ""}, "express",
+            import_ids=[self.express_import["id"]],
+        )
+        self.assertEqual(set(result["matched"]), {"中通", "圆通"})
+        for match in result["matched"].values():
+            self.assertNotIn("provisional", match)
 
     def test_route_not_found_when_province_pair_missing(self):
         result = self.service.match_routes(

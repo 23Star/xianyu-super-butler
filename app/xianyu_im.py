@@ -55,6 +55,21 @@ def _load_content(raw: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _extract_dx_card_text(decoded: Dict[str, Any]) -> str:
+    """从 dxCard 卡片结构里取标题和说明，取不到时返回空串。
+
+    闲鱼官方卡片（评价、小红花、交易通知）的标题在 dxCard.item.main.exContent，
+    不在顶层；只看顶层 title/template 会把卡片降级成普通文本消息。
+    """
+    card = _as_dict(decoded.get("dxCard"))
+    item = _as_dict(card.get("item"))
+    main = _as_dict(item.get("main"))
+    ex_content = _as_dict(main.get("exContent"))
+    title = str(ex_content.get("title") or "").strip()
+    desc = str(ex_content.get("desc") or "").strip()
+    return "\n".join(part for part in (title, desc) if part)
+
+
 def _interpret_content(decoded: Dict[str, Any]) -> Tuple[str, List[str], str]:
     content_type = decoded.get("contentType")
     text_value = decoded.get("text")
@@ -78,6 +93,10 @@ def _interpret_content(decoded: Dict[str, Any]) -> Tuple[str, List[str], str]:
 
     if content_type == 3 or decoded.get("audio"):
         return "[语音消息]", [], "system"
+
+    card_text = _extract_dx_card_text(decoded)
+    if card_text:
+        return card_text, [], "card"
 
     if decoded.get("title") or decoded.get("template"):
         return str(decoded.get("title") or decoded.get("template")), [], "card"
@@ -177,6 +196,10 @@ def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]
         message_type = "system"
         if decoded:
             text, images, message_type = _interpret_content(decoded)
+            # 卡片标题取不到时（动态更新的卡片）仍按卡片渲染，文字回落到
+            # custom 里的摘要，不能混进买家的普通消息气泡。
+            if not message_type and isinstance(decoded.get("dxCard"), dict):
+                message_type = "card"
         if not text and not images:
             text = str(custom.get("summary") or custom.get("degrade") or "[系统消息]")
         if not message_type:

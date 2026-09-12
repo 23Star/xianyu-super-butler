@@ -1,7 +1,7 @@
 import { get, post, put, del } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
-  AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
+  AdminStats, Card, CardShipment, SystemSettings, ApiResponse, OrderAnalytics,
   Item, ItemDeliveryConfig, ItemDeliveryConfigSummary,
   ProductVariantBinding, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
@@ -474,6 +474,25 @@ export const getCardDetails = async (cardId: string | number): Promise<any> => {
   return get(`/cards/${cardId}`);
 };
 
+/** 已发货的批量卡密记录，按时间倒序。 */
+export const getCardShipments = async (limit = 200): Promise<{ total: number; shipments: CardShipment[] }> => {
+  const res = await get<{ success: boolean; total: number; shipments: CardShipment[] }>(
+    '/cards/shipped', { limit }
+  );
+  return { total: res.total || 0, shipments: res.shipments || [] };
+};
+
+export const clearCardShipments = async (): Promise<ApiResponse & { deleted?: number }> => {
+  return del('/cards/shipped');
+};
+
+/** 上传图片，返回服务端相对路径（卡密发货文案插图等）。 */
+export const uploadImage = async (file: File): Promise<{ image_url: string; message?: string }> => {
+  const formData = new FormData();
+  formData.append('image', file);
+  return post('/upload-image', formData);
+};
+
 // Items
 export const getItems = async (): Promise<Item[]> => {
     const res = await get<any>('/items');
@@ -549,6 +568,50 @@ export const saveItemDeliveryConfig = async (
     config,
   );
 }
+
+export type DeliverySkuOption = {
+  key: string;
+  name: string;
+  platform_sku_id?: string;
+  source?: string;
+};
+
+export type DeliverySkuDiscovery = {
+  options: DeliverySkuOption[];
+  detection_status: string;
+  retry_after_seconds?: number;
+  warning?: string;
+};
+
+const normalizeDeliverySkuDiscovery = (data: Partial<DeliverySkuDiscovery>): DeliverySkuDiscovery => ({
+  options: data.options || [],
+  detection_status: data.detection_status || 'ok',
+  retry_after_seconds: data.retry_after_seconds,
+  warning: data.warning,
+});
+
+export const getDeliverySkuOptions = async (cookieId: string, itemId: string): Promise<DeliverySkuDiscovery> => {
+  const response = await get<Partial<DeliverySkuDiscovery>>(
+    `/api/anti-abuse/sku-options/${encodeURIComponent(itemId)}`,
+    { cookie_id: cookieId },
+  );
+  return normalizeDeliverySkuDiscovery(response);
+};
+
+/** 卖家接口返回 unauthorized 后由用户显式触发的买家接口兜底，只调一次、不自动重试。 */
+export const buyerTestDeliverySkuOptions = async (cookieId: string, itemId: string): Promise<DeliverySkuDiscovery> => {
+  const response = await get<Partial<DeliverySkuDiscovery>>(
+    `/api/anti-abuse/sku-options/${encodeURIComponent(itemId)}/buyer-test`,
+    { cookie_id: cookieId },
+  );
+  return normalizeDeliverySkuDiscovery(response);
+};
+
+export const saveDeliverySkuRules = async (cookieId: string, itemId: string, skus: Array<{
+  key: string; name: string; max_deliveries: number; block_message: string; enabled: boolean;
+}>): Promise<void> => {
+  await put(`/api/anti-abuse/sku-configs/${encodeURIComponent(itemId)}?cookie_id=${encodeURIComponent(cookieId)}`, { skus });
+};
 
 // Product Automation
 export const getProductMaterials = async (cookieId?: string): Promise<ProductMaterial[]> => {

@@ -31,17 +31,21 @@ class WorkflowError(RuntimeError):
     """Workflow 调用失败（输入被拒、解析失败或超时）。"""
 
 
-def plan_package_quote_mode(weights: list[float | None], *, first_order_eligible: bool) -> dict[str, Any]:
-    """Apply multi-package priority rules before any carrier quote is calculated."""
+def plan_package_quote_mode(weights: list[float | None]) -> dict[str, Any]:
+    """多包裹报价规则：保留包裹识别，但全部合并按总重计费。
+
+    业务要求不再逐包分别报价；报价前用 notice 告知买家识别到的包裹数与合计重量。
+    """
     clean = [float(weight) for weight in weights if weight is not None and float(weight) > 0]
     if not clean:
         raise WorkflowError("没有可报价的包裹重量")
     total = sum(clean)
-    if total >= 30:
-        return {"mode": "merge", "weight_kg": total, "reason": "total_weight_at_least_30kg", "notice": f"已合并为{total:g}kg，按物流报价"}
-    if first_order_eligible and all(weight <= 30 for weight in clean):
-        return {"mode": "merge", "weight_kg": total, "reason": "first_order_express", "notice": f"已合并为{total:g}kg，享首单特惠"}
-    return {"mode": "separate", "weight_kg": total, "reason": "separate_packages", "notice": ""}
+    return {
+        "mode": "merge",
+        "weight_kg": total,
+        "reason": "total_weight_at_least_30kg" if total >= 30 else "merged_packages",
+        "notice": f"已识别{len(clean)}个包裹（合计：{total:g}kg）",
+    }
 
 
 def _resolve_node() -> str:

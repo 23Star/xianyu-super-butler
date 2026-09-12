@@ -1,5 +1,51 @@
 # 项目交接文档
 
+## SKU 商家接口识别修复（2026-09-12）
+
+### 任务目标
+修复 SKU 识别必须等订单完成后才有结果的问题；按桌面端参考文档接入闲鱼小铺商家 MTop 商品搜索接口，实现选中商品/点击识别即可读取 SKU。
+
+### 实施记录
+- `utils/xianyu_seller_api.py` 新增 `search_item_skus`，调用 `mtop.alibaba.idle.seller.pc.common.item.search`，参数使用 `itemStatus=0,-9`、`bizType=commonPro`、`searchRequest.itemId`，解析 `idleItemSkuList/skuList`。
+- `app/reply_server.py` 将 SKU 选项接口改为异步：点击识别时主动调用商家接口，成功后只替换 `source='discovery'` 快照；接口失败时回退订单观测和已有商品规格，本地也为空才返回 502。
+
+### 验证记录
+- 已完成代码静态检查准备；待执行 `py_compile`。
+
+### 已知风险与后续步骤
+- 闲鱼接口字段若发生变更，需要根据实际响应补充 SKU 属性字段映射；买家接口兜底尚未接入。
+
+## SKU 识别与防薅一期（2026-09-11）
+
+### 前端补齐（2026-09-11）
+- 按职责重新拆分：商品发货页的组件现在只做 SKU 识别与展示，不再编辑防薅限制；左侧“SKU 防薅”页面独立负责次数和拦截话术。
+- 修复识别为空：SKU 选项查询在订单观测为空时回退读取已有 `product_variants` 多规格配置。
+- 使用 `ui-ux-pro-max` 规范重做 SKU 防薅页面层级、状态反馈、表单标签、响应式布局和主题变量样式。
+- 根据页面反馈调整入口：商品列表每行“专属自动发货”列增加直接的“识别 SKU”按钮；左侧导航新增“SKU 防薅”，独立页面提供账号/商品选择、SKU 识别及规则保存。
+- 新增 `frontend/components/SkuAntiAbusePage.tsx`，沿用 `PageHeader`、主题变量、现有按钮和输入样式；`App.tsx` 注册懒加载页面，`Sidebar.tsx` 注册导航项。
+- 前端已重新构建，`npx tsc --noEmit` 与 `npm run build` 均通过。
+- 新增 `frontend/components/SkuRecognitionPanel.tsx`，模块化提供“识别 SKU”、识别结果列表、每个 SKU 最大自动发货次数、拦截话术和保存按钮。
+- 接入 `ItemList` 的商品自动发货配置弹窗；打开路径：商品列表 → 自动发货 → 多规格商品配置。
+- `frontend/services/api.ts` 新增 SKU 选项查询与防薅规则保存 API。
+- `npx tsc --noEmit` 通过。
+
+### 任务目标
+参考 `D:\XianyuAutoAgent-Desktop\docs\SKU-RECOGNITION-AND-ANTI-ABUSE-IMPLEMENTATION-2026-09-11.md`，在当前 Python 闲鱼框架复用已有多规格发货能力，补充订单观测式 SKU 识别快照及按买家维度的 SKU 防薅闸门。
+
+### 实施记录
+- `app/db_manager.py` 新增 `delivery_sku_options`、`delivery_sku_rules`、`delivery_sku_claims` 表及 SKU 规范化、订单观测入库、规则保存、原子额度领取、拦截记录查询方法。
+- `XianyuAutoAsync.py` 在现有多规格发货解析后记录订单 SKU，并在取卡密前按账号×买家×商品×SKU原子领取额度；超限发送拦截话术并停止自动发货。
+- `app/reply_server.py` 新增 SKU 选项查询、规则保存、拦截记录查询接口，沿用现有账号鉴权。前端已有多规格商品配置页可继续作为规则编辑入口，未重复建设 UI。
+
+### 验证记录
+- `python -m py_compile app/db_manager.py app/reply_server.py XianyuAutoAsync.py` 通过。
+- `git diff --check` 通过（仅有仓库既存 CRLF 提示）。
+
+### 已知风险与后续步骤
+- 当前没有参考项目中的卖家 MTop SKU 发现接口；首期以订单详情观测为保底来源，后续可在现有 `XianyuSellerAPI` 上接入显式识别按钮。
+- 需要在前端商品规格编辑页调用新增接口展示/保存 `max_deliveries` 与拦截话术；现有绑定表仍保持兼容。
+- 拦截通知当前复用 IM 文本发送，系统通知/卖家推送可按现有通知中心继续接入。
+
 > 最新进展：见文末「LangChain 依赖兼容修复（2026-09-10）」。
 
 ## 任务目标
@@ -1345,3 +1391,115 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 - 需要在单次挑战中抓取挑战页网络响应、最终 Set-Cookie、页面 frame 生命周期和拖动事件时间序列，才能区分“挑战票据已失效/会话绑定不一致”与“轨迹被风控拒绝”。
 - 优先修复重试竞态：每次失败重新获取完整挑战 URL、等待新 frame/元素稳定后再拖动，禁止复用已脱离 DOM 的 ElementHandle/Frame。
 - 账号已进入风险冷却（日志显示 1200 秒），继续自动重试会延长冷却；应先人工完成一次干净挑战并保存成功 Cookie，再做无浏览器请求验证。
+
+## 物流报价真实验收问题修复（2026-09-10，codex 线程 01a08bbe 接手完成）
+
+### 任务目标
+
+修复账号 `2200780192922` 真实验收发现的四类问题：报价后「是否有差价/引导拍下」不见、物流渠道只显示一个百世、快递报价同样缺后续消息、广州→赣州双包裹只收到差价消息且看不出包裹是否合并。
+
+### 根因与实施记录
+
+- 连续消息只发出第一条：物流 Agent 使用 `send_msg` 仅把帧写入 WebSocket 就记成功，没有等服务端确认；且 `generate_uuid` 用毫秒时间戳生成，同一毫秒内连续三条会得到相同 uuid，可能被平台当成重复消息丢弃。
+  - `XianyuAutoAsync.py`：物流 Agent 发送分支改为 `send_im_text`（`sendByReceiverScope` + mid 响应确认，失败抛错并由 `mark_send_result(success=False)` 记录），普通消息路径不变。
+  - `utils/xianyu_utils.py`：`generate_uuid` 改为 `uuid.uuid4()`，连续消息 uuid 不再重复。
+- 省级询价只报百世：报价表里 百世快运 有省→省行，壹米滴答/顺心捷达 只有市级行，旧逻辑把后两者放进 `needs_city_carriers` 静默丢弃；且收货地是直辖市时（上海/上海）省级兜底条件被 `city` 挡住。
+  - `app/services/logistics_quote_routes/service.py`：省级询价（`city` 为空或等于省名）时按确定顺序为每个承运商补一条示例城市行（`provisional=True`），精确省级行优先；修复原先 `_LEVEL_LABELS["province"]` 的 KeyError。
+  - `app/services/logistics_agent/render.py`：新增 `render_provisional_notice`；`app/services/logistics_agent/nodes.py` 在报价前插入提示「壹米滴答（按南京）…暂按示例城市预估，补充具体发货城市后可重新核算」。
+- 双包裹被合并成一个 15kg：新一轮完整询价触发轮次重置后，`extracted.packages` 在重置前已写入，被 `_new_round` 清空。
+  - `app/services/logistics_agent/state.py`：把 packages/address_candidates/unit_issues 的写入移到轮次重置之后。
+  - `app/services/logistics_agent/tools.py`：separate 模式补 `notice`「已识别2个包裹，分别计费（合计15kg）」。
+  - `app/services/logistics_agent/render.py`：多包裹总价按每个包裹各自最低价求和；`计费重量` 汇总各包裹计费重；`最优渠道` 改为「极兔、申通 ¥37.00（2个包裹）」与合计口径一致；报价行按包裹分组排序。
+
+### 重要文件
+
+- `XianyuAutoAsync.py`、`utils/xianyu_utils.py`
+- `app/services/logistics_quote_routes/service.py`
+- `app/services/logistics_agent/{state,render,nodes,tools}.py`
+- `tests/test_logistics_quote_agent.py`、`tests/test_logistics_quote_routes.py`、`tests/test_logistics_send_path.py`（新增）、`tests/test_buyer_interaction_per_account.py`
+
+### 验证记录
+
+- `python -m unittest tests.test_logistics_quote_agent tests.test_logistics_quote_routes tests.test_logistics_training_rounds tests.test_logistics_send_path`：111 项通过。
+- 全量 `python -m unittest discover -s tests`：463 项，仅 `test_slider_watchdog.KillBrowserProcessTests.test_matches_only_own_user_data_dir` 失败（Windows Python 的 `os.sep` 与测试里 POSIX 路径不匹配，改动前即存在，与本轮无关）。
+- 用生产库副本对真实场景跑 Agent 全链路（只读验证，不改生产库）：
+  - 江苏到上海 130kg：匹配 百世快运/壹米滴答/顺心捷达 3 渠道，4 条消息（预估提示 → 报价 → 补差价 → 引导拍下）全部渲染。
+  - 广州到赣州 12kg+3kg：包 1/包 2 分别报价，提示「已识别2个包裹」，推荐组合 ¥33.20 与合计一致。
+- 发送路径单测 `tests/test_logistics_send_path.py`：确认四条消息全部走 `send_im_text`，抛错时 `mark_send_result(success=False)`，闸门拦截时不发送。
+
+### 已知风险与后续步骤
+
+- 省级询价对只有市级价的承运商按「排序后的示例城市」预估（当前江苏→上海落在南京），不同城市价差可达约 20%；已在首条消息注明并邀请买家补充城市，但该城市是确定性排序结果，不保证是省会，后续可考虑改为最低价/省会策略或独立配置。
+- 收货地直辖市（上海/北京等）现在等同省级询价走备用匹配，示例城市为发货侧城市；若买家补齐发货城市会走精确匹配重报。
+- 本轮未改前端、未重新构建 `static/`；需要重启运行中的服务进程加载 Python 变更后再做真实消息验收。
+- 工作区还有更早会话遗留的未提交改动：`utils/message_utils.py`、`XianyuAutoAsync.py` 小红花解析、`tests/test_received_flower_card.py`（新增未跟踪），本轮只修正了该功能遗留的测试期望（`auto_receive_flower_enabled`），未做其他改动。
+
+## 多包裹统一合并按总重报价（2026-09-11，业务规则变更）
+
+### 任务目标
+
+按店主验收反馈调整多包裹业务规则：保留包裹识别，但**不再逐包分别报价**，统一合并为总重后对所有渠道报价；报价前仍需先发一条提醒「已识别n个包裹（合计：nkg）」。本条规则取代上一条记录里的 separate 逐包报价逻辑。
+
+### 实施记录
+
+- `app/services/logistics_agent/tools.py`：`plan_package_quote_mode` 去掉 `first_order_eligible` 分支，始终返回 `mode="merge"`、`weight_kg=总重`，`notice="已识别{n}个包裹（合计：{total:g}kg）"`（总重 ≥30kg 时 reason 记为 `total_weight_at_least_30kg`，否则 `merged_packages`）。
+- `app/services/logistics_agent/nodes.py`：`call_workflow_node` 多包裹分支改为始终合并去重后按总重调用 Workflow；不再调用 `call_workflow_for_packages`。
+- `app/services/logistics_agent/render.py`：移除包裹1/包裹2 分组、逐包最低价求和与组合推荐逻辑，恢复单包裹总价的展示；计费重量/续重/推荐渠道都以合并后的总重口径输出。
+- `tests/test_logistics_quote_agent.py`：新增 Agent 级回归（多包裹消息 → 首条提醒 + 总重报价、无包裹分组行），更新 `plan_package_quote_mode` 用例。
+
+### 验证记录
+
+- `python -m unittest tests.test_logistics_quote_agent tests.test_logistics_quote_routes tests.test_logistics_training_rounds tests.test_logistics_send_path`：115 项通过。
+- 生产库副本全链路（账号 2200780192922，只读）：
+  - 「广州到赣州，第一个包裹12kg第二个包裹7kg」→ 4 条消息：`已识别2个包裹（合计：19kg）` → 5 渠道按 19kg 报价（极兔 ¥40.30）→ `推荐选择：极兔 ¥40.30` → 引导拍下。
+  - 「江苏到上海，130kg」→ 4 条消息：省级预估提示 → 3 渠道报价 → 推荐 百世 ¥178.00 → 引导拍下。
+
+### 已知风险与后续步骤
+
+- 合并报价会按总重跨过快递/物流分界（≥30kg 走物流表）；若多包裹实际分开发货，总价与实际可能不同，这是店主确认过的业务口径。
+- 规则改动只在 Python 侧；运行中的服务需重启后生效。
+- `tools.py` 的 `call_workflow_for_packages` 已无调用方，暂保留为工具函数；如后续确认不再需要可删除。
+
+## 卡密发货详情文案（2026-09-11）
+
+### 任务目标
+
+给卡密配置加一套「发货详情文案」：批量等卡密的原备注描述改为开关切换 —— 关闭沿用备注，开启后使用支持参数插入、图片插入/粘贴、分开发送的独立文案配置。
+
+### 实施记录
+
+- `app/delivery_template.py`（新增）：发货文案渲染模块。
+  - 参数：`{发货内容}`、`{订单号}`、`{商品标题}`、`{商品ID}`、`{买家ID}`、`{规格名称}`、`{规格值}`、`{发货数量}`；兼容旧 `{DELIVERY_CONTENT}`。
+  - `{分隔符}` 与报价回复文案同一语义，拆成多条消息依次发送；`{图片N}` 从卡密保存的图片映射取图片消息。
+  - 文案漏插 `{发货内容}` 时自动追加卡密内容并告警；多段内容用 `\x1e` + 历史 `__IMAGE_SEND__` 协议序列化。
+  - `send_payload()` 统一按段落发送，兼容历史纯文本与单张图片卡密。
+- `app/db_manager.py`：cards 表新增 `delivery_template`、`delivery_template_enabled`、`delivery_template_images` 三列（约束重建之后迁移，避免丢列）；create/update/get 与四套发货规则查询（含商品规格绑定）全部透传 `card_delivery_template*` 字段。
+- `app/reply_server.py`：卡密创建/更新接口接收新字段；手动发货改为调用统一段落发送器。
+- `XianyuAutoAsync.py`：`_auto_delivery` 在开关开启时走模板渲染，否则保持原备注合并逻辑；自动发货发送循环改用段落发送器。
+- 前端：
+  - `utils/messageTemplate.ts`（新增）抽出 `{分隔符}`；`utils/quoteTemplate.ts` 改为引用它。
+  - `utils/deliveryTemplate.ts`（新增）：参数词表、图片映射键、发送语义预览。
+  - `components/DeliveryTemplateEditor.tsx`（新增）：参数按钮、插入图片（文件选择 + Ctrl+V 粘贴）、分开发送按钮、图片缩略图管理、发货预览。
+  - `components/DeliveryContentConfig.tsx`（新增）：发货内容开关（备注描述 ⇄ 发货详情文案）。
+  - `components/CardList.tsx`：编辑/新增弹窗接入开关与编辑器，列表「说明」列加「发货文案」徽标。
+  - `services/api.ts` 新增 `uploadImage()`；`types.ts` 增加 Card 字段；`index.css` 增加图片卡片/预览样式。
+
+### 重要文件
+
+- 后端：`app/delivery_template.py`、`app/db_manager.py`、`app/reply_server.py`、`XianyuAutoAsync.py`
+- 前端：`frontend/components/{DeliveryTemplateEditor,DeliveryContentConfig,CardList}.tsx`、`frontend/utils/{deliveryTemplate,messageTemplate,quoteTemplate}.ts`、`frontend/services/api.ts`、`frontend/types.ts`、`frontend/index.css`
+- 测试：`tests/test_delivery_template.py`（新增）
+
+### 验证记录
+
+- `python -m unittest tests.test_delivery_template`：16 项通过。
+- `python -m unittest discover -s tests`（`.venv-win`）：479 项，仅既有 `test_slider_watchdog.KillBrowserProcessTests.test_matches_only_own_user_data_dir` 失败（Windows 路径分隔符问题，与本次无关）。
+- `npx tsc --noEmit` 通过；`npm run build` 已刷新 `static/index.html` 与 `static/assets/`。
+- `app.reply_server` / `XianyuAutoAsync` 在 `.venv-win` 下可正常导入。
+
+### 已知风险与后续步骤
+
+- 发货文案只对 `text` / `data` / `api` 卡密开放；`image` 卡密仍走原图片 URL 逻辑。
+- 图片映射键按 `{图片N}` 顺序编号，删除标记后未使用的图片会保留在映射里（不参与发送）。
+- 迁移会在服务下次启动时执行；使用中的服务需重启后新字段才会生效。
+- 模板图片在首次发送时上传到闲鱼 CDN，与现有图片卡密同路径；CDN 上传失败会导致该卡密发货失败并转人工通知。

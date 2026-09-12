@@ -8,11 +8,12 @@ import unittest
 from unittest import mock
 
 from app.services.logistics_agent import extractor
-from app.services.logistics_agent.models import ExtractedQuote, SessionState
+from app.services.logistics_agent.models import ExtractedPackage, ExtractedQuote, SessionState
 from app.services.logistics_agent.render import (
     build_quote_values,
     render_follow_up,
     render_no_route,
+    render_provisional_notice,
     render_template,
     split_messages,
     unresolved_tokens,
@@ -27,7 +28,12 @@ from app.services.logistics_agent.settings import (
     ReplyTemplates,
 )
 from app.services.logistics_agent.state import merge_state, missing_fields
-from app.services.logistics_agent.tools import build_quote_config, build_workflow_input, call_workflow
+from app.services.logistics_agent.tools import (
+    build_quote_config,
+    build_workflow_input,
+    call_workflow,
+    plan_package_quote_mode,
+)
 from app.services.logistics_agent.pricing import calculate_customer_quote
 from app.services.logistics_quote_routes import LogisticsRouteService, build_route_rows, parse_quote_file
 
@@ -129,6 +135,27 @@ class StateMergeTests(unittest.TestCase):
         self.assertEqual(state.receiver, "杭州")
         self.assertEqual(state.weight_kg, 2.0)
 
+    def test_new_round_keeps_extracted_package_boundaries(self):
+        """上一轮已报价后新一轮多包裹询价：包裹列表不能被轮次重置清空。"""
+        state = merge_state(
+            None, ExtractedQuote(intent="logistics_quote", sender="广东省广州市", receiver="江西省赣州市", weight_kg=15),
+            "m1",
+        )
+        state.status = "quoted"
+        state = merge_state(
+            state,
+            ExtractedQuote(
+                intent="logistics_quote", sender="广州", receiver="赣州", weight_kg=15,
+                packages=[
+                    ExtractedPackage(package_id="1", weight_kg=12.0),
+                    ExtractedPackage(package_id="2", weight_kg=3.0),
+                ],
+            ),
+            "m2",
+        )
+        self.assertEqual(state.round_id, 2)
+        self.assertEqual([package.weight_kg for package in state.packages], [12.0, 3.0])
+
     def test_new_shipment_flag_resets_params(self):
         state = merge_state(None, ExtractedQuote(intent="logistics_quote", sender="山东省", receiver="江苏省", weight_kg=30), "m1")
         state = merge_state(state, ExtractedQuote(intent="logistics_quote", sender="山东", receiver="江苏", weight_kg=30, is_new_shipment=True), "m2")
@@ -225,6 +252,17 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertNotIn("length_cm", payload)
         self.assertEqual(payload["sender"], "江西")
 
+    def test_plan_package_quote_mode_merges_total_weight(self):
+        """多包裹只用于识别与提醒，计费时统一合并为总重。"""
+        plan = plan_package_quote_mode([12, 3])
+        self.assertEqual(plan["mode"], "merge")
+        self.assertEqual(plan["weight_kg"], 15)
+        self.assertEqual(plan["notice"], "已识别2个包裹（合计：15kg）")
+        heavy = plan_package_quote_mode([31, 10])
+        self.assertEqual(heavy["mode"], "merge")
+        self.assertEqual(heavy["weight_kg"], 41)
+        self.assertEqual(heavy["notice"], "已识别2个包裹（合计：41kg）")
+
 
 class RenderTests(unittest.TestCase):
     def setUp(self):
@@ -272,6 +310,11 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(render_follow_up("还需要{缺失字段}哦～", "发货地"), "还需要发货地哦～")
         text = render_no_route("{发货省}到{收货省}无线路", "江西", "河北")
         self.assertEqual(text, "江西到河北无线路")
+
+    def test_provisional_notice_lists_sample_cities(self):
+        text = render_provisional_notice({"壹米滴答": {"origin": {"province": "江苏", "city": "南京"}}})
+        self.assertIn("壹米滴答（按南京）", text)
+        self.assertIn("补充具体发货城市", text)
 
 
 class AgentSettingsStoreTests(unittest.TestCase):
@@ -546,11 +589,15 @@ class AgentServiceTests(unittest.TestCase):
         self.assertNotEqual(second.reason, "missing_params")
         self.assertEqual(second.fields["weight_kg"], 1.0)
 
-    def test_province_only_message_asks_city_for_city_level_books(self):
-        """省级地址 + 物流表只有市级线路：追问城市而不是转人工。"""
+    def test_province_only_message_quotes_with_provisional_city_prices(self):
+        """省级地址 + 物流表只有市级线路：按示例城市预报价并向买家注明预估。"""
         decision = self._run("江西寄河北，130公斤", message_id="m1", sender="江西省", receiver="河北省", weight_kg=130)
-        self.assertEqual(decision.reason, "missing_city")
-        self.assertEqual(decision.missing_fields, ["收货城市"])
+        self.assertEqual(decision.reason, "quoted")
+        self.assertEqual([route.carrier for route in decision.routes], ["百世快运"])
+        self.assertEqual(decision.quotes[0]["total_price"], 200.0)
+        notices = [message for message in decision.messages if "示例城市" in message]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("赣州", notices[0])
 
     def test_city_level_message_quotes_freight(self):
         decision = self._run("赣州寄石家庄，130公斤", message_id="m1", sender="江西省赣州市", receiver="河北省石家庄市", weight_kg=130)
@@ -560,6 +607,17 @@ class AgentServiceTests(unittest.TestCase):
         self.assertEqual(quote["chargeable_weight_kg"], 130)
         # 首重30KG 50元 + 续重100kg × 1.5 = 200
         self.assertEqual(quote["total_price"], 200.0)
+
+    def test_multi_package_message_merges_total_weight_with_notice(self):
+        """识别到多包裹时：报价前提醒包裹数，随后按总重报所有渠道。"""
+        decision = self._run(
+            "江西寄河北，第一个包裹12公斤第二个包裹3公斤", message_id="m1",
+            sender="江西省赣州市", receiver="河北省石家庄市", weight_kg=15,
+        )
+        self.assertEqual(decision.reason, "quoted")
+        self.assertEqual(decision.messages[0], "已识别2个包裹（合计：15kg）")
+        self.assertEqual({quote["chargeable_weight_kg"] for quote in decision.quotes}, {15})
+        self.assertFalse(any("包裹1" in message or "包裹2" in message for message in decision.messages[1:]))
 
     def test_auto_send_off_keeps_follow_up_and_failure_as_draft(self):
         """统一发送闸门：自动发送关闭时，追问与失败提示都不进入发送分支。"""

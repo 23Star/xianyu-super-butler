@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Inbox,
   Loader2,
   LucideIcon,
@@ -111,6 +112,63 @@ export const SectionHeader: React.FC<SectionHeaderProps> = ({
     {actions && <div className="section-header__actions">{actions}</div>}
   </div>
 );
+
+interface CollapsibleSectionProps {
+  title: string;
+  description?: string;
+  icon?: LucideIcon;
+  actions?: React.ReactNode;
+  defaultOpen?: boolean;
+  busy?: boolean;
+  children?: React.ReactNode;
+}
+
+/** 可折叠分区面板：点击标题或右侧箭头展开/收起，操作按钮始终可见。 */
+export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
+  title,
+  description,
+  icon: Icon,
+  actions,
+  defaultOpen = false,
+  busy,
+  children,
+}) => {
+  const [open, setOpen] = useState(defaultOpen);
+  const titleId = useId();
+  const bodyId = useId();
+
+  return (
+    <section className="section-panel" aria-labelledby={titleId} aria-busy={busy || undefined}>
+      <div className={`section-panel__header ${open ? '' : 'section-panel__header--collapsed'}`}>
+        <h2 className="min-w-0 flex-1">
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-start gap-3 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus-ring)]"
+            aria-expanded={open}
+            aria-controls={bodyId}
+            onClick={() => setOpen((prev) => !prev)}
+          >
+            {Icon && (
+              <span className="section-header__icon" aria-hidden="true">
+                <Icon className="h-4 w-4" />
+              </span>
+            )}
+            <span className="min-w-0 flex-1">
+              <span id={titleId} className="section-title block">{title}</span>
+              {description && <span className="section-description block">{description}</span>}
+            </span>
+            <ChevronDown
+              className={`mt-0.5 h-4 w-4 shrink-0 text-[var(--text-soft)] transition-transform duration-150 motion-reduce:transition-none ${open ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            />
+          </button>
+        </h2>
+        {actions && <div className="section-header__actions">{actions}</div>}
+      </div>
+      <div id={bodyId} hidden={!open}>{children}</div>
+    </section>
+  );
+};
 
 interface NoticeBannerProps {
   type: 'success' | 'error' | 'warning' | 'info';

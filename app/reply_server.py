@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from app import cookie_manager
 from app.db_manager import db_manager
+from app.delivery_template import send_payload as send_delivery_payload
 from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
@@ -4789,6 +4790,9 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds', 0),
+            delivery_template=card_data.get('delivery_template'),
+            delivery_template_enabled=card_data.get('delivery_template_enabled', False),
+            delivery_template_images=card_data.get('delivery_template_images'),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name') if is_multi_spec else None,
             spec_value=card_data.get('spec_value') if is_multi_spec else None,
@@ -4801,6 +4805,30 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
         raise
     except Exception as e:
         log_with_user('error', f"创建卡券失败: {card_data.get('name', '未知')} - {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cards/shipped")
+def get_card_shipments(limit: int = 200, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取当前用户已发货的批量卡密记录"""
+    try:
+        from app.db_manager import db_manager
+        user_id = current_user['user_id']
+        result = db_manager.get_card_shipments(user_id, limit=limit)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/cards/shipped")
+def clear_card_shipments(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """清空当前用户的已发货卡密记录"""
+    try:
+        from app.db_manager import db_manager
+        user_id = current_user['user_id']
+        deleted = db_manager.clear_card_shipments(user_id)
+        return {"success": True, "deleted": deleted, "message": f"已清空 {deleted} 条发货记录"}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4843,6 +4871,9 @@ def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = De
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds'),
+            delivery_template=card_data.get('delivery_template'),
+            delivery_template_enabled=card_data.get('delivery_template_enabled'),
+            delivery_template_images=card_data.get('delivery_template_images'),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name'),
             spec_value=card_data.get('spec_value'),
@@ -5536,6 +5567,151 @@ class ItemDeliveryConfigIn(BaseModel):
     enabled: bool = True
     is_multi_spec: bool = False
     variants: List[ProductVariantBindingIn]
+
+class DeliverySkuRuleIn(BaseModel):
+    key: str
+    name: str
+    max_deliveries: int = Field(default=1, ge=1, le=100)
+    block_message: str = ""
+    enabled: bool = True
+
+class DeliverySkuRulesIn(BaseModel):
+    skus: List[DeliverySkuRuleIn] = []
+
+def _replace_delivery_sku_discovery(cookie_id: str, item_id: str, rows: List[Dict[str, Any]]) -> None:
+    """把一次平台识别的结果作为该商品的 discovery 快照全量替换落库。"""
+    with db_manager.lock:
+        db_manager.conn.execute(
+            "DELETE FROM delivery_sku_options WHERE cookie_id=? AND item_id=? AND source='discovery'",
+            (cookie_id, item_id),
+        )
+        db_manager.conn.commit()
+    for row in rows:
+        db_manager.record_delivery_sku_option(
+            cookie_id, item_id, row.get("name", ""), row.get("platform_sku_id", ""),
+            source="discovery", sku_key=row.get("key", ""),
+        )
+
+
+def _delivery_sku_identity_row(item_id: str) -> List[Dict[str, Any]]:
+    """接口正常但商品没有可读规格时，补一条默认规格占位。"""
+    return [{"key": f"single:{item_id}", "name": "默认规格", "platform_sku_id": "", "synthetic": True}]
+
+@app.get("/api/anti-abuse/sku-options/{item_id}")
+async def get_delivery_sku_options(item_id: str, cookie_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    # 每次点击“识别 SKU”都直接查询商家接口，不依赖订单是否完成。
+    cookie_info = db_manager.get_cookie_by_id(cookie_id)
+    cookies_str = (cookie_info or {}).get("cookies_str", "")
+    if not cookies_str:
+        raise HTTPException(status_code=400, detail="该账号 Cookie 为空，请先登录后再识别 SKU")
+
+    from utils import risk_control
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError, classify_sku_discovery_error
+
+    detection_status = "ok"
+    warning = ""
+    retry_after_seconds = 0
+    discovery_error = ""
+    api = XianyuSellerAPI(cookie_id, cookies_str)
+    try:
+        discovered = await api.search_item_skus(item_id)
+        if not discovered:
+            discovered = _delivery_sku_identity_row(item_id)
+        _replace_delivery_sku_discovery(cookie_id, item_id, discovered)
+    except risk_control.RiskControlBlocked as exc:
+        detection_status = "risk_control"
+        retry_after_seconds = int(getattr(exc, "remaining", 0) or 0)
+        warning = str(exc)
+    except SellerApiError as exc:
+        detection_status = classify_sku_discovery_error(exc)
+        discovery_error = str(exc)
+        warning = discovery_error
+        if detection_status == "risk_control":
+            retry_after_seconds = risk_control.registry.get(cookie_id).remaining_seconds
+    except Exception as exc:
+        detection_status = "error"
+        discovery_error = str(exc)
+        warning = discovery_error
+        logger.warning(f"【{cookie_id}】商品 {item_id} SKU 识别异常: {discovery_error}")
+    finally:
+        await api.close()
+
+    options = db_manager.list_delivery_sku_options(cookie_id, item_id)
+    if detection_status == "error" and not options:
+        raise HTTPException(status_code=502, detail=f"闲鱼商家 SKU 接口调用失败：{discovery_error}")
+    result: Dict[str, Any] = {"item_id": item_id, "options": options, "detection_status": detection_status}
+    if warning:
+        result["warning"] = warning
+    if retry_after_seconds:
+        result["retry_after_seconds"] = retry_after_seconds
+    return result
+
+@app.get("/api/anti-abuse/sku-options/{item_id}/buyer-test")
+async def buyer_test_delivery_sku_options(item_id: str, cookie_id: str,
+                                          current_user: Dict[str, Any] = Depends(get_current_user)):
+    """买家接口兜底识别：卖家接口无权限时由用户显式触发，只调一次、不自动重试。"""
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    cookie_info = db_manager.get_cookie_by_id(cookie_id)
+    cookies_str = (cookie_info or {}).get("cookies_str", "")
+    if not cookies_str:
+        raise HTTPException(status_code=400, detail="该账号 Cookie 为空，请先登录后再识别 SKU")
+
+    from utils import risk_control
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError, classify_sku_discovery_error
+
+    retry_after_seconds = 0
+    warning = ""
+    api = XianyuSellerAPI(cookie_id, cookies_str)
+    try:
+        discovered = await api.search_item_skus_buyer(item_id)
+        if not discovered:
+            discovered = _delivery_sku_identity_row(item_id)
+        _replace_delivery_sku_discovery(cookie_id, item_id, discovered)
+    except risk_control.RiskControlBlocked as exc:
+        retry_after_seconds = int(getattr(exc, "remaining", 0) or 0)
+        warning = str(exc)
+        return {
+            "item_id": item_id, "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+            "detection_status": "risk_control", "retry_after_seconds": retry_after_seconds,
+            "warning": warning, "test_only": True,
+        }
+    except SellerApiError as exc:
+        status = classify_sku_discovery_error(exc)
+        if status in ("risk_control", "unauthorized"):
+            if status == "risk_control":
+                retry_after_seconds = risk_control.registry.get(cookie_id).remaining_seconds
+            return {
+                "item_id": item_id, "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+                "detection_status": status, "retry_after_seconds": retry_after_seconds,
+                "warning": str(exc), "test_only": True,
+            }
+        raise HTTPException(status_code=502, detail=f"闲鱼买家 SKU 接口调用失败：{exc}")
+    finally:
+        await api.close()
+
+    return {
+        "item_id": item_id,
+        "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+        "detection_status": "ok",
+        "test_only": True,
+    }
+
+@app.put("/api/anti-abuse/sku-configs/{item_id}")
+def save_delivery_sku_rules(item_id: str, cookie_id: str, payload: DeliverySkuRulesIn,
+                            current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权操作该闲鱼账号")
+    db_manager.save_delivery_sku_rules(cookie_id, item_id, [r.model_dump() if hasattr(r, 'model_dump') else r.dict() for r in payload.skus])
+    return {"success": True, "options": db_manager.list_delivery_sku_options(cookie_id, item_id)}
+
+@app.get("/api/anti-abuse/sku-blocks")
+def get_delivery_sku_blocks(cookie_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    return {"blocks": db_manager.list_delivery_sku_blocks(cookie_id)}
 
 
 @app.get("/item-delivery-configs")
@@ -8364,30 +8540,23 @@ async def manual_ship_orders(
                     send_errors = []
                     for idx, content in enumerate(delivery_contents):
                         try:
-                            if content.startswith("__IMAGE_SEND__"):
-                                image_data = content.replace("__IMAGE_SEND__", "")
-                                card_id = None
-                                if "|" in image_data:
-                                    card_id_str, image_url = image_data.split("|", 1)
-                                    try:
-                                        card_id = int(card_id_str)
-                                    except ValueError:
-                                        card_id = None
-                                else:
-                                    image_url = image_data
-                                await live_instance.send_image_msg(
-                                    live_instance.ws, chat_id, buyer_id,
-                                    image_url, card_id=card_id
-                                )
-                            else:
-                                await live_instance.send_msg(
-                                    live_instance.ws, chat_id, buyer_id, content
-                                )
+                            segment_count = await send_delivery_payload(
+                                live_instance,
+                                live_instance.ws,
+                                chat_id,
+                                buyer_id,
+                                content,
+                            )
 
-                            # 多条消息之间间隔1秒
+                            # 多条卡券之间间隔1秒；单条卡券内的分段间隔由发送器控制
                             if len(delivery_contents) > 1 and idx < len(delivery_contents) - 1:
                                 await asyncio.sleep(1)
                             sent_count += 1
+                            log_with_user(
+                                'info',
+                                f"第{idx+1}条卡券已发送（{segment_count} 段消息）",
+                                current_user,
+                            )
                         except Exception as e:
                             log_with_user('error', f"发送第{idx+1}条卡券消息失败: {str(e)}", current_user)
                             send_errors.append(f"第{idx + 1}条: {str(e)}")

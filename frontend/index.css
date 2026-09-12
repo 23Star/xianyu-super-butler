@@ -603,6 +603,11 @@ select:-webkit-autofill {
   padding: 14px 18px;
 }
 
+/* 折叠态：隐藏头部与内容的分隔线，避免和面板边框叠成双线。 */
+.section-panel__header--collapsed {
+  border-bottom-color: transparent;
+}
+
 .section-header__icon {
   display: inline-flex;
   width: 34px;
@@ -691,6 +696,11 @@ select:-webkit-autofill {
   gap: 14px;
 }
 
+/* 卡密库存页正好 4 张卡，排满一行 */
+.metric-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .metric-card {
   min-width: 0;
   border: 1px solid var(--border);
@@ -725,6 +735,21 @@ select:-webkit-autofill {
   color: var(--text-soft);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* 可点击的统计卡：保留 metric-card 外观，清掉 button 默认样式 */
+.metric-card--action {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.metric-card__meta--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 紧凑变体：订单页是 5 张纯计数卡，用默认尺寸时 3 列排成 3+2，
@@ -1152,6 +1177,10 @@ aside nav:hover::-webkit-scrollbar-thumb {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .metric-grid--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   /* 紧凑卡窄屏放不下 5 列，退到 3 列（5 张排成 3+2） */
   .metric-grid--compact {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1219,6 +1248,10 @@ aside nav:hover::-webkit-scrollbar-thumb {
   }
 
   .metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .metric-grid--four {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1893,6 +1926,19 @@ aside nav:hover::-webkit-scrollbar-thumb {
 .logistics-token-reset { display: inline-flex; min-height: 26px; align-items: center; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 999px; background: var(--surface); padding: 3px 11px; color: var(--warning); cursor: pointer; font-size: 11px; font-weight: 650; white-space: nowrap; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
 .logistics-token-reset:hover { border-color: var(--warning); background: var(--warning-soft); color: var(--warning-ink); }
 .logistics-token-solo { display: flex; justify-content: flex-end; margin-top: 8px; }
+
+/* 卡密发货详情文案：图片映射卡片与分条预览 */
+.delivery-template .logistics-token-chip { cursor: pointer; }
+.delivery-template-images { display: flex; flex-wrap: wrap; gap: 8px; }
+.delivery-template-image { display: flex; width: 108px; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.delivery-template-image img { height: 72px; width: 100%; object-fit: cover; }
+.delivery-template-image figcaption { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 4px 6px; color: var(--text-soft); font-size: 10px; }
+.delivery-template-image figcaption button { display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; padding: 2px; color: var(--text-soft); cursor: pointer; }
+.delivery-template-image figcaption button:hover { background: var(--danger-soft); color: var(--danger); }
+.delivery-template-preview { display: flex; min-height: 64px; flex-direction: column; gap: 8px; border: 1px dashed var(--border); border-radius: 10px; background: var(--surface-subtle); padding: 10px; }
+.delivery-template-preview__image { max-height: 140px; max-width: 100%; align-self: flex-start; border: 1px solid var(--border); border-radius: 10px; }
+.delivery-template-divider { display: flex; align-items: center; gap: 8px; color: var(--text-soft); font-size: 10px; }
+.delivery-template-divider::before, .delivery-template-divider::after { height: 1px; flex: 1; background: var(--border); content: ''; }
 
 .logistics-preview { display: flex; min-width: 0; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface-subtle); }
 .logistics-preview__header { display: flex; min-height: 60px; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--border); padding: 12px 18px; }

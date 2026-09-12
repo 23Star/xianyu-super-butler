@@ -5,6 +5,7 @@
  */
 
 import type { QuoteSettings } from '../services/quoteSettings';
+import { MESSAGE_SPLIT_TOKEN } from './messageTemplate';
 
 export const TOKENS = [
   { label: '发货省' },
@@ -58,7 +59,7 @@ export const saveTokenOrder = (order: string[]) => {
 };
 
 /** 消息分隔符：模板中按此标记拆分，发送时拆成多条消息依次发送，不合并为一条。 */
-export const TEMPLATE_SPLIT_TOKEN = '{分隔符}';
+export const TEMPLATE_SPLIT_TOKEN = MESSAGE_SPLIT_TOKEN;
 
 export const sanitizeNumberText = (raw: string) => {
   const cleaned = raw.replace(/[^\d.]/g, '');

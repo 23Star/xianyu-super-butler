@@ -46,12 +46,6 @@ def merge_state(current: SessionState | None, extracted: ExtractedQuote, message
     由 finalize 节点在完整跑完后写入，中途失败的执行不占用幂等凭据。
     """
     state = current.model_copy(deep=True) if current else SessionState()
-    if extracted.packages:
-        state.packages = extracted.packages
-    if extracted.address_candidates:
-        state.address_candidates = extracted.address_candidates
-    if extracted.unit_issues:
-        state.unit_issues = list(dict.fromkeys([*state.unit_issues, *extracted.unit_issues]))
     if state.status in _FINISHED_STATUSES:
         # 上一轮已完结：除非明确修改旧单，否则一律开新一轮。
         if not _is_modification(extracted):
@@ -63,6 +57,15 @@ def merge_state(current: SessionState | None, extracted: ExtractedQuote, message
     if extracted.is_new_shipment or (starts_complete_round and state.has_shipment_params()):
         # 新的完整询价：重置包裹参数，避免新旧包裹混算。
         state = _new_round(state, bump_round=state.has_shipment_params())
+
+    # Apply extracted per-package data after a round reset. Otherwise a new
+    # complete inquiry following a quote silently loses its package boundaries.
+    if extracted.packages:
+        state.packages = extracted.packages
+    if extracted.address_candidates:
+        state.address_candidates = extracted.address_candidates
+    if extracted.unit_issues:
+        state.unit_issues = list(dict.fromkeys([*state.unit_issues, *extracted.unit_issues]))
 
     targets = {_FIELD_TARGETS.get(target, target) for target in extracted.update_targets}
 

@@ -61,6 +61,7 @@ def build_quote_values(
     """用真实 Workflow 结果构造模板参数值。"""
     if not quotes:
         return {}
+    # 多包裹在计费前已合并，这里只处理单包裹总重的渠道报价。
     ordered = sorted(quotes, key=lambda quote: quote.get("total_price", 0))
     chosen = ordered[0]
     carrier = chosen.get("carrier", "")
@@ -90,8 +91,7 @@ def build_quote_values(
             "计费重量": format_weight(quote.get("chargeable_weight_kg")),
             "线路": route_text,
         })
-        package_id = quote.get("package_id")
-        lines.append(f"包裹{package_id}：{line}" if package_id else line)
+        lines.append(line)
     route_text = _route_text(match, origin, destination)
 
     freight = float(chosen.get("total_price") or 0)
@@ -174,6 +174,15 @@ def _route_text(match: dict[str, Any], origin: dict[str, str], destination: dict
         "".join(match.get("destination", {}).get(part, "") or "" for part in ("province", "city"))
     )
     return f"{parts_origin}→{parts_dest}"
+
+
+def render_provisional_notice(matches: dict[str, dict[str, Any]]) -> str:
+    """省级询价按示例城市预估价格时的买家提示。"""
+    items = []
+    for carrier, match in sorted(matches.items()):
+        city = (match.get("origin") or {}).get("city") or ""
+        items.append(f"{carrier}（按{city}）" if city else carrier)
+    return "ℹ️ 您目前只提供了省份，" + "、".join(items) + "暂按示例城市预估，补充具体发货城市后可重新核算"
 
 
 def render_follow_up(template: str, missing_field: str, pricing: PricingConfig | None = None) -> str:

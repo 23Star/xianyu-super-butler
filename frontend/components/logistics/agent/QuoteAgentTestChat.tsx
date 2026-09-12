@@ -7,7 +7,7 @@ import {
   runAgentTest,
   type AgentTestDecision,
 } from '../../../services/logisticsAgent';
-import { SectionHeader } from '../../ui';
+import { CollapsibleSection } from '../../ui';
 import QuoteAgentTraining from './QuoteAgentTraining';
 
 interface TestTurn {
@@ -268,34 +268,34 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
   const lowestPrice = channelResults.find((item) => item.status === 'quoted')?.total_price;
 
   return (
-    <section className="section-panel" aria-labelledby="agent-test-title" aria-busy={busy}>
-      <SectionHeader
-        title="测试会话"
-        description="多轮试算：与正式自动报价共用同一条服务端链路（识别参数、状态合并、线路匹配、Workflow 计费、模板渲染）；不会发送真实消息。"
-        icon={MessagesSquare}
-        actions={(
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={() => void startNewThread()}
-              disabled={busy}
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              <span>新建会话</span>
-            </button>
-            <button
-              type="button"
-              className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={() => setConfirmClear(true)}
-              disabled={busy || (turns.length === 0 && !lastDecision)}
-            >
-              <Eraser className="h-4 w-4" aria-hidden="true" />
-              <span>{threadAction === 'clear' ? '清空中' : '清空当前会话'}</span>
-            </button>
-          </div>
-        )}
-      />
+    <CollapsibleSection
+      title="测试会话"
+      description="多轮试算：与正式自动报价共用同一条服务端链路（识别参数、状态合并、线路匹配、Workflow 计费、模板渲染）；不会发送真实消息。"
+      icon={MessagesSquare}
+      busy={busy}
+      actions={(
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={() => void startNewThread()}
+            disabled={busy}
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            <span>新建会话</span>
+          </button>
+          <button
+            type="button"
+            className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={() => setConfirmClear(true)}
+            disabled={busy || (turns.length === 0 && !lastDecision)}
+          >
+            <Eraser className="h-4 w-4" aria-hidden="true" />
+            <span>{threadAction === 'clear' ? '清空中' : '清空当前会话'}</span>
+          </button>
+        </div>
+      )}
+    >
       <div className="grid gap-3 p-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-[var(--border)] bg-[var(--surface-subtle)] px-3 py-2 text-[12px] text-[var(--text-muted)]">
           <span className="min-w-0 break-all">会话 ID：{threadId}</span>
@@ -416,7 +416,7 @@ const QuoteAgentTestChat = ({ cookieId }: { cookieId: string }) => {
           onSelectAll={(training) => setTurns((prev) => prev.map((turn) => ({ ...turn, training })))}
         />
       </div>
-    </section>
+    </CollapsibleSection>
   );
 };
 

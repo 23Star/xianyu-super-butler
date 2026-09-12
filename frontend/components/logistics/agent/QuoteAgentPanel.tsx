@@ -24,7 +24,7 @@ import { getAccountDetails } from '../../../services/api';
 import { extractParseError, supportedQuoteFilePattern } from '../../../services/logisticsQuote';
 import { buildAgentSeed, hasLegacyQuoteConfig } from '../../../utils/agentSettingsSeed';
 import FloatingSaveButton from '../../FloatingSaveButton';
-import { SectionHeader } from '../../ui';
+import { CollapsibleSection } from '../../ui';
 import QuoteAgentTestChat from './QuoteAgentTestChat';
 const MODEL_OPTIONS = [
   { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash（默认，更快）' },
@@ -274,28 +274,27 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
 
   return (
     <div className="logistics-page page-stack">
-      <section className="section-panel" aria-labelledby="agent-account-title">
-        <SectionHeader
-          title="选择账号"
-          description="物流 Agent 按闲鱼账号分别启用，配置保存在服务端，所有设备一致。"
-          icon={Bot}
-          actions={(
-            <label className="flex items-center gap-2 text-sm">
-              <span className="field-label shrink-0">账号</span>
-              <select
-                value={cookieId}
-                onChange={(event) => setCookieId(event.target.value)}
-                className="ios-input rounded-md px-3 py-2 text-sm"
-                aria-label="选择闲鱼账号"
-              >
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>{account.label}</option>
-                ))}
-              </select>
-            </label>
-          )}
-        />
-      </section>
+      <CollapsibleSection
+        title="选择账号"
+        description="物流 Agent 按闲鱼账号分别启用，配置保存在服务端，所有设备一致。"
+        icon={Bot}
+      >
+        <div className="p-4">
+          <label className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="field-label shrink-0">账号</span>
+            <select
+              value={cookieId}
+              onChange={(event) => setCookieId(event.target.value)}
+              className="ios-input min-w-0 flex-1 rounded-md px-3 py-2 text-sm sm:flex-none"
+              aria-label="选择闲鱼账号"
+            >
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>{account.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </CollapsibleSection>
 
       {errorMessage && (
         <p className="rounded-md border border-[color:color-mix(in_srgb,var(--danger)_34%,var(--border))] bg-[var(--danger-soft)] px-3 py-2.5 text-[13px] leading-normal text-[var(--danger-ink)]" role="alert">
@@ -308,29 +307,28 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
         </p>
       )}
 
-      <section className="section-panel" aria-labelledby="agent-books-title">
-        <SectionHeader
-          title="线路报价表明细"
-          description="Agent 按收发地匹配这里的真实线路价格；第一步识别报价表时会自动同步线路明细，也可以在这里手动导入。"
-          icon={FileSpreadsheet}
-          actions={(
-            <label className={`ios-btn-secondary flex cursor-pointer items-center gap-2 rounded-md px-3.5 py-2 text-sm ${isImporting ? 'pointer-events-none opacity-50' : ''}`}>
-              <Upload className="h-4 w-4" aria-hidden="true" />
-              <span>{isImporting ? '导入中' : '导入报价表'}</span>
-              <input
-                type="file"
-                accept=".xlsx,.xlsm,.xls,.csv"
-                className="sr-only"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  event.target.value = '';
-                  if (file) void handleImport(file);
-                }}
-                disabled={isImporting}
-              />
-            </label>
-          )}
-        />
+      <CollapsibleSection
+        title="线路报价表明细"
+        description="Agent 按收发地匹配这里的真实线路价格；第一步识别报价表时会自动同步线路明细，也可以在这里手动导入。"
+        icon={FileSpreadsheet}
+        actions={(
+          <label className={`ios-btn-secondary flex cursor-pointer items-center gap-2 rounded-md px-3.5 py-2 text-sm ${isImporting ? 'pointer-events-none opacity-50' : ''}`}>
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            <span>{isImporting ? '导入中' : '导入报价表'}</span>
+            <input
+              type="file"
+              accept=".xlsx,.xlsm,.xls,.csv"
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void handleImport(file);
+              }}
+              disabled={isImporting}
+            />
+          </label>
+        )}
+      >
         <div className="grid gap-3 p-4">
           {imports.length === 0 ? (
             <p className="text-[13px] leading-relaxed text-[var(--text-muted)]">
@@ -357,11 +355,10 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
             </ul>
           )}
         </div>
-      </section>
+      </CollapsibleSection>
 
       {settings && (
-        <section className="section-panel" aria-labelledby="agent-config-title">
-        <SectionHeader
+        <CollapsibleSection
           title="Agent 配置"
           description="开启后，买家的物流询价消息会自动识别参数、匹配线路并按模板报价；普通咨询仍走通用 AI 回复。"
           icon={Bot}
@@ -374,7 +371,7 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
               带入第二/三步配置
             </button>
           )}
-        />
+        >
           <div className="grid gap-4 p-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-subtle)] px-3.5 py-3">
@@ -521,26 +518,25 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
               </div>
             </details>
           </div>
-        </section>
+        </CollapsibleSection>
       )}
 
-      <section className="section-panel" aria-labelledby="agent-status-title">
-        <SectionHeader
-          title="启用前检测"
-          description="确认报价表、计算引擎、模板与账号都就绪后再开启自动报价。"
-          icon={CheckCircle2}
-          actions={(
-            <button
-              type="button"
-              className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
-              onClick={() => void refreshStatus()}
-              disabled={isChecking || !cookieId}
-            >
-              <RefreshCw className={`h-4 w-4 ${isChecking ? 'animate-spin' : ''}`} aria-hidden="true" />
-              <span>{isChecking ? '检测中' : '重新检测'}</span>
-            </button>
-          )}
-        />
+      <CollapsibleSection
+        title="启用前检测"
+        description="确认报价表、计算引擎、模板与账号都就绪后再开启自动报价。"
+        icon={CheckCircle2}
+        actions={(
+          <button
+            type="button"
+            className="ios-btn-secondary flex items-center gap-2 rounded-md px-3.5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={() => void refreshStatus()}
+            disabled={isChecking || !cookieId}
+          >
+            <RefreshCw className={`h-4 w-4 ${isChecking ? 'animate-spin' : ''}`} aria-hidden="true" />
+            <span>{isChecking ? '检测中' : '重新检测'}</span>
+          </button>
+        )}
+      >
         {status ? (
           <div className="grid gap-2 p-4">
             <div className={`flex items-center gap-2 rounded-md px-3.5 py-2.5 text-sm font-bold ${status.ready ? 'text-[var(--success-ink)]' : 'text-[var(--danger-ink)]'}`}>
@@ -566,7 +562,7 @@ const QuoteAgentPanel = ({ onNavigateStep }: QuoteAgentPanelProps) => {
         ) : (
           <p className="p-4 text-[13px] text-[var(--text-muted)]">选择账号后自动检测。</p>
         )}
-      </section>
+      </CollapsibleSection>
 
       {/* 按账号重建测试会话：切换账号时完整切换 thread 与气泡上下文。 */}
       {cookieId && (
