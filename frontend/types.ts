@@ -128,8 +128,25 @@ export interface Card {
   image_url?: string;
   // 通用配置
   delay_seconds?: number;
+  // 发货详情文案：开关、文案内容（{参数}/{分隔符}/{图片N}）、图片映射（N -> url）
+  delivery_template?: string;
+  delivery_template_enabled?: boolean;
+  delivery_template_images?: Record<string, string>;
   created_at: string;
   updated_at: string;
+}
+
+/** 批量卡密每发出一行生成一条已发货记录。 */
+export interface CardShipment {
+  id: number;
+  card_id?: number;
+  card_name: string;
+  content: string;
+  order_id: string;
+  item_id: string;
+  buyer_id: string;
+  cookie_id: string;
+  shipped_at: string;
 }
 
 // Items
@@ -359,7 +376,24 @@ export interface MessageNotification {
   channel_id: number;
   channel_name: string;
   channel_type?: NotificationChannelType;
+  channel_enabled?: boolean;
+  name?: string | null;
+  event_types?: string[] | null;
   enabled: boolean;
+}
+
+export type NotificationPriority = 'critical' | 'warning' | 'info';
+
+export interface NotificationEventDefinition {
+  id: string;
+  label: string;
+  priority: NotificationPriority;
+  description: string;
+}
+
+export interface NotificationPriorityDefinition {
+  id: NotificationPriority;
+  label: string;
 }
 
 export interface RiskControlLog {
