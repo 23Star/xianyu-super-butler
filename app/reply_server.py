@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -20,10 +20,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from app import cookie_manager
 from app.db_manager import db_manager
+from app.delivery_template import send_payload as send_delivery_payload
 from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
+from app.services.notification_channels import (
+    NOTIFICATION_CHANNEL_REQUIRED_FIELDS,
+    NOTIFICATION_CHANNEL_TYPE_ALIASES,
+    validate_notification_channel,
+)
+from app.services.notification_sender import NotificationSender
+from app.services.notification_test import (
+    NotificationTestError,
+    NotificationTestService,
+    notification_test_rate_limiter,
+)
 from app.routers.delivery_block import create_delivery_block_router
+from app.routers.logistics_quote import create_logistics_quote_router
+from app.routers.logistics_agent import create_logistics_agent_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
@@ -36,6 +50,12 @@ from utils.order_status_rules import (
 from loguru import logger
 
 product_automation = ProductAutomationService(db_manager)
+notification_sender = NotificationSender()
+notification_test_service = NotificationTestService(
+    db_manager,
+    sender=notification_sender,
+    limiter=notification_test_rate_limiter,
+)
 
 # 刮刮乐远程控制路由
 try:
@@ -337,6 +357,12 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 
+app.include_router(create_logistics_quote_router(get_current_user, db_manager))
+logger.info("已注册物流报价解析路由")
+
+app.include_router(create_logistics_agent_router(get_current_user, db_manager))
+logger.info("已注册物流 Agent 路由")
+
 # 初始化文件日志收集器
 setup_file_logging()
 
@@ -435,7 +461,9 @@ async def serve_frontend():
     index_path = os.path.join(static_dir, 'index.html')
     if os.path.exists(index_path):
         with open(index_path, 'r', encoding='utf-8') as f:
-            return HTMLResponse(f.read())
+            # index.html 引用带哈希的静态资源，本身禁用缓存，
+            # 避免发新版后浏览器仍加载旧页面（哈希资源本身可正常缓存）。
+            return HTMLResponse(f.read(), headers={'Cache-Control': 'no-cache'})
     else:
         return HTMLResponse('<h3>Frontend not found. Please build the frontend first.</h3>')
 
@@ -1611,6 +1639,14 @@ class NotificationChannelUpdate(BaseModel):
 class MessageNotificationIn(BaseModel):
     channel_id: int
     enabled: bool = True
+    name: Optional[str] = None
+    event_types: Optional[List[str]] = None
+
+
+class MessageNotificationUpdate(BaseModel):
+    name: Optional[str] = None
+    event_types: Optional[List[str]] = None
+    enabled: Optional[bool] = None
 
 
 class MessageFilterIn(BaseModel):
@@ -1655,84 +1691,21 @@ def validate_message_filter(cookie_id: str, keyword: str, filter_type: str) -> T
     return normalized_cookie_id, normalized_keyword, normalized_type
 
 
-NOTIFICATION_CHANNEL_REQUIRED_FIELDS = {
-    "dingtalk": ("webhook_url",),
-    "feishu": ("webhook_url",),
-    "bark": ("device_key",),
-    "email": ("smtp_server", "smtp_port", "email_user", "email_password", "recipient_email"),
-    "webhook": ("webhook_url",),
-    "wechat": ("webhook_url",),
-    "telegram": ("bot_token", "chat_id"),
-}
-NOTIFICATION_CHANNEL_TYPE_ALIASES = {
-    "ding_talk": "dingtalk",
-    "lark": "feishu",
-}
+def validate_notification_rule(
+    name: Optional[str],
+    event_types: Optional[List[str]],
+) -> Tuple[Optional[str], Optional[List[str]]]:
+    """Validate and normalize account notification rule data."""
+    from app.notification_events import normalize_event_types
 
-
-def validate_notification_channel(
-    name: str,
-    channel_type: str,
-    config: str,
-) -> Tuple[str, str, str]:
-    """Validate and normalize notification channel data before persistence."""
     normalized_name = (name or "").strip()
-    if not normalized_name:
-        raise ValueError("通知渠道名称不能为空")
     if len(normalized_name) > 80:
-        raise ValueError("通知渠道名称不能超过 80 个字符")
-
-    normalized_type = (channel_type or "").strip().lower()
-    normalized_type = NOTIFICATION_CHANNEL_TYPE_ALIASES.get(normalized_type, normalized_type)
-    if normalized_type not in NOTIFICATION_CHANNEL_REQUIRED_FIELDS:
-        raise ValueError("不支持的通知渠道类型")
-
+        raise ValueError("通知规则名称不能超过 80 个字符")
     try:
-        config_data = json.loads(config)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("通知渠道配置必须是有效的 JSON") from exc
-    if not isinstance(config_data, dict):
-        raise ValueError("通知渠道配置必须是 JSON 对象")
-
-    missing_fields = [
-        field
-        for field in NOTIFICATION_CHANNEL_REQUIRED_FIELDS[normalized_type]
-        if config_data.get(field) in (None, "")
-    ]
-    if missing_fields:
-        raise ValueError(f"通知渠道配置缺少字段: {', '.join(missing_fields)}")
-
-    if normalized_type == "email":
-        try:
-            smtp_port = int(config_data["smtp_port"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError("SMTP 端口必须是数字") from exc
-        if not 1 <= smtp_port <= 65535:
-            raise ValueError("SMTP 端口必须在 1-65535 之间")
-        config_data["smtp_port"] = smtp_port
-
-    if normalized_type == "webhook":
-        http_method = str(config_data.get("http_method", "POST")).upper()
-        if http_method not in {"POST", "PUT"}:
-            raise ValueError("Webhook 请求方法仅支持 POST 或 PUT")
-        config_data["http_method"] = http_method
-
-        headers = config_data.get("headers")
-        if isinstance(headers, str) and headers.strip():
-            try:
-                parsed_headers = json.loads(headers)
-            except json.JSONDecodeError as exc:
-                raise ValueError("Webhook 请求头必须是有效的 JSON 对象") from exc
-            if not isinstance(parsed_headers, dict):
-                raise ValueError("Webhook 请求头必须是 JSON 对象")
-        elif headers is not None and not isinstance(headers, dict):
-            raise ValueError("Webhook 请求头必须是 JSON 对象")
-
-    return (
-        normalized_name,
-        normalized_type,
-        json.dumps(config_data, ensure_ascii=False, separators=(",", ":")),
-    )
+        normalized_events = normalize_event_types(event_types)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    return normalized_name or None, normalized_events
 
 
 class SystemSettingIn(BaseModel):
@@ -3448,6 +3421,16 @@ def delete_notification_channel(channel_id: int, current_user: Dict[str, Any] = 
 
 # ------------------------- 消息通知配置接口 -------------------------
 
+@app.get('/notification-events')
+def get_notification_events(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取可订阅的通知事件类型和优先级"""
+    from app.notification_events import get_event_definitions, get_priority_definitions
+    return {
+        'priorities': get_priority_definitions(),
+        'events': get_event_definitions(),
+    }
+
+
 @app.get('/message-notifications')
 def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户所有账号的消息通知配置"""
@@ -3458,6 +3441,44 @@ def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_cur
         return db_manager.get_all_message_notifications(user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/message-notifications/rule/{rule_id}/test')
+async def test_message_notification_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """向一条账号通知规则绑定的渠道发送一条真实测试消息。"""
+    user_info = {
+        "user_id": current_user.get("user_id"),
+        "username": current_user.get("username", ""),
+    }
+    try:
+        return await notification_test_service.send_rule_test(
+            rule_id,
+            int(current_user["user_id"]),
+            user_info,
+        )
+    except NotificationTestError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail(),
+            headers=headers,
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - keep unexpected errors non-sensitive
+        log_with_user(
+            "error",
+            f"source=notification_test rule_id={rule_id} result=server_error",
+            user_info,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "notification_send_failed",
+                "message": "通知测试服务暂时不可用，请稍后重试",
+            },
+        ) from exc
 
 
 @app.get('/message-notifications/{cid}')
@@ -3481,7 +3502,7 @@ def get_account_notifications(cid: str, current_user: Dict[str, Any] = Depends(g
 
 @app.post('/message-notifications/{cid}')
 def set_message_notification(cid: str, notification_data: MessageNotificationIn, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """设置账号的消息通知"""
+    """创建或设置账号的消息通知规则"""
     from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
@@ -3496,11 +3517,66 @@ def set_message_notification(cid: str, notification_data: MessageNotificationIn,
         if not channel:
             raise HTTPException(status_code=404, detail='通知渠道不存在')
 
+        try:
+            rule_name, rule_events = validate_notification_rule(
+                notification_data.name,
+                notification_data.event_types,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 带规则名或事件类型的请求视为新建规则；旧客户端只开关绑定，保持原语义
+        if notification_data.name is not None or notification_data.event_types is not None:
+            rule_id = db_manager.create_notification_rule(
+                cid,
+                notification_data.channel_id,
+                rule_name,
+                rule_events,
+                notification_data.enabled,
+            )
+            return {'msg': 'message notification rule created', 'id': rule_id}
+
         success = db_manager.set_message_notification(cid, notification_data.channel_id, notification_data.enabled)
         if success:
             return {'msg': 'message notification set'}
         else:
             raise HTTPException(status_code=400, detail='设置失败')
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/message-notifications/rule/{rule_id}')
+def update_message_notification_rule(rule_id: int, rule_data: MessageNotificationUpdate,
+                                     current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新账号通知规则"""
+    from app.db_manager import db_manager
+    try:
+        user_id = current_user['user_id']
+        existing_rule = db_manager.get_notification_rule(rule_id, user_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail='通知规则不存在')
+
+        try:
+            rule_name, rule_events = validate_notification_rule(
+                rule_data.name if rule_data.name is not None else existing_rule['name'],
+                rule_data.event_types if rule_data.event_types is not None else existing_rule['event_types'],
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        success = db_manager.update_notification_rule(
+            rule_id,
+            rule_name,
+            rule_events,
+            rule_data.enabled if rule_data.enabled is not None else existing_rule['enabled'],
+            user_id,
+        )
+        if success:
+            return {'msg': 'message notification rule updated'}
+        else:
+            raise HTTPException(status_code=404, detail='通知规则不存在')
     except HTTPException:
         raise
     except Exception as e:
@@ -4779,6 +4855,9 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds', 0),
+            delivery_template=card_data.get('delivery_template'),
+            delivery_template_enabled=card_data.get('delivery_template_enabled', False),
+            delivery_template_images=card_data.get('delivery_template_images'),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name') if is_multi_spec else None,
             spec_value=card_data.get('spec_value') if is_multi_spec else None,
@@ -4791,6 +4870,30 @@ def create_card(card_data: dict, current_user: Dict[str, Any] = Depends(get_curr
         raise
     except Exception as e:
         log_with_user('error', f"创建卡券失败: {card_data.get('name', '未知')} - {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cards/shipped")
+def get_card_shipments(limit: int = 200, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取当前用户已发货的批量卡密记录"""
+    try:
+        from app.db_manager import db_manager
+        user_id = current_user['user_id']
+        result = db_manager.get_card_shipments(user_id, limit=limit)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/cards/shipped")
+def clear_card_shipments(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """清空当前用户的已发货卡密记录"""
+    try:
+        from app.db_manager import db_manager
+        user_id = current_user['user_id']
+        deleted = db_manager.clear_card_shipments(user_id)
+        return {"success": True, "deleted": deleted, "message": f"已清空 {deleted} 条发货记录"}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4833,6 +4936,9 @@ def update_card(card_id: int, card_data: dict, current_user: Dict[str, Any] = De
             description=card_data.get('description'),
             enabled=card_data.get('enabled', True),
             delay_seconds=card_data.get('delay_seconds'),
+            delivery_template=card_data.get('delivery_template'),
+            delivery_template_enabled=card_data.get('delivery_template_enabled'),
+            delivery_template_images=card_data.get('delivery_template_images'),
             is_multi_spec=is_multi_spec,
             spec_name=card_data.get('spec_name'),
             spec_value=card_data.get('spec_value'),
@@ -5526,6 +5632,151 @@ class ItemDeliveryConfigIn(BaseModel):
     enabled: bool = True
     is_multi_spec: bool = False
     variants: List[ProductVariantBindingIn]
+
+class DeliverySkuRuleIn(BaseModel):
+    key: str
+    name: str
+    max_deliveries: int = Field(default=1, ge=1, le=100)
+    block_message: str = ""
+    enabled: bool = True
+
+class DeliverySkuRulesIn(BaseModel):
+    skus: List[DeliverySkuRuleIn] = []
+
+def _replace_delivery_sku_discovery(cookie_id: str, item_id: str, rows: List[Dict[str, Any]]) -> None:
+    """把一次平台识别的结果作为该商品的 discovery 快照全量替换落库。"""
+    with db_manager.lock:
+        db_manager.conn.execute(
+            "DELETE FROM delivery_sku_options WHERE cookie_id=? AND item_id=? AND source='discovery'",
+            (cookie_id, item_id),
+        )
+        db_manager.conn.commit()
+    for row in rows:
+        db_manager.record_delivery_sku_option(
+            cookie_id, item_id, row.get("name", ""), row.get("platform_sku_id", ""),
+            source="discovery", sku_key=row.get("key", ""),
+        )
+
+
+def _delivery_sku_identity_row(item_id: str) -> List[Dict[str, Any]]:
+    """接口正常但商品没有可读规格时，补一条默认规格占位。"""
+    return [{"key": f"single:{item_id}", "name": "默认规格", "platform_sku_id": "", "synthetic": True}]
+
+@app.get("/api/anti-abuse/sku-options/{item_id}")
+async def get_delivery_sku_options(item_id: str, cookie_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    # 每次点击“识别 SKU”都直接查询商家接口，不依赖订单是否完成。
+    cookie_info = db_manager.get_cookie_by_id(cookie_id)
+    cookies_str = (cookie_info or {}).get("cookies_str", "")
+    if not cookies_str:
+        raise HTTPException(status_code=400, detail="该账号 Cookie 为空，请先登录后再识别 SKU")
+
+    from utils import risk_control
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError, classify_sku_discovery_error
+
+    detection_status = "ok"
+    warning = ""
+    retry_after_seconds = 0
+    discovery_error = ""
+    api = XianyuSellerAPI(cookie_id, cookies_str)
+    try:
+        discovered = await api.search_item_skus(item_id)
+        if not discovered:
+            discovered = _delivery_sku_identity_row(item_id)
+        _replace_delivery_sku_discovery(cookie_id, item_id, discovered)
+    except risk_control.RiskControlBlocked as exc:
+        detection_status = "risk_control"
+        retry_after_seconds = int(getattr(exc, "remaining", 0) or 0)
+        warning = str(exc)
+    except SellerApiError as exc:
+        detection_status = classify_sku_discovery_error(exc)
+        discovery_error = str(exc)
+        warning = discovery_error
+        if detection_status == "risk_control":
+            retry_after_seconds = risk_control.registry.get(cookie_id).remaining_seconds
+    except Exception as exc:
+        detection_status = "error"
+        discovery_error = str(exc)
+        warning = discovery_error
+        logger.warning(f"【{cookie_id}】商品 {item_id} SKU 识别异常: {discovery_error}")
+    finally:
+        await api.close()
+
+    options = db_manager.list_delivery_sku_options(cookie_id, item_id)
+    if detection_status == "error" and not options:
+        raise HTTPException(status_code=502, detail=f"闲鱼商家 SKU 接口调用失败：{discovery_error}")
+    result: Dict[str, Any] = {"item_id": item_id, "options": options, "detection_status": detection_status}
+    if warning:
+        result["warning"] = warning
+    if retry_after_seconds:
+        result["retry_after_seconds"] = retry_after_seconds
+    return result
+
+@app.get("/api/anti-abuse/sku-options/{item_id}/buyer-test")
+async def buyer_test_delivery_sku_options(item_id: str, cookie_id: str,
+                                          current_user: Dict[str, Any] = Depends(get_current_user)):
+    """买家接口兜底识别：卖家接口无权限时由用户显式触发，只调一次、不自动重试。"""
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    cookie_info = db_manager.get_cookie_by_id(cookie_id)
+    cookies_str = (cookie_info or {}).get("cookies_str", "")
+    if not cookies_str:
+        raise HTTPException(status_code=400, detail="该账号 Cookie 为空，请先登录后再识别 SKU")
+
+    from utils import risk_control
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError, classify_sku_discovery_error
+
+    retry_after_seconds = 0
+    warning = ""
+    api = XianyuSellerAPI(cookie_id, cookies_str)
+    try:
+        discovered = await api.search_item_skus_buyer(item_id)
+        if not discovered:
+            discovered = _delivery_sku_identity_row(item_id)
+        _replace_delivery_sku_discovery(cookie_id, item_id, discovered)
+    except risk_control.RiskControlBlocked as exc:
+        retry_after_seconds = int(getattr(exc, "remaining", 0) or 0)
+        warning = str(exc)
+        return {
+            "item_id": item_id, "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+            "detection_status": "risk_control", "retry_after_seconds": retry_after_seconds,
+            "warning": warning, "test_only": True,
+        }
+    except SellerApiError as exc:
+        status = classify_sku_discovery_error(exc)
+        if status in ("risk_control", "unauthorized"):
+            if status == "risk_control":
+                retry_after_seconds = risk_control.registry.get(cookie_id).remaining_seconds
+            return {
+                "item_id": item_id, "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+                "detection_status": status, "retry_after_seconds": retry_after_seconds,
+                "warning": str(exc), "test_only": True,
+            }
+        raise HTTPException(status_code=502, detail=f"闲鱼买家 SKU 接口调用失败：{exc}")
+    finally:
+        await api.close()
+
+    return {
+        "item_id": item_id,
+        "options": db_manager.list_delivery_sku_options(cookie_id, item_id),
+        "detection_status": "ok",
+        "test_only": True,
+    }
+
+@app.put("/api/anti-abuse/sku-configs/{item_id}")
+def save_delivery_sku_rules(item_id: str, cookie_id: str, payload: DeliverySkuRulesIn,
+                            current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权操作该闲鱼账号")
+    db_manager.save_delivery_sku_rules(cookie_id, item_id, [r.model_dump() if hasattr(r, 'model_dump') else r.dict() for r in payload.skus])
+    return {"success": True, "options": db_manager.list_delivery_sku_options(cookie_id, item_id)}
+
+@app.get("/api/anti-abuse/sku-blocks")
+def get_delivery_sku_blocks(cookie_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    if cookie_id not in db_manager.get_all_cookies(current_user["user_id"]):
+        raise HTTPException(status_code=403, detail="无权访问该闲鱼账号")
+    return {"blocks": db_manager.list_delivery_sku_blocks(cookie_id)}
 
 
 @app.get("/item-delivery-configs")
@@ -7525,6 +7776,7 @@ async def get_seller_features(current_user: Dict[str, Any] = Depends(get_current
         'auto_rate_enabled': any(v['auto_rate_enabled'] for v in per_account.values()),
         'auto_flower_enabled': any(v['auto_flower_enabled'] for v in per_account.values()),
         'auto_thanks_enabled': any(v['auto_thanks_enabled'] for v in per_account.values()),
+        'auto_receive_flower_enabled': any(v['auto_receive_flower_enabled'] for v in per_account.values()),
         'auto_rate_template': _rate_template(),
     }
 
@@ -7533,6 +7785,7 @@ class BuyerInteractionUpdate(BaseModel):
     auto_rate_enabled: Optional[bool] = None
     auto_flower_enabled: Optional[bool] = None
     auto_thanks_enabled: Optional[bool] = None
+    auto_receive_flower_enabled: Optional[bool] = None
 
 
 @app.put('/api/seller-features/{cookie_id}')
@@ -7541,7 +7794,7 @@ async def update_seller_features(
     payload: BuyerInteractionUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """按账号更新评价/求花开关。"""
+    """按账号更新买家互动开关。"""
     from app.db_manager import db_manager
 
     if cookie_id not in (db_manager.get_all_cookies(current_user['user_id']) or {}):
@@ -7552,11 +7805,12 @@ async def update_seller_features(
         auto_rate_enabled=payload.auto_rate_enabled,
         auto_flower_enabled=payload.auto_flower_enabled,
         auto_thanks_enabled=payload.auto_thanks_enabled,
+        auto_receive_flower_enabled=payload.auto_receive_flower_enabled,
     )
     log_with_user(
         'info',
         f"更新账号 {cookie_id} 买家互动开关: rate={payload.auto_rate_enabled}, "
-        f"flower={payload.auto_flower_enabled}, thanks={payload.auto_thanks_enabled}",
+        f"flower={payload.auto_flower_enabled}, receive_flower={payload.auto_receive_flower_enabled}, thanks={payload.auto_thanks_enabled}",
         current_user
     )
     return {"success": True, **db_manager.get_buyer_interaction_settings(cookie_id)}
@@ -8351,30 +8605,23 @@ async def manual_ship_orders(
                     send_errors = []
                     for idx, content in enumerate(delivery_contents):
                         try:
-                            if content.startswith("__IMAGE_SEND__"):
-                                image_data = content.replace("__IMAGE_SEND__", "")
-                                card_id = None
-                                if "|" in image_data:
-                                    card_id_str, image_url = image_data.split("|", 1)
-                                    try:
-                                        card_id = int(card_id_str)
-                                    except ValueError:
-                                        card_id = None
-                                else:
-                                    image_url = image_data
-                                await live_instance.send_image_msg(
-                                    live_instance.ws, chat_id, buyer_id,
-                                    image_url, card_id=card_id
-                                )
-                            else:
-                                await live_instance.send_msg(
-                                    live_instance.ws, chat_id, buyer_id, content
-                                )
+                            segment_count = await send_delivery_payload(
+                                live_instance,
+                                live_instance.ws,
+                                chat_id,
+                                buyer_id,
+                                content,
+                            )
 
-                            # 多条消息之间间隔1秒
+                            # 多条卡券之间间隔1秒；单条卡券内的分段间隔由发送器控制
                             if len(delivery_contents) > 1 and idx < len(delivery_contents) - 1:
                                 await asyncio.sleep(1)
                             sent_count += 1
+                            log_with_user(
+                                'info',
+                                f"第{idx+1}条卡券已发送（{segment_count} 段消息）",
+                                current_user,
+                            )
                         except Exception as e:
                             log_with_user('error', f"发送第{idx+1}条卡券消息失败: {str(e)}", current_user)
                             send_errors.append(f"第{idx + 1}条: {str(e)}")
@@ -9323,6 +9570,31 @@ async def require_order_flower(
         await api.close()
 
 
+@app.post('/api/orders/{order_id}/receive-flower')
+async def receive_order_flower(
+    order_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """收下买家赠送的小红花，需按账号开启自动收花开关。"""
+    from app.db_manager import db_manager
+    from utils.xianyu_seller_api import XianyuSellerAPI, SellerApiError
+
+    user_cookies = db_manager.get_all_cookies(current_user['user_id'])
+    cid, cookies_str = _resolve_order_cookie(order_id, user_cookies)
+    if not db_manager.get_buyer_interaction_settings(cid)['auto_receive_flower_enabled']:
+        raise HTTPException(status_code=403, detail="该账号未开启自动收下小红花功能")
+    api = XianyuSellerAPI(cid, cookies_str)
+    try:
+        data = await api.receive_flower(order_id)
+        log_with_user('info', f'订单 {order_id} 已收下小红花', current_user)
+        return JSONResponse({'success': True, 'data': data})
+    except SellerApiError as exc:
+        log_with_user('warning', f'订单 {order_id} 收花失败: {exc}', current_user)
+        return JSONResponse({'success': False, 'message': str(exc)}, status_code=502)
+    finally:
+        await api.close()
+
+
 @app.post('/api/orders/rate')
 async def rate_orders(
     order_ids: str = Form(...),
@@ -9380,17 +9652,20 @@ async def rate_orders(
         await api.close()
 
 
-@app.get('/{path:path}', response_class=HTMLResponse)
-async def catch_all_route(path: str):
+@app.api_route(
+    '/{path:path}',
+    methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    response_class=HTMLResponse,
+)
+async def catch_all_route(path: str, request: Request):
     """
-    Catch-all 路由：处理所有未匹配的 GET 请求
-    如果是 API 请求，返回 404；否则返回前端 index.html
+    Catch-all 路由：处理所有未匹配的请求
+    未匹配的 API 路径与非 GET 请求返回 404，浏览器 GET 前端路由返回 index.html
     """
-    full_path = f'/{path}'
     root_segment = path.split('/', 1)[0]
-    if root_segment in API_ROOTS:
+    if root_segment in API_ROOTS or request.method not in ('GET', 'HEAD'):
         raise HTTPException(status_code=404, detail="Not Found")
-    
+
     # 返回前端页面
     return await serve_frontend()
 

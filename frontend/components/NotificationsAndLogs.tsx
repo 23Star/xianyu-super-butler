@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   BellRing,
+  Check,
+  CheckCircle2,
+  CircleAlert,
   ChevronLeft,
   ChevronRight,
   Edit3,
@@ -10,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Send,
   ShieldAlert,
   Trash2,
   X,
@@ -20,6 +24,9 @@ import {
   MessageNotification,
   NotificationChannel,
   NotificationChannelType,
+  NotificationEventDefinition,
+  NotificationPriority,
+  NotificationPriorityDefinition,
   RiskControlLog,
   SystemLog,
 } from '../types';
@@ -31,9 +38,12 @@ import {
   getAccountDetails,
   getMessageNotifications,
   getNotificationChannels,
+  getNotificationEvents,
   getRiskControlLogs,
   getSystemLogs,
   setMessageNotification,
+  testMessageNotification,
+  updateMessageNotificationRule,
   updateNotificationChannel,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
@@ -122,6 +132,25 @@ const CHANNEL_DEFINITIONS: Record<NotificationChannelType, ChannelDefinition> = 
 
 const PAGE_SIZE = 20;
 
+type NotificationTestState = {
+  status: 'sending' | 'success' | 'error';
+  message: string;
+  requestId?: string;
+  sentAt?: string;
+};
+
+const getNotificationTestErrorMessage = (error: unknown): string => {
+  const detail = (error as {
+    response?: { data?: { detail?: unknown } };
+  } | undefined)?.response?.data?.detail;
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  return error instanceof Error && error.message ? error.message : '测试发送失败，请稍后重试';
+};
+
 const accountLabel = (account: AccountDetail) =>
   account.nickname || account.remark || account.id;
 
@@ -136,6 +165,9 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [bindings, setBindings] = useState<MessageNotification[]>([]);
+  const [notificationTestStates, setNotificationTestStates] = useState<Record<string, NotificationTestState>>({});
+  const [eventDefinitions, setEventDefinitions] = useState<NotificationEventDefinition[]>([]);
+  const [priorityDefinitions, setPriorityDefinitions] = useState<NotificationPriorityDefinition[]>([]);
   const [loadingBase, setLoadingBase] = useState(true);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingChannel, setEditingChannel] = useState<NotificationChannel | null>(null);
@@ -143,9 +175,13 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   const [channelName, setChannelName] = useState('');
   const [channelConfig, setChannelConfig] = useState<Record<string, unknown>>({});
   const [savingChannel, setSavingChannel] = useState(false);
-  const [bindingAccount, setBindingAccount] = useState('');
-  const [bindingChannel, setBindingChannel] = useState('');
-  const [savingBinding, setSavingBinding] = useState(false);
+  const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<MessageNotification | null>(null);
+  const [ruleAccount, setRuleAccount] = useState('');
+  const [ruleChannel, setRuleChannel] = useState('');
+  const [ruleName, setRuleName] = useState('');
+  const [ruleEventTypes, setRuleEventTypes] = useState<string[]>([]);
+  const [savingRule, setSavingRule] = useState(false);
   const [riskLogs, setRiskLogs] = useState<RiskControlLog[]>([]);
   const [riskTotal, setRiskTotal] = useState(0);
   const [riskAccount, setRiskAccount] = useState('');
@@ -160,15 +196,23 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   const loadBaseData = async () => {
     setLoadingBase(true);
     try {
-      const [accountData, channelData, bindingData] = await Promise.all([
+      const [accountData, channelData, bindingData, eventData] = await Promise.all([
         getAccountDetails(),
         getNotificationChannels(),
         getMessageNotifications(),
+        getNotificationEvents(),
       ]);
       setAccounts(accountData);
       setChannels(channelData.data);
       setBindings(bindingData.data);
-      if (!bindingAccount && accountData.length > 0) setBindingAccount(accountData[0].id);
+      setNotificationTestStates((current) => {
+        const existingIds = new Set(bindingData.data.map((item) => String(item.id)));
+        return Object.fromEntries(
+          Object.entries(current).filter(([ruleId]) => existingIds.has(ruleId)),
+        );
+      });
+      setEventDefinitions(eventData.events);
+      setPriorityDefinitions(eventData.priorities);
     } catch (error) {
       notify(`加载通知配置失败：${(error as Error).message}`);
     } finally {
@@ -253,39 +297,149 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
     }
   };
 
-  const addBinding = async () => {
-    if (!bindingAccount || !bindingChannel) {
+  const eventLabel = (eventId: string) =>
+    eventDefinitions.find((item) => item.id === eventId)?.label || eventId;
+
+  const ruleEventSummary = (binding: MessageNotification) => {
+    if (!binding.event_types || binding.event_types.length === 0) return '全部事件';
+    return binding.event_types.map(eventLabel).join('、');
+  };
+
+  const priorityGroups: NotificationPriorityDefinition[] = priorityDefinitions.length > 0
+    ? priorityDefinitions
+    : Array.from(new Set(eventDefinitions.map((item) => item.priority))).map((priority) => ({
+      id: priority as NotificationPriority,
+      label: priority === 'critical' ? '关键' : priority === 'warning' ? '重要' : '一般',
+    }));
+
+  const openCreateRuleEditor = () => {
+    setEditingRule(null);
+    setRuleAccount(accounts[0]?.id || '');
+    setRuleChannel('');
+    setRuleName('');
+    setRuleEventTypes([]);
+    setRuleEditorOpen(true);
+  };
+
+  const openEditRuleEditor = (binding: MessageNotification) => {
+    setEditingRule(binding);
+    setRuleAccount(binding.cookie_id);
+    setRuleChannel(String(binding.channel_id));
+    setRuleName(binding.name || '');
+    setRuleEventTypes(binding.event_types || []);
+    setRuleEditorOpen(true);
+  };
+
+  const toggleRuleEvent = (eventId: string) => {
+    setRuleEventTypes((current) => (
+      current.includes(eventId)
+        ? current.filter((item) => item !== eventId)
+        : [...current, eventId]
+    ));
+  };
+
+  const applyRulePreset = (preset: NotificationPriority | 'all' | 'none') => {
+    if (preset === 'all') {
+      setRuleEventTypes(eventDefinitions.map((item) => item.id));
+      return;
+    }
+    if (preset === 'none') {
+      setRuleEventTypes([]);
+      return;
+    }
+    setRuleEventTypes(
+      eventDefinitions.filter((item) => item.priority === preset).map((item) => item.id),
+    );
+  };
+
+  const saveRule = async () => {
+    if (editingRule) {
+      setSavingRule(true);
+      try {
+        await updateMessageNotificationRule(editingRule.id, {
+          name: ruleName.trim(),
+          eventTypes: ruleEventTypes,
+        });
+        setRuleEditorOpen(false);
+        await loadBaseData();
+      } catch (error) {
+        notify(`保存通知规则失败：${(error as Error).message}`);
+      } finally {
+        setSavingRule(false);
+      }
+      return;
+    }
+
+    if (!ruleAccount || !ruleChannel) {
       notify('请选择账号和通知渠道');
       return;
     }
-    setSavingBinding(true);
+    setSavingRule(true);
     try {
-      await setMessageNotification(bindingAccount, Number(bindingChannel), true);
-      setBindingChannel('');
+      await setMessageNotification(ruleAccount, Number(ruleChannel), true, {
+        name: ruleName.trim(),
+        eventTypes: ruleEventTypes,
+      });
+      setRuleEditorOpen(false);
       await loadBaseData();
     } catch (error) {
-      notify(`绑定失败：${(error as Error).message}`);
+      notify(`创建通知规则失败：${(error as Error).message}`);
     } finally {
-      setSavingBinding(false);
+      setSavingRule(false);
     }
   };
 
   const toggleBinding = async (binding: MessageNotification) => {
     try {
-      await setMessageNotification(binding.cookie_id, binding.channel_id, !binding.enabled);
+      await updateMessageNotificationRule(binding.id, { enabled: !binding.enabled });
       await loadBaseData();
     } catch (error) {
-      notify(`更新绑定失败：${(error as Error).message}`);
+      notify(`更新通知规则失败：${(error as Error).message}`);
+    }
+  };
+
+  const testBinding = async (binding: MessageNotification) => {
+    const ruleId = String(binding.id);
+    setNotificationTestStates((current) => ({
+      ...current,
+      [ruleId]: { status: 'sending', message: '发送中' },
+    }));
+    try {
+      const result = await testMessageNotification(binding.id);
+      const message = `${result.message} · ${result.channel.name}`;
+      setNotificationTestStates((current) => ({
+        ...current,
+        [ruleId]: {
+          status: 'success',
+          message,
+          requestId: result.request_id,
+          sentAt: result.sent_at,
+        },
+      }));
+      notify(`${message}（请求 ID：${result.request_id}）`, 'success');
+    } catch (error) {
+      const message = getNotificationTestErrorMessage(error);
+      setNotificationTestStates((current) => ({
+        ...current,
+        [ruleId]: { status: 'error', message },
+      }));
+      notify(`测试发送失败：${message}`, 'error');
     }
   };
 
   const removeBinding = async (binding: MessageNotification) => {
-    if (!await confirmAction(`确认解除账号与“${binding.channel_name}”的通知绑定？`)) return;
+    const ruleLabel = binding.name || binding.channel_name;
+    if (!await confirmAction(`确认删除通知规则“${ruleLabel}”？`)) return;
     try {
       await deleteMessageNotification(binding.id);
       setBindings((current) => current.filter((item) => item.id !== binding.id));
+      setNotificationTestStates((current) => {
+        const next = { ...current };
+        delete next[String(binding.id)];
+        return next;
+      });
     } catch (error) {
-      notify(`解除绑定失败：${(error as Error).message}`);
+      notify(`删除通知规则失败：${(error as Error).message}`);
     }
   };
 
@@ -451,74 +605,111 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       {activeTab === 'bindings' && (
         <section className="section-panel">
           <SectionHeader
-            title="账号通知绑定"
-            description="将闲鱼账号的订单、风控和运行事件发送到指定通知渠道。"
+            title="账号通知规则"
+            description="同一账号可配置多条规则，按事件类型选择要通知的内容；测试发送会真实触达当前渠道。"
             icon={Link2}
+            actions={(
+              <button
+                type="button"
+                onClick={openCreateRuleEditor}
+                className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm"
+              >
+                <Plus className="h-4 w-4" />
+                新建规则
+              </button>
+            )}
           />
-          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 md:grid-cols-[1fr_1fr_auto]">
-            <select
-              value={bindingAccount}
-              onChange={(event) => setBindingAccount(event.target.value)}
-              className="ios-input rounded-md px-3 py-2.5 text-sm"
-            >
-              <option value="">选择账号</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>{accountLabel(account)}</option>
-              ))}
-            </select>
-            <select
-              value={bindingChannel}
-              onChange={(event) => setBindingChannel(event.target.value)}
-              className="ios-input rounded-md px-3 py-2.5 text-sm"
-            >
-              <option value="">选择已启用渠道</option>
-              {channels.filter((channel) => channel.enabled).map((channel) => (
-                <option key={channel.id} value={channel.id}>{channel.name}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={() => void addBinding()}
-              disabled={savingBinding}
-              className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
-            >
-              {savingBinding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
-              添加绑定
-            </button>
-          </div>
           <div className="divide-y divide-gray-100 px-4">
             {bindings.map((binding) => {
               const account = accounts.find((item) => item.id === binding.cookie_id);
+              const testState = notificationTestStates[String(binding.id)];
+              const isTesting = testState?.status === 'sending';
               return (
-                <div key={binding.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center">
+                <div
+                  key={binding.id}
+                  className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"
+                  aria-busy={isTesting || undefined}
+                >
                   <button
                     type="button"
                     role="switch"
                     aria-checked={binding.enabled}
+                    aria-label={`${binding.name || binding.channel_name}通知规则开关`}
                     onClick={() => void toggleBinding(binding)}
                     className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${binding.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'}`}
+                    title={binding.enabled ? '暂停规则' : '启用规则'}
                   >
                     <span className={`absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform ${binding.enabled ? 'translate-x-5' : ''}`} />
                   </button>
                   <div className="min-w-0 flex-1">
-                    <p className="font-bold text-gray-900">{account ? accountLabel(account) : binding.cookie_id}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-bold text-gray-900">{binding.name || '默认规则'}</p>
+                      <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-bold text-gray-600">
+                        {binding.channel_name}
+                      </span>
+                    </div>
                     <p className="mt-1 text-xs text-gray-500">
-                      {binding.channel_name} · {binding.enabled ? '接收通知' : '暂停通知'}
+                      {account ? accountLabel(account) : binding.cookie_id} · {
+                        binding.channel_enabled === false
+                          ? '渠道已停用'
+                          : binding.enabled ? '接收通知' : '已暂停'
+                      }
+                    </p>
+                    <p className="mt-1 break-words text-xs text-gray-500">
+                      通知内容：{ruleEventSummary(binding)}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void removeBinding(binding)}
-                    title="解除绑定"
-                    className="flex h-9 w-9 items-center justify-center rounded-md bg-red-50 text-red-600 hover:bg-red-100"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void testBinding(binding)}
+                      disabled={isTesting}
+                      aria-label={`测试发送规则${binding.name || binding.channel_name}`}
+                      title={binding.enabled ? '向该渠道真实发送一条测试消息' : '规则已暂停，仅验证渠道配置'}
+                      className="ios-btn-secondary flex min-h-11 items-center gap-1.5 rounded-md px-3 text-xs disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {isTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                      {isTesting ? '发送中' : '测试发送'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditRuleEditor(binding)}
+                      title="编辑规则"
+                      className="flex h-9 w-9 items-center justify-center rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    >
+                      <Edit3 className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeBinding(binding)}
+                      title="删除规则"
+                      className="flex h-9 w-9 items-center justify-center rounded-md bg-red-50 text-red-600 hover:bg-red-100"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                    {testState && testState.status !== 'sending' && (
+                      <span
+                        role="status"
+                        className={`flex max-w-full items-center gap-1 text-xs ${
+                          testState.status === 'success' ? 'text-emerald-700' : 'text-red-700'
+                        }`}
+                        title={testState.requestId ? `请求 ID：${testState.requestId}` : undefined}
+                      >
+                        {testState.status === 'success'
+                          ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                          : <CircleAlert className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="break-words">
+                          {testState.message}
+                          {testState.sentAt ? ` · ${formatTime(testState.sentAt)}` : ''}
+                        </span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}
             {!loadingBase && bindings.length === 0 && (
-              <EmptyState compact title="暂无账号通知绑定" description="先创建并启用通知渠道，再将账号绑定到渠道。" icon={Link2} />
+              <EmptyState compact title="暂无账号通知规则" description="先创建并启用通知渠道，再为账号添加通知规则。" icon={Link2} />
             )}
           </div>
         </section>
@@ -646,7 +837,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
             description="最多读取最近 300 行，可按级别和来源快速定位运行异常。"
             icon={Activity}
           />
-          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-[160px_1fr_auto]">
+          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-[160px_minmax(0,1fr)_auto_auto]">
             <select
               value={systemLevel}
               onChange={(event) => setSystemLevel(event.target.value)}
@@ -664,6 +855,18 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               placeholder="按日志来源筛选"
               className="ios-input rounded-md px-3 py-2.5 text-sm"
             />
+            <button
+              type="button"
+              aria-pressed={systemSource === 'logistics_quote'}
+              onClick={() => setSystemSource((value) => value === 'logistics_quote' ? '' : 'logistics_quote')}
+              className={`rounded-md px-3 py-2.5 text-sm font-bold ${
+                systemSource === 'logistics_quote'
+                  ? 'bg-[#ffe100] text-gray-900'
+                  : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-100'
+              }`}
+            >
+              物流报价
+            </button>
             <button
               type="button"
               onClick={() => void loadSystemLogs()}
@@ -781,6 +984,156 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                 className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
               >
                 {savingChannel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ruleEditorOpen && (
+        <div className="modal-overlay">
+          <div className="modal-container max-w-2xl">
+            <div className="modal-header flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">{editingRule ? '编辑通知规则' : '新建通知规则'}</h3>
+                <p className="mt-1 text-sm text-gray-500">选择这条规则要通知的内容，未勾选任何类型表示订阅全部事件。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRuleEditorOpen(false)}
+                title="关闭"
+                className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-gray-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-bold text-gray-700">
+                  账号
+                  <select
+                    value={ruleAccount}
+                    disabled={Boolean(editingRule)}
+                    onChange={(event) => setRuleAccount(event.target.value)}
+                    className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal disabled:bg-gray-100"
+                  >
+                    <option value="">选择账号</option>
+                    {accounts.map((account) => (
+                      <option key={account.id} value={account.id}>{accountLabel(account)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-sm font-bold text-gray-700">
+                  通知渠道
+                  <select
+                    value={ruleChannel}
+                    disabled={Boolean(editingRule)}
+                    onChange={(event) => setRuleChannel(event.target.value)}
+                    className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal disabled:bg-gray-100"
+                  >
+                    <option value="">选择已启用渠道</option>
+                    {channels.filter((channel) => channel.enabled).map((channel) => (
+                      <option key={channel.id} value={channel.id}>{channel.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label className="block text-sm font-bold text-gray-700">
+                规则名称（可选）
+                <input
+                  value={ruleName}
+                  onChange={(event) => setRuleName(event.target.value)}
+                  placeholder="例如：仅关键提醒"
+                  className="ios-input mt-2 w-full rounded-md px-3 py-2.5 font-normal"
+                />
+              </label>
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-bold text-gray-700">通知内容</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => applyRulePreset('all')}
+                      className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-200"
+                    >
+                      全选
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyRulePreset('critical')}
+                      className="rounded-md bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
+                    >
+                      仅关键
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyRulePreset('none')}
+                      className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-200"
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-3">
+                  {priorityGroups.map((group) => {
+                    const groupEvents = eventDefinitions.filter((item) => item.priority === group.id);
+                    if (groupEvents.length === 0) return null;
+                    const groupColor = group.id === 'critical'
+                      ? 'text-red-700'
+                      : group.id === 'warning'
+                        ? 'text-amber-700'
+                        : 'text-gray-600';
+                    return (
+                      <div key={group.id}>
+                        <p className={`text-xs font-bold ${groupColor}`}>{group.label}</p>
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          {groupEvents.map((event) => {
+                            const selected = ruleEventTypes.includes(event.id);
+                            return (
+                              <button
+                                type="button"
+                                key={event.id}
+                                onClick={() => toggleRuleEvent(event.id)}
+                                className={`flex items-start gap-2 rounded-md border p-3 text-left transition-colors ${
+                                  selected ? 'border-[#ffe100] bg-[#fffbe6]' : 'border-gray-200 bg-white hover:bg-gray-50'
+                                }`}
+                              >
+                                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                                  selected ? 'border-[#ffe100] bg-[#ffe100]' : 'border-gray-300 bg-white'
+                                }`}>
+                                  {selected && <Check className="h-3 w-3 text-gray-900" />}
+                                </span>
+                                <span className="min-w-0">
+                                  <span className="block text-sm font-bold text-gray-900">{event.label}</span>
+                                  <span className="mt-0.5 block text-xs text-gray-500">{event.description}</span>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="mt-3 text-xs text-gray-500">未勾选任何类型时接收全部事件；只想收关键提醒可点“仅关键”。</p>
+              </div>
+            </div>
+            <div className="modal-footer flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setRuleEditorOpen(false)}
+                className="ios-btn-secondary rounded-md px-4 py-2.5 text-sm"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveRule()}
+                disabled={savingRule}
+                className="ios-btn-primary flex items-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+              >
+                {savingRule ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 保存
               </button>
             </div>
