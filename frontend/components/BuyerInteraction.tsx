@@ -23,6 +23,7 @@ const SWITCH_LABELS = {
   auto_rate_enabled: '评价买家',
   auto_flower_enabled: '索要小红花',
   auto_thanks_enabled: '收货致谢',
+  auto_receive_flower_enabled: '自动收下小红花',
 } as const;
 
 /** 兜底轮询间隔。确认收货已由消息事件即时触发，这里只是漏收消息时的补救，
@@ -80,6 +81,7 @@ const BuyerInteraction: React.FC = () => {
       auto_rate_enabled: false,
       auto_flower_enabled: false,
       auto_thanks_enabled: false,
+      auto_receive_flower_enabled: false,
     };
     const next = { ...current, [key]: !current[key] };
     setFlagsByAccount(prev => ({ ...prev, [cookieId]: next }));
@@ -129,6 +131,7 @@ const BuyerInteraction: React.FC = () => {
       auto_rate_enabled: false,
       auto_flower_enabled: false,
       auto_thanks_enabled: false,
+      auto_receive_flower_enabled: false,
     };
   // 只要有账号开了评价，就允许编辑共用的评价文案
   const rateEnabled = accounts.some(account => accountFlags(account.id).auto_rate_enabled);
@@ -141,7 +144,7 @@ const BuyerInteraction: React.FC = () => {
     <div className="page-stack animate-fade-in">
       <PageHeader
         title="买家互动"
-        description="评价买家与索要小红花。这两项会对买家产生实际动作，开启前请确认。"
+        description="评价买家、索要小红花与自动收花。涉及平台实际操作，请按账号开启。"
         icon={Star}
         actions={(
           <>
@@ -190,6 +193,7 @@ const BuyerInteraction: React.FC = () => {
                     <th className="px-4 py-2 text-center font-semibold">评价买家</th>
                     <th className="px-4 py-2 text-center font-semibold">索要小红花</th>
                     <th className="px-4 py-2 text-center font-semibold">收货致谢</th>
+                    <th className="px-4 py-2 text-center font-semibold">自动收下小红花</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -207,6 +211,7 @@ const BuyerInteraction: React.FC = () => {
                           'auto_rate_enabled',
                           'auto_flower_enabled',
                           'auto_thanks_enabled',
+                          'auto_receive_flower_enabled',
                         ] as const).map(key => (
                           <td key={key} className="px-4 py-3 text-center">
                             <button

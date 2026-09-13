@@ -1296,3 +1296,6 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 ## 2026-09-13 主分支整合
 - 正在将 ai/PriceQuote、SKU-Limit、AutoRedFlower 功能分支整合到 main。
 - 当前已完成 ai/PriceQuote 合并冲突处理；后续需继续合并其余分支并运行测试。
+
+## SKU-Limit 整合
+- 已合并 SKU-Limit 分支，保留当前交接记录并待验证。

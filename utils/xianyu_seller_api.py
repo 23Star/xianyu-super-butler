@@ -685,6 +685,15 @@ class XianyuSellerAPI:
         )
         return (result.get("data") or {}) or {}
 
+    async def receive_flower(self, order_id: str) -> Dict[str, Any]:
+        """收下买家赠送的小红花。"""
+        result = await self._call(
+            "mtop.taobao.red.flower.seller.receive",
+            {"orderNo": str(order_id), "drawModel": 0, "channel": "", "bizType": ""},
+            value_type=None,
+        )
+        return (result.get("data") or {}) or {}
+
 
 def parse_sold_order(item: Dict[str, Any]) -> Dict[str, Any]:
     """把 sold.get 的单条订单展开成落库用的扁平字段。

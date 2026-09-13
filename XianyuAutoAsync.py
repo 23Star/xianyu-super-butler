@@ -10224,6 +10224,21 @@ class XianyuLive:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
+            # 买家赠送小红花的系统卡片通常会带订单号；收到后立即尝试收花。
+            if '收到小红花' in str(send_message):
+                import re
+                flower_order = next((m for m in re.findall(r'\d{6,24}', str(send_message))), None)
+                if flower_order:
+                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+                    if interaction.get('auto_receive_flower_enabled'):
+                        try:
+                            from utils.xianyu_seller_api import XianyuSellerAPI
+                            flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+                            await flower_api.receive_flower(flower_order)
+                            await flower_api.close()
+                            logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花')
+                        except Exception as exc:
+                            logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
             if self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
                 await self._handle_auto_delivery(
