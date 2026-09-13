@@ -34,6 +34,7 @@ from app.services.logistics_agent.render import (
     render_failure_message,
     render_follow_up,
     render_no_route,
+    render_provisional_notice,
     render_template,
     split_messages,
     unresolved_tokens,
@@ -52,7 +53,6 @@ from app.services.logistics_agent.tools import (
     build_quote_config,
     build_workflow_input,
     call_workflow,
-    call_workflow_for_packages,
     selected_book_sha,
 )
 from app.services.logistics_agent.extractor import parse_package_weights
@@ -291,20 +291,14 @@ def call_workflow_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str,
     try:
         quote_config = build_quote_config(settings, resolution.matched)
         if len(session.packages) > 1:
+            # 多包裹统一合并按总重报价：包裹只用于识别与报价前提醒。
             from app.services.logistics_agent.tools import plan_package_quote_mode
-            plan = plan_package_quote_mode(
-                [package.weight_kg for package in session.packages],
-                first_order_eligible=settings.pricing.first_order_eligible,
-            )
-            if plan["mode"] == "merge":
-                merged = session.model_copy(deep=True)
-                merged.packages = []
-                merged.weight_kg = plan["weight_kg"]
-                result = call_workflow(build_workflow_input(merged, quote_config))
-                result["package_plan"] = plan
-            else:
-                quotes, package_errors = call_workflow_for_packages(session.packages, session, quote_config)
-                result = {"success": bool(quotes), "quotes": quotes, "errors": package_errors, "package_plan": plan}
+            plan = plan_package_quote_mode([package.weight_kg for package in session.packages])
+            merged = session.model_copy(deep=True)
+            merged.packages = []
+            merged.weight_kg = plan["weight_kg"]
+            result = call_workflow(build_workflow_input(merged, quote_config))
+            result["package_plan"] = plan
         else:
             result = call_workflow(build_workflow_input(session, quote_config))
     except (WorkflowError, WorkflowUnavailable) as exc:
@@ -361,9 +355,14 @@ def render_reply_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, 
     elif reason == "quoted":
         try:
             messages = _render_quote(settings, state, session)
+            notices: list[str] = []
             notice = (state.get("package_plan") or {}).get("notice")
             if notice:
-                messages.insert(0, notice)
+                notices.append(notice)
+            provisional = _provisional_matches(state.get("routes"))
+            if provisional:
+                notices.append(render_provisional_notice(provisional))
+            messages = [*notices, *messages]
         except RenderError:
             messages = [render_failure_message(settings.templates.failure)]
             action = "manual"
@@ -461,6 +460,12 @@ def _render_quote(
     ):
         parts.extend(split_messages(render_template(template, values)))
     return parts
+
+
+def _provisional_matches(resolution: Any) -> dict[str, dict[str, Any]]:
+    """省级询价里按示例城市预估的匹配渠道（需要向买家注明预估口径）。"""
+    matched = getattr(resolution, "matched", None) or {}
+    return {carrier: match for carrier, match in matched.items() if match.get("provisional")}
 
 
 class RenderError(RuntimeError):

@@ -1299,3 +1299,6 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 
 ## SKU-Limit 整合
 - 已合并 SKU-Limit 分支，保留当前交接记录并待验证。
+
+## AutoRedFlower 整合
+- 已合并 AutoRedFlower 分支，包含自动收小红花及工作流/UI 重构。

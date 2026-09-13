@@ -278,17 +278,30 @@ class ThreeCarrierLayoutTests(unittest.TestCase):
         tiers = row["continued_tiers"]
         self.assertEqual(len(tiers), 3)
         self.assertEqual(
-            tiers[0], {"min_exclusive_kg": 0.0, "max_inclusive_kg": 100.0, "price_per_kg": 1.36}
+            tiers[0],
+            {
+                "min_exclusive_kg": 0.0,
+                "max_inclusive_kg": 100.0,
+                "price_per_kg": 1.36,
+                "basis": "continued",
+            },
         )
         self.assertEqual(
-            tiers[1], {"min_exclusive_kg": 100.0, "max_inclusive_kg": 500.0, "price_per_kg": 1.28}
+            tiers[1],
+            {
+                "min_exclusive_kg": 100.0,
+                "max_inclusive_kg": 500.0,
+                "price_per_kg": 1.28,
+                "basis": "continued",
+            },
         )
-        self.assertEqual(tiers[2], {"min_exclusive_kg": 500.0, "price_per_kg": 1.18})
+        self.assertEqual(
+            tiers[2], {"min_exclusive_kg": 500.0, "price_per_kg": 1.18, "basis": "continued"}
+        )
         self.assertEqual(row["first_weight_kg"], 30.0)
         self.assertEqual(row["first_price"], 42.0)
         self.assertEqual(row["route"], "安徽省→上海")
-        self.assertEqual(row["review_state"], "review")
-        self.assertTrue(any("阶梯" in issue for issue in row["issues"]))
+        self.assertEqual(row["review_state"], "valid")
 
     def test_tiered_continued_headers_without_slash_are_recognized(self):
         """真实报价表的分段续重表头用换行分隔、没有斜杠，也必须识别为阶梯。"""
@@ -358,8 +371,7 @@ class ThreeCarrierLayoutTests(unittest.TestCase):
         self.assertEqual(row["first_weight_kg"], 30.0)
         self.assertEqual(row["continued_unit_kg"], 1.0)
         self.assertNotEqual(row["first_weight_kg"], row["first_price"])
-        self.assertEqual(row["review_state"], "review")
-        self.assertTrue(any("表头推导" in issue for issue in row["issues"]))
+        self.assertEqual(row["review_state"], "valid")
 
     def test_row_cap_warns_explicitly(self):
         import openpyxl
@@ -441,9 +453,9 @@ class ReportCompatibleRecognitionTests(unittest.TestCase):
         self.assertEqual(
             row["fixed_tiers"],
             [
-                {"up_to_kg": 1.0, "price": 12.0},
-                {"up_to_kg": 3.0, "price": 19.0},
-                {"up_to_kg": 5.0, "price": 27.0},
+                {"up_to_kg": 1.0, "price": 12.0, "up_to": False},
+                {"up_to_kg": 3.0, "price": 19.0, "up_to": False},
+                {"up_to_kg": 5.0, "price": 27.0, "up_to": False},
             ],
         )
         self.assertIsNone(row["first_price"])
@@ -465,6 +477,109 @@ class ReportCompatibleRecognitionTests(unittest.TestCase):
         self.assertEqual(row["continued_price"], 4.2)
         self.assertEqual(row["review_state"], "valid")
 
+    def test_tier_header_variants_map_to_basis(self):
+        """分段表头支持计费重/总重/区间/以上等写法，并区分续重部分与总重口径。"""
+        cases = {
+            "0<续重重量≤100kg 续重价格": (0.0, 100.0, "continued"),
+            "续重0-100KG价格": (0.0, 100.0, "continued"),
+            "续重价格0-100KG": (0.0, 100.0, "continued"),
+            "100KG以上续重价格": (100.0, None, "continued"),
+            "续重价格（100KG以上）": (100.0, None, "continued"),
+            "0<计费重量≤100kg续重价格(元/KG)": (0.0, 100.0, "total"),
+            "0<总重量≤100kg续重价格": (0.0, 100.0, "total"),
+            "计费重量>500kg续重价格": (500.0, None, "total"),
+            "0-100KG续重价格": (0.0, 100.0, "total"),
+        }
+        for header, expected in cases.items():
+            with self.subTest(header=header):
+                self.assertEqual(parser._match_tier_header(header), expected)
+        self.assertIsNone(parser._match_tier_header("续重(1KG)价格"))
+
+    def test_chargeable_weight_band_headers_are_valid_with_total_basis(self):
+        result = self.parse_workbook(
+            "计费重分档",
+            [
+                [
+                    "承运商", "发件地", "收件地", "首重(30KG)价格",
+                    "0<计费重量≤100kg续重价格(元/KG)",
+                    "100<计费重量≤500kg续重价格(元/KG)",
+                ],
+                ["百世快运", "上海", "北京", 50, 1.5, 1.3],
+            ],
+        )
+        row = result["rows"][0]
+        self.assertEqual(row["rule_type"], "banded_additional")
+        self.assertEqual(row["review_state"], "valid")
+        self.assertEqual([tier["basis"] for tier in row["continued_tiers"]], ["total", "total"])
+        self.assertIsNone(row["continued_unit_kg"])
+
+    def test_price_headers_without_price_word_are_prices(self):
+        """"首重(元/KG)"没有"价格"字样，也必须识别为价格列而非重量列。"""
+        result = self.parse_workbook(
+            "元每公斤",
+            [
+                ["承运商", "发件地", "收件地", "首重(元/KG)", "续重(元/KG)"],
+                ["中通", "北京", "上海", 12, 4.8],
+            ],
+        )
+        row = result["rows"][0]
+        self.assertEqual(row["first_price"], 12.0)
+        self.assertEqual(row["continued_price"], 4.8)
+        self.assertEqual(row["rule_type"], "first_additional")
+        self.assertEqual(row["review_state"], "valid")
+
+    def test_upto_fixed_tier_headers_mark_up_to(self):
+        result = self.parse_workbook(
+            "以内档",
+            [
+                ["承运商", "起运地", "收件地", "1KG以内价格", "3KG以内价格", "5KG以内价格"],
+                ["中通", "北京", "广州", 12, 19, 27],
+            ],
+        )
+        row = result["rows"][0]
+        self.assertEqual(row["rule_type"], "fixed_tiers")
+        self.assertTrue(all(tier["up_to"] for tier in row["fixed_tiers"]))
+        self.assertEqual(row["review_state"], "valid")
+
+    def test_unrecognized_band_like_price_header_goes_to_review(self):
+        """形如"续重价格>100KG"的列没识别为分档时，不能按平铺续重价使用。"""
+        result = self.parse_workbook(
+            "未识别分档",
+            [
+                ["承运商", "发件地", "收件地", "首重(30KG)价格", "续重价格>100KG"],
+                ["百世", "上海", "北京", 50, 1.1],
+            ],
+        )
+        row = result["rows"][0]
+        self.assertEqual(row["review_state"], "review")
+        self.assertTrue(any("疑似分档" in issue for issue in row["issues"]))
+
+    def test_mixed_tier_bases_and_tier_wording_require_review(self):
+        mixed_basis = self.parse_workbook(
+            "混用口径",
+            [
+                [
+                    "承运商", "发件地", "收件地", "首重(30KG)价格",
+                    "0<续重重量≤100kg续重价格", "100<计费重量≤500kg续重价格",
+                ],
+                ["百世快运", "上海", "北京", 50, 1.5, 1.3],
+            ],
+        )
+        row = mixed_basis["rows"][0]
+        self.assertEqual(row["review_state"], "review")
+        self.assertTrue(any("口径" in issue for issue in row["issues"]))
+
+        mixed_up_to = self.parse_workbook(
+            "混用档位",
+            [
+                ["承运商", "起运地", "收件地", "1KG以内价格", "3KG价格"],
+                ["中通", "北京", "广州", 12, 19],
+            ],
+        )
+        row = mixed_up_to["rows"][0]
+        self.assertEqual(row["review_state"], "review")
+        self.assertTrue(any("档位语义" in issue for issue in row["issues"]))
+
     def test_minimum_price_rule_and_logistics_book_kind_are_exposed(self):
         result = self.parse_workbook(
             "物流最低价",
@@ -478,7 +593,7 @@ class ReportCompatibleRecognitionTests(unittest.TestCase):
         self.assertEqual(row["rule_type"], "minimum_then_per_kg")
         self.assertEqual(row["book_kind"], "logistics")
         self.assertEqual(result["book_kind"], "logistics")
-        self.assertEqual(row["review_state"], "review")
+        self.assertEqual(row["review_state"], "valid")
 
     def test_xlsm_is_parsed_as_a_supported_excel_workbook(self):
         result = self.parse_workbook(

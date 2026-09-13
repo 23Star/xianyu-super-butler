@@ -44,18 +44,25 @@ def _labelled_weights(row: dict[str, Any]) -> tuple[float | None, float | None]:
     return first_weight, continued_unit
 
 
-def _tiers_map(fixed_tiers: list[dict[str, Any]] | None) -> dict[str, float] | None:
-    """固定重量档 -> Workflow `tiers`（键为正整数公斤）。"""
+def _tiers_map(fixed_tiers: list[dict[str, Any]] | None) -> tuple[dict[str, float] | None, bool]:
+    """固定重量档 -> Workflow `tiers`（键为正整数公斤）与是否"以内"语义。
+
+    只有整行档位都带"以内/以下"表头时才按不高于档位重量计价；混用精确
+    档位时返回 up_to=False，由 Workflow 按精确命中处理。
+    """
     if not fixed_tiers:
-        return None
+        return None, False
     tiers: dict[str, float] = {}
+    up_to = True
     for tier in fixed_tiers:
-        up_to = _finite(tier.get("up_to_kg"))
+        up_to_kg = _finite(tier.get("up_to_kg"))
         price = _finite(tier.get("price"))
-        if up_to is None or price is None or up_to <= 0 or up_to != int(up_to):
-            return None
-        tiers[str(int(up_to))] = price
-    return tiers or None
+        if up_to_kg is None or price is None or up_to_kg <= 0 or up_to_kg != int(up_to_kg):
+            return None, False
+        tiers[str(int(up_to_kg))] = price
+        if not tier.get("up_to"):
+            up_to = False
+    return (tiers or None), (up_to and bool(tiers))
 
 
 def build_price_model(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -85,28 +92,52 @@ def build_price_model(row: dict[str, Any]) -> dict[str, Any] | None:
         }
 
     if rule_type == "fixed_tiers_overflow":
-        tiers = _tiers_map(row.get("fixed_tiers"))
-        if not tiers or first_price is None or continued_price is None:
+        tiers, up_to = _tiers_map(row.get("fixed_tiers"))
+        if not tiers or continued_price is None:
             return None
-        return {
+        if first_price is None:
+            # 没有显式首重列（如"1KG价格+3KG价格+续重(1KG)价格"）时，用最大
+            # 固定档作为溢出段的首重与首重价：超过最大档的包裹从该档价起按
+            # 续重单位累加，避免整行因缺首重价被丢弃。
+            base_key = max(tiers, key=int)
+            first_weight = float(base_key)
+            first_price = tiers[base_key]
+        else:
+            first_weight = label_first or _finite(row.get("first_weight_kg")) or 1.0
+        if first_weight <= 0:
+            return None
+        model = {
             "tiers": tiers,
-            "first_weight": label_first or _finite(row.get("first_weight_kg")) or 1.0,
+            "first_weight": first_weight,
             "first_weight_price": first_price,
-            "continued_unit": label_unit or 1.0,
+            "continued_unit": label_unit or _finite(row.get("continued_unit_kg")) or 1.0,
             "continued_weight_price": continued_price,
         }
+        if up_to:
+            model["tiers_up_to"] = True
+        return model
 
     if rule_type == "fixed_tiers":
-        tiers = _tiers_map(row.get("fixed_tiers"))
-        return {"tiers": tiers} if tiers else None
+        tiers, up_to = _tiers_map(row.get("fixed_tiers"))
+        if not tiers:
+            return None
+        model = {"tiers": tiers}
+        if up_to:
+            model["tiers_up_to"] = True
+        return model
 
     if rule_type == "banded_additional":
         # 分段续重：计费重不高于首重只收首重价；续重部分按区间取单价。
+        # 分档区间默认针对续重部分，表头写"计费重量/总重量"时针对计费总重。
         if first_price is None:
             return None
         first_weight = _finite(row.get("first_weight_kg")) or label_first
         if first_weight is None or first_weight <= 0:
             return None
+        bases = {tier.get("basis") or "continued" for tier in row.get("continued_tiers") or []}
+        if len(bases) > 1:
+            return None
+        basis = next(iter(bases), "continued")
         tiers: dict[str, float] = {}
         overflow: float | None = None
         for tier in row.get("continued_tiers") or []:
@@ -123,12 +154,15 @@ def build_price_model(row: dict[str, Any]) -> dict[str, Any] | None:
                 tiers[str(int(bounded))] = price
         if not tiers or overflow is None:
             return None
-        return {
+        model = {
             "first_weight": first_weight,
             "first_weight_price": first_price,
             "continued_unit": 1.0,
             "continued_tiers": tiers,
             "overflow_continued_price": overflow,
         }
+        if basis == "total":
+            model["continued_tiers_basis"] = "total"
+        return model
 
     return None

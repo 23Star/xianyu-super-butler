@@ -25,8 +25,15 @@ import sys
 import aiohttp
 from collections import defaultdict
 from app.db_manager import db_manager
+from app.delivery_template import (
+    build_card_delivery_payload,
+    is_template_enabled,
+    send_payload as send_delivery_payload,
+)
 from app.specification import combine_legacy_specification
+from app.notification_events import resolve_event_type
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
+from utils.message_utils import extract_received_flower_order, is_official_card_message
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
@@ -1927,44 +1934,23 @@ class XianyuLive:
                         send_errors = []
                         for i, delivery_content in enumerate(delivery_contents):
                             try:
-                                # 检查是否是图片发送标记
-                                if delivery_content.startswith("__IMAGE_SEND__"):
-                                    # 提取卡券ID和图片URL
-                                    image_data = delivery_content.replace("__IMAGE_SEND__", "")
-                                    if "|" in image_data:
-                                        card_id_str, image_url = image_data.split("|", 1)
-                                        try:
-                                            card_id = int(card_id_str)
-                                        except ValueError:
-                                            logger.error(f"无效的卡券ID: {card_id_str}")
-                                            card_id = None
-                                    else:
-                                        # 兼容旧格式（没有卡券ID）
-                                        card_id = None
-                                        image_url = image_data
+                                # 分段发送：文本、图片、分条文案由发送器统一处理
+                                segment_count = await send_delivery_payload(
+                                    self,
+                                    websocket,
+                                    chat_id,
+                                    send_user_id,
+                                    delivery_content,
+                                )
 
-                                    # 发送图片消息
-                                    await self.send_image_msg(websocket, chat_id, send_user_id, image_url, card_id=card_id)
-                                    if len(delivery_contents) > 1:
-                                        logger.info(f'[{msg_time}] 【多数量自动发货图片】第 {i+1}/{len(delivery_contents)} 张已向 {user_url} 发送图片: {image_url}')
-                                    else:
-                                        logger.info(f'[{msg_time}] 【自动发货图片】已向 {user_url} 发送图片: {image_url}')
-
-                                    # 多数量发货时，消息间隔1秒
-                                    if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
-                                        await asyncio.sleep(1)
-
+                                if len(delivery_contents) > 1:
+                                    logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 个卡券已向 {user_url} 发送 {segment_count} 段内容')
                                 else:
-                                    # 普通文本发货内容
-                                    await self.send_msg(websocket, chat_id, send_user_id, delivery_content)
-                                    if len(delivery_contents) > 1:
-                                        logger.info(f'[{msg_time}] 【多数量自动发货】第 {i+1}/{len(delivery_contents)} 条已向 {user_url} 发送发货内容')
-                                    else:
-                                        logger.info(f'[{msg_time}] 【自动发货】已向 {user_url} 发送发货内容')
+                                    logger.info(f'[{msg_time}] 【自动发货】已向 {user_url} 发送发货内容（{segment_count} 段消息）')
 
-                                    # 多数量发货时，消息间隔1秒
-                                    if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
-                                        await asyncio.sleep(1)
+                                # 多数量发货时，卡券之间间隔1秒；卡券内分段间隔由发送器控制
+                                if len(delivery_contents) > 1 and i < len(delivery_contents) - 1:
+                                    await asyncio.sleep(1)
 
                                 sent_count += 1
                             except Exception as e:
@@ -2009,7 +1995,8 @@ class XianyuLive:
                                     send_user_id,
                                     item_id,
                                     f"订单命中“{protection_result['rule_name']}”并已关闭，仅发送卡券成功",
-                                    chat_id
+                                    chat_id,
+                                    event_type="delivery_success"
                                 )
                             elif confirm_required and not platform_confirmed:
                                 await self.send_delivery_failure_notification(
@@ -2017,12 +2004,13 @@ class XianyuLive:
                                     send_user_id,
                                     item_id,
                                     f"卡券已全部发送，但闲鱼确认发货失败，请手动确认：{confirm_error}",
-                                    chat_id
+                                    chat_id,
+                                    event_type="delivery_confirm_failed"
                                 )
                             elif len(delivery_contents) > 1:
-                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {sent_count} 个卡券", chat_id)
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {sent_count} 个卡券", chat_id, event_type="delivery_success")
                             else:
-                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id, event_type="delivery_success")
                         else:
                             # 内容可能已从批量卡池取出，自动重试可能重复消耗或重复发送，转人工处理。
                             self.delivery_blocked_orders.add(order_id)
@@ -3026,7 +3014,7 @@ class XianyuLive:
                 """通知回调包装函数，支持接收截图路径和验证链接"""
                 await self.send_token_refresh_notification(
                     error_message=message,
-                    notification_type="token_refresh",
+                    notification_type="face_verification",
                     chat_id=None,
                     attachment_path=screenshot_path,
                     verification_url=verification_url
@@ -4806,7 +4794,9 @@ class XianyuLive:
             send_failed = False
             try:
                 for agent_message in decision.messages:
-                    await self.send_msg(websocket, chat_id, send_user_id, agent_message)
+                    # 物流报价是多条连续消息，使用带服务端响应确认的 IM
+                    # 请求，避免仅写入 WebSocket 后误记为已发送。
+                    await self.send_im_text(chat_id, send_user_id, agent_message)
             except Exception as e:
                 send_failed = True
                 logger.error(f"物流 Agent 发送失败: 账号={self.cookie_id}, 错误={self._safe_str(e)}")
@@ -4838,8 +4828,8 @@ class XianyuLive:
         except:
             return 0.0
 
-    async def send_system_notification(self, message: str) -> int:
-        """把系统级消息推送到该账号绑定的全部通知渠道。
+    async def send_system_notification(self, message: str, event_type: str = "delivery_timeout") -> int:
+        """把系统级消息推送到该账号绑定了该事件类型的通知渠道。
 
         与 :meth:`send_notification` 的区别是不依赖买家消息上下文，
         供发货超时告警这类主动通知使用。
@@ -4853,7 +4843,9 @@ class XianyuLive:
         try:
             from app.db_manager import db_manager
 
-            notifications = db_manager.get_account_notifications(self.cookie_id) or []
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            ) or []
         except Exception as e:
             logger.error(f"📱 读取通知渠道失败: {self._safe_str(e)}")
             return 0
@@ -4940,8 +4932,10 @@ class XianyuLive:
 
             logger.info(f"📱 开始发送消息通知 - 账号: {self.cookie_id}, 买家: {send_user_name}")
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 获取当前账号订阅了买家消息的通知规则
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type="buyer_message"
+            )
 
             if not notifications:
                 logger.warning(f"📱 账号 {self.cookie_id} 未配置消息通知，跳过通知发送")
@@ -5508,11 +5502,14 @@ class XianyuLive:
 
             from app.db_manager import db_manager
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 按事件类型获取当前账号订阅的通知规则
+            event_type = resolve_event_type(notification_type)
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            )
 
             if not notifications:
-                logger.warning("未配置消息通知，跳过Token刷新通知")
+                logger.warning(f"未配置订阅 {event_type} 事件的通知规则，跳过Token刷新通知")
                 return
 
             # 构造通知消息
@@ -5668,16 +5665,20 @@ class XianyuLive:
 
         return False
 
-    async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str, item_id: str, error_message: str, chat_id: str = None):
-        """发送自动发货失败通知"""
+    async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str,
+                                                 item_id: str, error_message: str,
+                                                 chat_id: str = None, event_type: str = "delivery_failed"):
+        """发送自动发货结果通知，按事件类型筛选订阅规则"""
         try:
             from app.db_manager import db_manager
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 按事件类型获取当前账号订阅的通知规则
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            )
 
             if not notifications:
-                logger.warning("未配置消息通知，跳过自动发货通知")
+                logger.warning(f"未配置订阅 {event_type} 事件的通知规则，跳过自动发货通知")
                 return
 
             # 构造通知消息
@@ -5995,6 +5996,7 @@ class XianyuLive:
             # 获取商品详细信息
             item_info = None
             search_text = item_title  # 默认使用传入的标题
+            resolved_item_title = item_title  # 发货文案 {商品标题} 使用，优先取数据库标题
 
             if item_id and item_id != "未知商品":
                 # 直接从数据库获取商品信息（发货时不再调用API）
@@ -6004,6 +6006,8 @@ class XianyuLive:
                     if db_item_info:
                         # 拼接商品标题和详情作为搜索文本
                         item_title_db = db_item_info.get('item_title', '') or ''
+                        if item_title_db.strip():
+                            resolved_item_title = item_title_db.strip()
                         item_detail_db = db_item_info.get('item_detail', '') or ''
 
                         # 如果数据库中没有详情，尝试自动获取
@@ -6240,6 +6244,31 @@ class XianyuLive:
                     })
 
             # 保存商品信息到数据库（需要有商品标题才保存）
+            # 订单详情是无卖家 SKU 权限时的可靠观测来源，同时执行 SKU 防薅额度闸门。
+            if order_id and send_user_id:
+                try:
+                    sku_key = db_manager.normalize_delivery_sku_key(
+                        spec_text or spec_value or rule.get('variant_name', ''), platform_sku_id, item_id
+                    )
+                    db_manager.record_delivery_sku_option(
+                        self.cookie_id, item_id, spec_text or spec_value or rule.get('variant_name', ''),
+                        platform_sku_id, source='order'
+                    )
+                    claim = db_manager.claim_delivery_sku(
+                        self.cookie_id, str(send_user_id), str(item_id), sku_key, str(order_id)
+                    )
+                    if not claim.get('allowed'):
+                        message = claim.get('block_message') or '该规格已达到自动发货次数上限，请联系卖家处理。'
+                        logger.warning(f"【{self.cookie_id}】SKU 防薅拦截: buyer={send_user_id}, item={item_id}, key={sku_key}")
+                        if self.ws:
+                            try:
+                                await self.send_msg(self.ws, chat_id or '', send_user_id, message)
+                            except Exception as exc:
+                                logger.error(f"SKU 防薅拦截提示发送失败: {self._safe_str(exc)}")
+                        return None
+                except Exception as exc:
+                    logger.warning(f"SKU 防薅检查失败，继续现有发货流程: {self._safe_str(exc)}")
+
             # 尝试获取商品标题
             item_title_for_save = None
             try:
@@ -6347,6 +6376,10 @@ class XianyuLive:
                             batch_queue = db_manager.consume_batch_data_batch(
                                 rule['card_id'],
                                 required_count,
+                                order_id=order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                cookie_id=self.cookie_id,
                             )
                             if not batch_queue:
                                 logger.warning(
@@ -6364,7 +6397,13 @@ class XianyuLive:
                             return None
                         delivery_content = batch_queue.pop(0)
                     else:
-                        delivery_content = db_manager.consume_batch_data(rule['card_id'])
+                        delivery_content = db_manager.consume_batch_data(
+                            rule['card_id'],
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            cookie_id=self.cookie_id,
+                        )
 
                 elif rule['card_type'] == 'image':
                     # 图片类型：返回图片发送标记，包含卡券ID
@@ -6377,8 +6416,30 @@ class XianyuLive:
                         delivery_content = None
 
                 if delivery_content:
-                    # 处理备注信息和变量替换
-                    final_content = self._process_delivery_content_with_description(delivery_content, rule.get('card_description', ''))
+                    if rule.get('card_type') != 'image' and is_template_enabled(rule):
+                        # 发货详情文案：参数渲染、图片与分开发送统一由模板模块处理
+                        template_quantity = requested_item_quantity
+                        if isinstance(order_detail, dict):
+                            try:
+                                template_quantity = int(
+                                    order_detail.get('quantity') or template_quantity
+                                )
+                            except (TypeError, ValueError):
+                                pass
+                        final_content = build_card_delivery_payload(
+                            rule,
+                            delivery_content,
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            item_title=resolved_item_title,
+                            spec_name=spec_name,
+                            spec_value=spec_value,
+                            quantity=template_quantity,
+                        )
+                    else:
+                        # 处理备注信息和变量替换
+                        final_content = self._process_delivery_content_with_description(delivery_content, rule.get('card_description', ''))
 
                     # 增加对应规则或商品规格绑定的发货次数统计。
                     if rule.get("rule_kind") == "variant_binding":
@@ -9527,6 +9588,15 @@ class XianyuLive:
         try:
 
             from app.db_manager import db_manager
+
+            # 防御性拦截：官方卡片（评价、小红花、交易通知等）只承载平台状态，
+            # 即使调用方漏掉了判断，也不允许任何回复链路（含物流 Agent）接管。
+            if is_official_card_message(message_data):
+                logger.info(
+                    f"[{msg_time}] 【{self.cookie_id}】官方卡片消息不回复: {send_message}"
+                )
+                return
+
             matched_filter = db_manager.matches_message_filter(
                 self.cookie_id, send_message, "skip_reply"
             )
@@ -10223,22 +10293,22 @@ class XianyuLive:
                 except Exception as e:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
+            # 【优先处理】买家赠送小红花的系统卡片不会把订单号放在标题里，
+            # 订单号要从卡片 targetUrl / extJson 中解析；收到后立即尝试收花。
+            flower_order = extract_received_flower_order(message)
+            if flower_order:
+                interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+                if interaction.get('auto_receive_flower_enabled'):
+                    try:
+                        from utils.xianyu_seller_api import XianyuSellerAPI
+                        flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+                        result = await flower_api.receive_flower(flower_order)
+                        await flower_api.close()
+                        logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花: {result}')
+                    except Exception as exc:
+                        logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
+                    return
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
-            # 买家赠送小红花的系统卡片通常会带订单号；收到后立即尝试收花。
-            if '收到小红花' in str(send_message):
-                import re
-                flower_order = next((m for m in re.findall(r'\d{6,24}', str(send_message))), None)
-                if flower_order:
-                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
-                    if interaction.get('auto_receive_flower_enabled'):
-                        try:
-                            from utils.xianyu_seller_api import XianyuSellerAPI
-                            flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
-                            await flower_api.receive_flower(flower_order)
-                            await flower_api.close()
-                            logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花')
-                        except Exception as exc:
-                            logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
             if self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
                 await self._handle_auto_delivery(
@@ -10381,6 +10451,13 @@ class XianyuLive:
                 except Exception as e:
                     logger.error(f"处理卡片消息异常: {self._safe_str(e)}")
                     # 如果处理异常，继续正常处理流程（会受到暂停影响）
+
+            # 官方卡片（评价、小红花、交易通知等）只承载平台状态，不进入回复
+            # 队列：既不能被关键词/AI/默认回复接走，也不能被物流 Agent 当成询价，
+            # 更不能挤掉同一会话里买家刚发的真实消息。
+            if is_official_card_message(message):
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】官方卡片消息不回复: {send_message}')
+                return
 
             # 使用防抖机制处理聊天消息回复
             # 如果用户连续发送消息，等待用户停止发送后再回复最后一条消息

@@ -738,33 +738,46 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                             {formatTimestamp(message.time)}
                           </p>
                         )}
-                        <div className={`flex items-start gap-2.5 ${message.isSelf ? 'justify-end' : ''}`}>
-                          {!message.isSelf && renderAvatar(
-                            activeConversation.otherUserAvatar,
-                            senderLabel,
-                            'h-9 w-9 shrink-0 rounded-full'
-                          )}
-                          <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
-                            message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
-                          }`}>
-                            {message.images.map((url) => (
-                              <img
-                                key={url}
-                                src={normalizeImageUrl(url)}
-                                alt="聊天图片"
-                                className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
-                              />
-                            ))}
-                            {message.text && (
-                              <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                        {message.type === 'card' ? (
+                          <div className="flex justify-center">
+                            <div className="max-w-[76%] rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-center shadow-[var(--shadow-sm)]">
+                              <p className="text-[10px] font-bold tracking-[0.15em] text-[var(--text-soft)]">
+                                官方卡片
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text)]">
+                                {message.text}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`flex items-start gap-2.5 ${message.isSelf ? 'justify-end' : ''}`}>
+                            {!message.isSelf && renderAvatar(
+                              activeConversation.otherUserAvatar,
+                              senderLabel,
+                              'h-9 w-9 shrink-0 rounded-full'
+                            )}
+                            <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
+                              message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
+                            }`}>
+                              {message.images.map((url) => (
+                                <img
+                                  key={url}
+                                  src={normalizeImageUrl(url)}
+                                  alt="聊天图片"
+                                  className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
+                                />
+                              ))}
+                              {message.text && (
+                                <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                              )}
+                            </div>
+                            {message.isSelf && renderAvatar(
+                              activeAccount?.avatarUrl,
+                              senderLabel,
+                              'h-9 w-9 shrink-0 rounded-full'
                             )}
                           </div>
-                          {message.isSelf && renderAvatar(
-                            activeAccount?.avatarUrl,
-                            senderLabel,
-                            'h-9 w-9 shrink-0 rounded-full'
-                          )}
-                        </div>
+                        )}
                       </div>
                     );
                   })}

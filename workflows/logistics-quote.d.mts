@@ -45,13 +45,17 @@ export interface CarrierConfig {
 
 export interface PriceTable {
   tiers?: Record<number, number>;
+  /** tiers 表头为"N KG以内/以下"时按不超过 N 的最小档位计价；默认精确命中。 */
+  tiers_up_to?: boolean;
   first_weight?: number;
   first_weight_price?: number;
   continued_unit?: number;
   continued_weight_price?: number;
-  /** 分段续重：键为续重部分（计费重 - 首重）上界公斤数，值为该段每公斤价格。 */
+  /** 分段续重：键为分档上界公斤数，值为该段每公斤价格。 */
   continued_tiers?: Record<number, number>;
-  /** 续重部分超过最大分段上界时的每公斤价格；使用 continued_tiers 时必填。 */
+  /** 分段区间口径：continued（默认，对续重部分）或 total（对计费总重）。 */
+  continued_tiers_basis?: 'continued' | 'total';
+  /** 超过最大分段上界时的每公斤价格；使用 continued_tiers 时必填。 */
   overflow_continued_price?: number;
   minimum_price?: number;
   per_kg_price?: number;

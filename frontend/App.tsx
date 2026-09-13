@@ -21,6 +21,7 @@ const MessageManagement = lazy(() => import('./components/MessageManagement'));
 const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLogs'));
 const About = lazy(() => import('./components/About'));
 const BuyerInteraction = lazy(() => import('./components/BuyerInteraction'));
+const SkuAntiAbusePage = lazy(() => import('./components/SkuAntiAbusePage'));
 
 const PageLoader = () => (
   <div className="page-loading">
@@ -44,6 +45,7 @@ const pageLabels: Record<string, string> = {
   notifications: '通知与日志',
   settings: '系统设置',
   about: '关于',
+  'sku-anti-abuse': 'SKU 防薅',
 };
 
 const App: React.FC = () => {
@@ -519,6 +521,9 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'cards'}>
             <Suspense fallback={activeTab === 'cards' ? <PageLoader /> : null}><CardList /></Suspense>
+          </section>
+          <section hidden={activeTab !== 'sku-anti-abuse'}>
+            <Suspense fallback={activeTab === 'sku-anti-abuse' ? <PageLoader /> : null}><SkuAntiAbusePage /></Suspense>
           </section>
           <section hidden={activeTab !== 'auto-reply'}>
             <Suspense fallback={activeTab === 'auto-reply' ? <PageLoader /> : null}><Keywords mode="reply" /></Suspense>

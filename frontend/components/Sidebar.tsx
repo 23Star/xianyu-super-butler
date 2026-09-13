@@ -16,6 +16,7 @@ import {
   Workflow,
   X,
   Info,
+  ShieldAlert,
 } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 
@@ -43,6 +44,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
         { id: 'orders', icon: ShoppingBag, label: '订单管理' },
         { id: 'buyer-interaction', icon: Star, label: '买家互动' },
         { id: 'cards', icon: CreditCard, label: '卡密库存' },
+        { id: 'sku-anti-abuse', icon: ShieldAlert, label: 'SKU 防薅' },
       ],
     },
     {
