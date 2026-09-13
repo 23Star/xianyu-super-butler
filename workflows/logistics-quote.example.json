@@ -1,0 +1,19 @@
+{
+  "weight_kg": 5,
+  "quote_config": {
+    "price_basis": "cost",
+    "carriers": {
+      "中通快递": {
+        "volume_ratio": 8000,
+        "price_table": {
+          "first_weight": 1,
+          "first_weight_price": 12,
+          "continued_weight_price": 4.8
+        },
+        "markup_cost": 2,
+        "discount_rate": 10,
+        "payment_mode": "direct"
+      }
+    }
+  }
+}

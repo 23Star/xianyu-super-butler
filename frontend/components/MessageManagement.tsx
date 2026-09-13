@@ -42,7 +42,7 @@ import {
   toggleMessageFilter,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { EmptyState, SectionHeader } from './ui';
+import { EmptyState, Popover, SectionHeader } from './ui';
 
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
@@ -784,41 +784,43 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="图片（暂未开放）" className="hover:text-[var(--text)]">
                   <Image className="h-5 w-5" />
                 </button>
-                <div className="relative">
-                  <button
-                    type="button"
-                    title="快捷短语"
-                    onClick={() => setShowPhrases(value => !value)}
-                    className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
-                  >
-                    <Zap className="h-5 w-5" />
-                  </button>
-                  {showPhrases && (
-                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg">
-                      {quickPhrases.length === 0 ? (
-                        <p className="px-2 py-3 text-xs text-gray-500">
-                          还没有快捷短语，可在「设置」中添加。
-                        </p>
-                      ) : (
-                        quickPhrases.map(phrase => (
-                          <button
-                            key={phrase.id}
-                            type="button"
-                            onClick={() => insertPhrase(phrase)}
-                            className="block w-full rounded-md px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
-                          >
-                            <span className="block text-xs font-semibold text-[var(--text)]">
-                              [{phrase.category}] {phrase.title}
-                            </span>
-                            <span className="mt-0.5 block truncate text-xs text-gray-500">
-                              {phrase.content}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
+                <Popover
+                  open={showPhrases}
+                  onClose={() => setShowPhrases(false)}
+                  placement="top"
+                  trigger={
+                    <button
+                      type="button"
+                      title="快捷短语"
+                      onClick={() => setShowPhrases(value => !value)}
+                      className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
+                    >
+                      <Zap className="h-5 w-5" />
+                    </button>
+                  }
+                >
+                  {quickPhrases.length === 0 ? (
+                    <p className="px-2 py-3 text-xs text-gray-500">
+                      还没有快捷短语，可在「设置」中添加。
+                    </p>
+                  ) : (
+                    quickPhrases.map(phrase => (
+                      <button
+                        key={phrase.id}
+                        type="button"
+                        onClick={() => insertPhrase(phrase)}
+                        className="block w-full rounded-md px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
+                      >
+                        <span className="block text-xs font-semibold text-[var(--text)]">
+                          [{phrase.category}] {phrase.title}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-gray-500">
+                          {phrase.content}
+                        </span>
+                      </button>
+                    ))
                   )}
-                </div>
+                </Popover>
               </div>
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea

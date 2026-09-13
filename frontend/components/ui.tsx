@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -171,3 +172,200 @@ export const PageLoading: React.FC<{ label?: string }> = ({ label = '正在加�
     <span>{label}</span>
   </div>
 );
+
+interface TooltipProps {
+  /** 气泡内容，通常为一句操作或字段说明。 */
+  content: React.ReactNode;
+  /** 气泡方位；同侧空间不足时自动翻转到另一侧。 */
+  side?: 'top' | 'bottom';
+  /** 与触发器的水平对齐，贴边触发器用 right/left 防止溢出视口。 */
+  align?: 'left' | 'center' | 'right';
+  /** 触发器，通常为说明图标按钮：悬浮、聚焦或点击都会显示气泡。 */
+  children: React.ReactElement;
+}
+
+/** 通用说明气泡：挂载到 body 定位，不受父级 overflow 裁剪影响。 */
+export const Tooltip: React.FC<TooltipProps> = ({ content, side = 'top', align = 'center', children }) => {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number; resolvedSide: 'top' | 'bottom' } | null>(null);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const bubbleRef = useRef<HTMLSpanElement>(null);
+  const id = useId();
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const update = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 8;
+      const gap = 6;
+      const bubbleWidth = bubbleRef.current?.offsetWidth ?? 0;
+      const bubbleHeight = bubbleRef.current?.offsetHeight ?? 0;
+      const spaceAbove = rect.top - margin;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const resolvedSide: 'top' | 'bottom' = side === 'top'
+        ? (spaceAbove >= bubbleHeight || spaceAbove >= spaceBelow ? 'top' : 'bottom')
+        : (spaceBelow >= bubbleHeight || spaceBelow >= spaceAbove ? 'bottom' : 'top');
+      const left = align === 'left'
+        ? rect.left
+        : align === 'right'
+          ? rect.right - bubbleWidth
+          : rect.left + rect.width / 2 - bubbleWidth / 2;
+      setCoords({
+        top: resolvedSide === 'top' ? rect.top - bubbleHeight - gap : rect.bottom + gap,
+        left: Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - bubbleWidth - margin)),
+        resolvedSide,
+      });
+    };
+    update();
+    let frame = 0;
+    const requestUpdate = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    window.addEventListener('resize', requestUpdate);
+    window.addEventListener('scroll', requestUpdate, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', requestUpdate);
+      window.removeEventListener('scroll', requestUpdate, true);
+    };
+  }, [open, side, align, content]);
+
+  const trigger = React.isValidElement<{ 'aria-describedby'?: string }>(children)
+    ? React.cloneElement(children, { 'aria-describedby': open ? id : undefined })
+    : children;
+
+  return (
+    <>
+      <span
+        ref={rootRef}
+        className="ui-tooltip"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocusCapture={() => setOpen(true)}
+        onBlurCapture={() => setOpen(false)}
+        onClick={() => setOpen(true)}
+      >
+        {trigger}
+      </span>
+      {createPortal(
+        <span
+          ref={bubbleRef}
+          role="tooltip"
+          id={id}
+          className={`ui-tooltip__bubble ui-tooltip__bubble--${coords?.resolvedSide ?? side} ui-tooltip__bubble--${align} ${
+            open ? 'ui-tooltip__bubble--open' : ''
+          }`}
+          style={open && coords ? { top: coords.top, left: coords.left } : undefined}
+        >
+          {content}
+        </span>,
+        document.body,
+      )}
+    </>
+  );
+};
+
+interface PopoverProps {
+  open: boolean;
+  onClose: () => void;
+  trigger: React.ReactNode;
+  placement?: 'top' | 'bottom';
+  align?: 'left' | 'right';
+  panelClassName?: string;
+  children: React.ReactNode;
+  /** 面板挂载到 body 并按触发器定位：父级存在 overflow 裁剪或滚动容器时开启，避免下拉被截断。 */
+  portal?: boolean;
+}
+
+export const Popover: React.FC<PopoverProps> = ({
+  open,
+  onClose,
+  trigger,
+  placement = 'bottom',
+  align = 'left',
+  panelClassName = 'max-h-72 w-80',
+  children,
+  portal = false,
+}) => {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; minWidth: number } | null>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      onClose();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open, onClose]);
+
+  // portal 模式下面板挂到 body：按触发器实时定位，空间不足时自动翻转到另一侧，
+  // 并在页面滚动、缩放时跟随，保证下拉始终完整可见。
+  useLayoutEffect(() => {
+    if (!open || !portal) return undefined;
+    const update = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 8;
+      const panelHeight = panelRef.current?.offsetHeight ?? 0;
+      const panelWidth = panelRef.current?.offsetWidth ?? 0;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const spaceAbove = rect.top - margin;
+      const resolved: 'top' | 'bottom' = placement === 'top'
+        ? (spaceAbove >= panelHeight || spaceAbove >= spaceBelow ? 'top' : 'bottom')
+        : (spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? 'bottom' : 'top');
+      const top = resolved === 'top' ? rect.top - panelHeight - margin : rect.bottom + margin;
+      const left = align === 'left'
+        ? Math.min(rect.left, Math.max(margin, window.innerWidth - panelWidth - margin))
+        : Math.max(margin, Math.min(rect.right - panelWidth, window.innerWidth - panelWidth - margin));
+      setCoords({ top, left, minWidth: rect.width });
+    };
+    update();
+    let frame = 0;
+    const requestUpdate = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    window.addEventListener('resize', requestUpdate);
+    window.addEventListener('scroll', requestUpdate, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', requestUpdate);
+      window.removeEventListener('scroll', requestUpdate, true);
+    };
+  }, [open, portal, placement, align, children]);
+
+  const panelNode = (
+    <div
+      ref={panelRef}
+      className={`overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg ${
+        portal
+          ? 'fixed z-50'
+          : `absolute z-20 ${placement === 'top' ? 'bottom-8' : 'top-8'} ${align === 'left' ? 'left-0' : 'right-0'}`
+      } ${panelClassName}`}
+      style={portal && coords ? { top: coords.top, left: coords.left, minWidth: coords.minWidth } : undefined}
+    >
+      {children}
+    </div>
+  );
+
+  return (
+    <div ref={rootRef} className="relative">
+      {trigger}
+      {open && (portal ? createPortal(panelNode, document.body) : panelNode)}
+    </div>
+  );
+};

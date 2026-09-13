@@ -9,6 +9,7 @@ from enum import Enum
 from loguru import logger
 from utils import browser_limit
 import websockets
+from websockets.legacy.client import connect as websocket_connect
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
     generate_device_id, generate_sign, CAPTCHA_CHALLENGE_COOKIES
@@ -4750,6 +4751,82 @@ class XianyuLive:
             logger.error(f"获取AI回复失败: {self._safe_str(e)}")
             return None
 
+    async def get_logistics_reply(self, message_data, send_user_name: str, send_user_id: str,
+                                  send_message: str, item_id: str, chat_id: str, websocket=None):
+        """物流报价 Agent 分流。
+
+        返回 None 表示与物流无关，继续走关键词/AI/默认回复链路；
+        返回 {"send": bool, "messages": [...], "reason": str} 表示 Agent 已接管：
+        send=True 时所有消息已发送完成，send=False 时只记录草稿、不发送、
+        也不回退到通用 AI（避免通用模型自行猜测运费）。
+
+        发送闸门：发送前重新校验状态版本与报价表版本（claim_send），并发
+        登记待发送记录（唯一键防重发）；实际发送完成后回写 sent/failed，
+        发送中途失败不再标记成功。
+        """
+        try:
+            from app.db_manager import db_manager
+            from app.services.logistics_agent import LogisticsQuoteAgent
+
+            agent = LogisticsQuoteAgent(db_manager)
+            message_id = self._extract_message_id(message_data) or ""
+            decision = await asyncio.to_thread(
+                agent.handle_message,
+                message=send_message or "",
+                chat_id=chat_id,
+                cookie_id=self.cookie_id,
+                item_id=item_id or "",
+                message_id=message_id,
+            )
+            if decision is None:
+                return None
+            if decision.action == "ignore":
+                return {"send": False, "messages": [], "reason": decision.reason}
+            if not decision.messages:
+                return {"send": False, "messages": [], "reason": decision.reason or "no_message"}
+            if decision.action not in ("reply", "manual"):
+                # draft：生成但不发送（自动发送未开启）
+                return {"send": False, "messages": decision.messages, "reason": decision.reason}
+            # 统一发送闸门：状态或报价表在决策后又被更新时拒绝发送。
+            allowed = await asyncio.to_thread(
+                agent.claim_send,
+                cookie_id=self.cookie_id,
+                chat_id=chat_id,
+                item_id=item_id or "",
+                message_id=message_id,
+                state_version=decision.state_version,
+                book_sha256=decision.book_sha256,
+            )
+            if not allowed:
+                logger.warning(
+                    f"【{self.cookie_id}】物流Agent发送被闸门拦截（状态或报价表已更新）: "
+                    f"message_id={message_id}, reason={decision.reason}"
+                )
+                return {"send": False, "messages": decision.messages, "reason": "send_blocked"}
+            send_failed = False
+            try:
+                for agent_message in decision.messages:
+                    await self.send_msg(websocket, chat_id, send_user_id, agent_message)
+            except Exception as e:
+                send_failed = True
+                logger.error(f"物流 Agent 发送失败: 账号={self.cookie_id}, 错误={self._safe_str(e)}")
+            await asyncio.to_thread(
+                agent.mark_send_result,
+                cookie_id=self.cookie_id,
+                chat_id=chat_id,
+                item_id=item_id or "",
+                message_id=message_id,
+                success=not send_failed,
+            )
+            return {
+                "send": not send_failed,
+                "messages": decision.messages,
+                "reason": decision.reason if not send_failed else "send_failed",
+            }
+        except Exception as e:
+            logger.error(f"物流 Agent 处理失败: 账号={self.cookie_id}, 错误={self._safe_str(e)}")
+            return None
+
     def _parse_price(self, price_str: str) -> float:
         """解析价格字符串为数字"""
         try:
@@ -9057,67 +9134,15 @@ class XianyuLive:
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        # 兼容不同版本的websockets库
-        try:
-            async with websockets.connect(
-                self.base_url,
-                extra_headers=headers
-            ) as websocket:
-                await self._handle_websocket_connection(websocket, toid, item_id, text)
-        except TypeError as e:
-            # 安全地检查异常信息
-            error_msg = self._safe_str(e)
-
-            if "extra_headers" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，使用兼容模式")
-                # 使用兼容模式，通过subprotocols传递部分头信息
-                async with websockets.connect(
-                    self.base_url,
-                    additional_headers=headers
-                ) as websocket:
-                    await self._handle_websocket_connection(websocket, toid, item_id, text)
-            else:
-                raise
+        async with await self._create_websocket_connection(headers) as websocket:
+            await self._handle_websocket_connection(websocket, toid, item_id, text)
 
     async def _create_websocket_connection(self, headers):
-        """创建WebSocket连接，兼容不同版本的websockets库"""
-        import websockets
-
-        # 获取websockets版本用于调试
-        websockets_version = getattr(websockets, '__version__', '未知')
-        logger.warning(f"websockets库版本: {websockets_version}")
-
-        try:
-            # 尝试使用extra_headers参数
-            return websockets.connect(
-                self.base_url,
-                extra_headers=headers
-            )
-        except Exception as e:
-            # 捕获所有异常类型，不仅仅是TypeError
-            error_msg = self._safe_str(e)
-            logger.warning(f"extra_headers参数失败: {error_msg}")
-
-            if "extra_headers" in error_msg or "unexpected keyword argument" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，尝试additional_headers")
-                # 使用additional_headers参数（较新版本）
-                try:
-                    return websockets.connect(
-                        self.base_url,
-                        additional_headers=headers
-                    )
-                except Exception as e2:
-                    error_msg2 = self._safe_str(e2)
-                    logger.warning(f"additional_headers参数失败: {error_msg2}")
-
-                    if "additional_headers" in error_msg2 or "unexpected keyword argument" in error_msg2:
-                        # 如果都不支持，则不传递headers
-                        logger.warning("websockets库不支持headers参数，使用基础连接模式")
-                        return websockets.connect(self.base_url)
-                    else:
-                        raise e2
-            else:
-                raise e
+        """保留原有 extra_headers、closed 和直连语义，供所有闲鱼连接共用。"""
+        # 新版默认 connect 使用 additional_headers 且自动读取代理；legacy 接口
+        # 保持 websockets 12 的行为，同时让 Agent 使用同包中的 asyncio 接口。
+        logger.info(f"websockets库版本: {websockets.__version__}，闲鱼使用 legacy 客户端")
+        return websocket_connect(self.base_url, extra_headers=headers)
 
     async def _handle_websocket_connection(self, websocket, toid, item_id, text):
         """处理WebSocket连接的具体逻辑"""
@@ -9555,6 +9580,39 @@ class XianyuLive:
             reply = None
             reply_strategy = "none"
             matched_keyword = None
+
+            # 让物流 Agent 先看到原始买家消息；API/关键词先返回会把物流询价截走。
+            logistics_result = await self.get_logistics_reply(
+                message_data, send_user_name, send_user_id, send_message, item_id, chat_id, websocket
+            )
+            if logistics_result is not None:
+                reply_strategy = "logistics_agent"
+                if logistics_result["send"]:
+                    self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="success",
+                        decision_reason=f"logistics_{logistics_result['reason']}",
+                        reply_strategy=reply_strategy,
+                        reply_text="\n".join(logistics_result["messages"]),
+                        send_status="success",
+                    )
+                    msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    logger.info(f"【物流Agent发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 共 {len(logistics_result['messages'])} 条消息")
+                else:
+                    self._add_reply_decision_log(
+                        message_data,
+                        **log_context,
+                        process_status="skipped",
+                        decision_reason=f"logistics_{logistics_result['reason']}",
+                        reply_strategy=reply_strategy,
+                        reply_text="\n".join(logistics_result["messages"]),
+                        send_status="unknown",
+                    )
+                    msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                    logger.info(f"【{self.cookie_id}】物流Agent未发送（{logistics_result['reason']}），不回退到通用AI")
+                return
+
             # 判断是否启用API回复
             if AUTO_REPLY.get('api', {}).get('enabled', False):
                 reply = await self.get_api_reply(
@@ -9592,7 +9650,7 @@ class XianyuLive:
                     reply_strategy = "keyword"
                     matched_keyword = self._find_reply_keyword(send_message, item_id)
                 else:
-                    # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
+                    # 2. 关键词匹配失败后再交给通用 AI 回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
