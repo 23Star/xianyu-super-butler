@@ -1302,3 +1302,12 @@ Agent 包（新增 `app/services/logistics_agent/`）：
 
 ## AutoRedFlower 整合
 - 已合并 AutoRedFlower 分支，包含自动收小红花及工作流/UI 重构。
+
+## 主分支整合完成（2026-09-13）
+- 已将 ai/PriceQuote、SKU-Limit、AutoRedFlower 三个功能分支以非快进合并提交整合到 main，并同步 origin/main 的网络统计更新。
+- 前端执行 
+pm run build 成功（Vite 2401 modules）。
+- Python compileall 执行完成，退出码 0。
+- python -m pytest -q 当前环境未能收集测试：缺少 execjs、langchain_core、qrcode 等依赖；需按 requirements.txt 安装依赖后重跑。
+## 发布状态
+- 下一步将 main 推送到 origin/main。
