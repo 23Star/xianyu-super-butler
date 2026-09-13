@@ -31,6 +31,7 @@ from app.delivery_template import (
     send_payload as send_delivery_payload,
 )
 from app.specification import combine_legacy_specification
+from app.notification_events import resolve_event_type
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 from utils.message_utils import extract_received_flower_order, is_official_card_message
 
@@ -1994,7 +1995,8 @@ class XianyuLive:
                                     send_user_id,
                                     item_id,
                                     f"订单命中“{protection_result['rule_name']}”并已关闭，仅发送卡券成功",
-                                    chat_id
+                                    chat_id,
+                                    event_type="delivery_success"
                                 )
                             elif confirm_required and not platform_confirmed:
                                 await self.send_delivery_failure_notification(
@@ -2002,12 +2004,13 @@ class XianyuLive:
                                     send_user_id,
                                     item_id,
                                     f"卡券已全部发送，但闲鱼确认发货失败，请手动确认：{confirm_error}",
-                                    chat_id
+                                    chat_id,
+                                    event_type="delivery_confirm_failed"
                                 )
                             elif len(delivery_contents) > 1:
-                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {sent_count} 个卡券", chat_id)
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"多数量发货成功，共发送 {sent_count} 个卡券", chat_id, event_type="delivery_success")
                             else:
-                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
+                                await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id, event_type="delivery_success")
                         else:
                             # 内容可能已从批量卡池取出，自动重试可能重复消耗或重复发送，转人工处理。
                             self.delivery_blocked_orders.add(order_id)
@@ -3011,7 +3014,7 @@ class XianyuLive:
                 """通知回调包装函数，支持接收截图路径和验证链接"""
                 await self.send_token_refresh_notification(
                     error_message=message,
-                    notification_type="token_refresh",
+                    notification_type="face_verification",
                     chat_id=None,
                     attachment_path=screenshot_path,
                     verification_url=verification_url
@@ -4825,8 +4828,8 @@ class XianyuLive:
         except:
             return 0.0
 
-    async def send_system_notification(self, message: str) -> int:
-        """把系统级消息推送到该账号绑定的全部通知渠道。
+    async def send_system_notification(self, message: str, event_type: str = "delivery_timeout") -> int:
+        """把系统级消息推送到该账号绑定了该事件类型的通知渠道。
 
         与 :meth:`send_notification` 的区别是不依赖买家消息上下文，
         供发货超时告警这类主动通知使用。
@@ -4840,7 +4843,9 @@ class XianyuLive:
         try:
             from app.db_manager import db_manager
 
-            notifications = db_manager.get_account_notifications(self.cookie_id) or []
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            ) or []
         except Exception as e:
             logger.error(f"📱 读取通知渠道失败: {self._safe_str(e)}")
             return 0
@@ -4927,8 +4932,10 @@ class XianyuLive:
 
             logger.info(f"📱 开始发送消息通知 - 账号: {self.cookie_id}, 买家: {send_user_name}")
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 获取当前账号订阅了买家消息的通知规则
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type="buyer_message"
+            )
 
             if not notifications:
                 logger.warning(f"📱 账号 {self.cookie_id} 未配置消息通知，跳过通知发送")
@@ -5495,11 +5502,14 @@ class XianyuLive:
 
             from app.db_manager import db_manager
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 按事件类型获取当前账号订阅的通知规则
+            event_type = resolve_event_type(notification_type)
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            )
 
             if not notifications:
-                logger.warning("未配置消息通知，跳过Token刷新通知")
+                logger.warning(f"未配置订阅 {event_type} 事件的通知规则，跳过Token刷新通知")
                 return
 
             # 构造通知消息
@@ -5655,16 +5665,20 @@ class XianyuLive:
 
         return False
 
-    async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str, item_id: str, error_message: str, chat_id: str = None):
-        """发送自动发货失败通知"""
+    async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str,
+                                                 item_id: str, error_message: str,
+                                                 chat_id: str = None, event_type: str = "delivery_failed"):
+        """发送自动发货结果通知，按事件类型筛选订阅规则"""
         try:
             from app.db_manager import db_manager
 
-            # 获取当前账号的通知配置
-            notifications = db_manager.get_account_notifications(self.cookie_id)
+            # 按事件类型获取当前账号订阅的通知规则
+            notifications = db_manager.get_account_notifications(
+                self.cookie_id, event_type=event_type
+            )
 
             if not notifications:
-                logger.warning("未配置消息通知，跳过自动发货通知")
+                logger.warning(f"未配置订阅 {event_type} 事件的通知规则，跳过自动发货通知")
                 return
 
             # 构造通知消息

@@ -444,6 +444,52 @@ test('exact tier still wins over banded continued at same weight', () => {
   }, { weight_kg: 7 })).quotes[0].base_price, 20); // 续重 5 → 10 + 5 * 2
 });
 
+test('tiers_up_to picks the smallest tier not below the chargeable weight', () => {
+  const table = { tiers: { 1: 12, 3: 19, 5: 27 }, tiers_up_to: true };
+  const price = (weight_kg) => calculateLogisticsQuote(input({ price_table: table }, { weight_kg })).quotes[0].base_price;
+  assert.equal(price(1), 12);
+  assert.equal(price(2), 19); // 3KG以内档
+  assert.equal(price(4), 27); // 5KG以内档
+  const overflow = calculateLogisticsQuote(input({
+    price_table: {
+      tiers: { 1: 16, 3: 28 }, tiers_up_to: true,
+      first_weight: 3, first_weight_price: 28,
+      continued_unit: 1, continued_weight_price: 4.2,
+    },
+  }, { weight_kg: 6 }));
+  assert.equal(overflow.quotes[0].base_price, 40.6); // 超出最大档 → 28 + 3 * 4.2
+});
+
+test('total-basis continued tiers match the chargeable weight, not the continued part', () => {
+  const table = {
+    first_weight: 30, first_weight_price: 50, continued_unit: 1,
+    continued_tiers: { 100: 1.5, 500: 1.3 }, overflow_continued_price: 1.1,
+    continued_tiers_basis: 'total',
+  };
+  const price = (weight_kg) => calculateLogisticsQuote(input({ price_table: table }, { weight_kg })).quotes[0].base_price;
+  assert.equal(price(30), 50);
+  assert.equal(price(100), 155); // 总重≤100 → 50 + 70 * 1.5
+  assert.equal(price(130), 180); // 总重 130 ≤ 500 → 50 + 100 * 1.3（按总重选档）
+  assert.equal(price(530), 600); // 总重 > 500 → 50 + 500 * 1.1
+  const continued = { ...table, continued_tiers_basis: 'continued' };
+  assert.equal(calculateLogisticsQuote(input({ price_table: continued }, { weight_kg: 130 })).quotes[0].base_price, 200);
+  assert.equal(calculateLogisticsQuote(input({ price_table: { ...table, continued_tiers_basis: undefined } }, { weight_kg: 130 })).quotes[0].base_price, 200);
+});
+
+for (const carrier of [
+  { price_table: { tiers: { 3: 10 }, tiers_up_to: 'yes' } },
+  { price_table: { tiers_up_to: true } },
+  { price_table: { continued_tiers: { 100: 1.3 }, first_weight: 30, first_weight_price: 40, overflow_continued_price: 1, continued_tiers_basis: 'weight' } },
+  { price_table: { continued_tiers_basis: 'total' } },
+  { price_table: { minimum_price: 5, per_kg_price: 2, tiers_up_to: true } },
+]) {
+  test(`reject invalid tier options: ${JSON.stringify(carrier)}`, () => {
+    const result = calculateLogisticsQuote(input(carrier));
+    assert.equal(result.success, false);
+    assert.equal(result.quotes.length, 0);
+  });
+}
+
 const input = (carrier = {}, shipment = {}) => ({
   weight_kg: 5, ...shipment,
   quote_config: { carriers: { 普通快递: { price_table: { first_weight_price: 12, continued_weight_price: 4.8 }, ...carrier } } },

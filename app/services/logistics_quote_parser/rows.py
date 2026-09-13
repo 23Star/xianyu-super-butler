@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .headers import _CORE_FIELDS, FIELD_ALIASES
@@ -9,11 +10,17 @@ from .rules import _infer_book_kind, _infer_rule_type, _missing_price_fields
 from .values import (
     _cell_text,
     _label,
+    _normalize_text,
     _parse_amount,
     _parse_eta,
     _parse_weight,
     _region_text,
 )
+
+# 疑似分档写法（价格列出现区间/上下界但未被识别为分档时，必须转人工确认）。
+_BAND_MARKER_RE = re.compile(r"≤|≤|<|>|以上|以下|以内|区间|\d\s*[-~至到]\s*\d")
+# "首重(NKG)"/"续重(NKG)"这类显式单位标签是合法的平铺价格列写法。
+_EXPLICIT_UNIT_LABEL_RE = re.compile(r"首重\s*[（(]|续重\s*[（(]")
 
 
 def _build_row_result(
@@ -44,8 +51,8 @@ def _build_row_result(
             if error:
                 issues.append(f"阶梯续重价：{error}（原文：{text}）")
                 continue
-            lower, upper = spec["tier"]
-            tier: dict[str, Any] = {"price_per_kg": number}
+            lower, upper, basis = spec["tier"]
+            tier: dict[str, Any] = {"price_per_kg": number, "basis": basis}
             if lower is not None:
                 tier["min_exclusive_kg"] = lower
             if upper is not None:
@@ -62,7 +69,9 @@ def _build_row_result(
                 issues.append(f"固定重量档价格：{error}（原文：{text}）")
                 continue
             tiers = list(values["fixed_tiers"] or [])
-            tiers.append({"up_to_kg": spec["up_to_kg"], "price": number})
+            tiers.append(
+                {"up_to_kg": spec["up_to_kg"], "price": number, "up_to": bool(spec.get("up_to"))}
+            )
             values["fixed_tiers"] = tiers
             continue
         if not text:
@@ -87,8 +96,6 @@ def _build_row_result(
             carrier_source = headers.get(column)
         if field == "origin_province" and spec.get("candidate"):
             issues.append("「发件省」来自异常表头的候选映射，需人工确认")
-        if field == "first_price" and spec.get("semantics") == "最低价":
-            issues.append(f"「{spec.get('header') or text}」为最低价语义，适用规则需确认")
 
     for column, spec in specs.items():
         implied = spec.get("implied_weight")
@@ -97,9 +104,14 @@ def _build_row_result(
         field = spec.get("field") or mapping.get(column)
         if field == "first_price" and values["first_weight_kg"] is None:
             values["first_weight_kg"] = implied
-            issues.append(f"「{_label('first_weight_kg')}」由表头推导（{implied:g}KG），语义需确认")
         elif field == "continued_price" and values["continued_unit_kg"] is None:
             values["continued_unit_kg"] = implied
+        if field in ("first_price", "continued_price"):
+            header_text = _normalize_text(headers.get(column))
+            if not _EXPLICIT_UNIT_LABEL_RE.search(header_text) and _BAND_MARKER_RE.search(header_text):
+                # 形如"续重价格>100KG"的列没有被识别为分档时，绝不能按平铺
+                # 续重价使用，否则表头数字会被误当成续重单位。
+                issues.append(f"「{header_text}」疑似分档表头但未识别为分档，需人工确认")
 
     if values["carrier"] is None and sheet_carrier:
         values["carrier"] = sheet_carrier
@@ -107,13 +119,17 @@ def _build_row_result(
 
     if values["continued_tiers"]:
         values["continued_tiers"].sort(key=lambda item: item.get("min_exclusive_kg", 0))
-        issues.append(f"续重为阶梯计价（{len(values['continued_tiers'])} 档），计费规则需确认")
+        bases = {tier.get("basis") for tier in values["continued_tiers"]}
+        if len(bases) > 1:
+            issues.append("续重分档混用「续重重量」「计费重量」口径，需人工确认")
 
     if values["fixed_tiers"]:
         values["fixed_tiers"].sort(key=lambda item: item["up_to_kg"])
         fixed_weights = [tier["up_to_kg"] for tier in values["fixed_tiers"]]
         if len(fixed_weights) != len(set(fixed_weights)):
             issues.append("固定重量档存在重复上限，需人工确认")
+        if len({bool(tier.get("up_to")) for tier in values["fixed_tiers"]}) > 1:
+            issues.append("固定重量档混用「以内/以下」与精确重量表头，档位语义需人工确认")
 
     if values["route"] is None:
         origin = _region_text(values["origin_province"], values["origin_city"], values["origin"])

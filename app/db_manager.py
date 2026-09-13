@@ -17,6 +17,9 @@ from app.specification import (
     specification_text,
 )
 
+_UNSET = object()
+
+
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
     
@@ -839,18 +842,19 @@ class DBManager:
             )
             ''')
 
-            # 创建消息通知配置表
+            # 创建消息通知规则表（同一账号+渠道可有多条规则，按事件类型区分）
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS message_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cookie_id TEXT NOT NULL,
                 channel_id INTEGER NOT NULL,
+                name TEXT,
+                event_types TEXT,
                 enabled BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
-                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE,
-                UNIQUE(cookie_id, channel_id)
+                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE
             )
             ''')
 
@@ -1217,6 +1221,13 @@ class DBManager:
                 self.upgrade_item_multi_quantity_default(cursor)
                 self.set_system_setting("db_version", "1.6", "数据库版本号")
                 logger.info("数据库升级到版本1.6完成")
+
+            # 升级到版本1.7 - 消息通知绑定支持规则名和事件类型订阅
+            if current_version < "1.7":
+                logger.info("开始升级数据库到版本1.7...")
+                self.upgrade_message_notifications_rules(cursor)
+                self.set_system_setting("db_version", "1.7", "数据库版本号")
+                logger.info("数据库升级到版本1.7完成")
 
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
@@ -1772,6 +1783,66 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"升级notification_channels表类型失败: {e}")
+            raise
+
+    def upgrade_message_notifications_rules(self, cursor):
+        """把账号通知绑定升级为可按事件类型订阅的规则。
+
+        旧表 UNIQUE(cookie_id, channel_id) 限制同一账号同一渠道只能有一条绑定，
+        且没有规则名和事件类型字段。这里重建表并原样保留旧数据，旧记录的
+        event_types 为空，表示继续接收全部事件。
+        """
+        try:
+            logger.info("开始升级message_notifications表...")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='message_notifications'"
+            )
+            if not cursor.fetchone():
+                logger.info("message_notifications表不存在，无需升级")
+                return
+
+            columns = {
+                row[1]
+                for row in cursor.execute("PRAGMA table_info(message_notifications)").fetchall()
+            }
+            unique_indexes = [
+                row
+                for row in cursor.execute("PRAGMA index_list(message_notifications)").fetchall()
+                if len(row) > 3 and row[2] and row[3] == 'u'
+            ]
+            if 'event_types' in columns and not unique_indexes:
+                logger.info("message_notifications表已是规则结构，无需升级")
+                return
+
+            name_expr = "name" if "name" in columns else "NULL"
+            event_expr = "event_types" if "event_types" in columns else "NULL"
+
+            cursor.execute("DROP TABLE IF EXISTS message_notifications_new")
+            cursor.execute('''
+            CREATE TABLE message_notifications_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                name TEXT,
+                event_types TEXT,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
+                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(f'''
+            INSERT INTO message_notifications_new
+                (id, cookie_id, channel_id, name, event_types, enabled, created_at, updated_at)
+            SELECT id, cookie_id, channel_id, {name_expr}, {event_expr}, enabled, created_at, updated_at
+            FROM message_notifications
+            ''')
+            cursor.execute("DROP TABLE message_notifications")
+            cursor.execute("ALTER TABLE message_notifications_new RENAME TO message_notifications")
+            logger.info("message_notifications表升级完成")
+        except Exception as e:
+            logger.error(f"升级message_notifications表失败: {e}")
             raise
 
     def upgrade_cookies_table_for_account_login(self, cursor):
@@ -3169,31 +3240,163 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    # -------------------- 消息通知配置操作 --------------------
-    def set_message_notification(self, cookie_id: str, channel_id: int, enabled: bool = True) -> bool:
-        """设置账号的消息通知"""
+    # -------------------- 消息通知规则操作 --------------------
+    def set_message_notification(self, cookie_id: str, channel_id: int, enabled: bool = True,
+                                 name=_UNSET, event_types=_UNSET) -> bool:
+        """设置账号+渠道的通知规则（存在则更新第一条，不存在则创建）。
+
+        name/event_types 未传入时保留原值，旧客户端仅开关绑定时不会清掉规则订阅。
+        """
+        from app.notification_events import serialize_event_types
+
+        if event_types is _UNSET:
+            serialized_event_types = _UNSET
+        else:
+            try:
+                serialized_event_types = serialize_event_types(event_types)
+            except ValueError as e:
+                logger.error(f"设置消息通知失败: {e}")
+                return False
+
+        normalized_name = _UNSET if name is _UNSET else ((name or '').strip() or None)
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT OR REPLACE INTO message_notifications (cookie_id, channel_id, enabled)
-                VALUES (?, ?, ?)
-                ''', (cookie_id, channel_id, enabled))
+                SELECT id FROM message_notifications
+                WHERE cookie_id = ? AND channel_id = ?
+                ORDER BY id LIMIT 1
+                ''', (cookie_id, channel_id))
+                row = cursor.fetchone()
+                if row:
+                    assignments = ["enabled = ?", "updated_at = CURRENT_TIMESTAMP"]
+                    params = [enabled]
+                    if normalized_name is not _UNSET:
+                        assignments.append("name = ?")
+                        params.append(normalized_name)
+                    if serialized_event_types is not _UNSET:
+                        assignments.append("event_types = ?")
+                        params.append(serialized_event_types)
+                    params.append(row[0])
+                    cursor.execute(
+                        f"UPDATE message_notifications SET {', '.join(assignments)} WHERE id = ?",
+                        params,
+                    )
+                    logger.debug(f"更新消息通知规则: {cookie_id} -> {channel_id} (ID: {row[0]})")
+                else:
+                    cursor.execute('''
+                    INSERT INTO message_notifications (cookie_id, channel_id, name, event_types, enabled)
+                    VALUES (?, ?, ?, ?, ?)
+                    ''', (
+                        cookie_id,
+                        channel_id,
+                        None if normalized_name is _UNSET else normalized_name,
+                        None if serialized_event_types is _UNSET else serialized_event_types,
+                        enabled,
+                    ))
+                    logger.debug(f"创建消息通知规则: {cookie_id} -> {channel_id}")
                 self.conn.commit()
-                logger.debug(f"设置消息通知: {cookie_id} -> {channel_id}")
                 return True
             except Exception as e:
                 logger.error(f"设置消息通知失败: {e}")
                 self.conn.rollback()
                 return False
 
-    def get_account_notifications(self, cookie_id: str, user_id: int = None) -> List[Dict[str, any]]:
-        """获取账号的通知配置"""
+    def create_notification_rule(self, cookie_id: str, channel_id: int, name: str = None,
+                                 event_types=None, enabled: bool = True) -> int:
+        """创建账号通知规则"""
+        from app.notification_events import serialize_event_types
+
+        serialized_event_types = serialize_event_types(event_types)
+        normalized_name = (name or '').strip() or None
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+            INSERT INTO message_notifications (cookie_id, channel_id, name, event_types, enabled)
+            VALUES (?, ?, ?, ?, ?)
+            ''', (cookie_id, channel_id, normalized_name, serialized_event_types, enabled))
+            self.conn.commit()
+            rule_id = cursor.lastrowid
+            logger.debug(f"创建通知规则: {cookie_id} -> {channel_id} (ID: {rule_id})")
+            return rule_id
+
+    def get_notification_rule(self, rule_id: int, user_id: int = None) -> Optional[Dict[str, any]]:
+        """获取指定通知规则"""
+        from app.notification_events import parse_event_types
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 sql = '''
-                SELECT mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
+                SELECT mn.id, mn.cookie_id, mn.channel_id, mn.name, mn.event_types,
+                       mn.enabled, nc.name, nc.type
+                FROM message_notifications mn
+                JOIN notification_channels nc ON mn.channel_id = nc.id
+                WHERE mn.id = ?
+                '''
+                params = [rule_id]
+                if user_id is not None:
+                    sql += ' AND mn.cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)'
+                    params.append(user_id)
+                cursor.execute(sql, params)
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'id': row[0],
+                    'cookie_id': row[1],
+                    'channel_id': row[2],
+                    'name': row[3],
+                    'event_types': parse_event_types(row[4]),
+                    'enabled': bool(row[5]),
+                    'channel_name': row[6],
+                    'channel_type': row[7],
+                }
+            except Exception as e:
+                logger.error(f"获取通知规则失败: {e}")
+                return None
+
+    def update_notification_rule(self, rule_id: int, name: str = None, event_types=None,
+                                 enabled: bool = True, user_id: int = None) -> bool:
+        """更新通知规则的名称、订阅事件和启用状态"""
+        from app.notification_events import serialize_event_types
+
+        serialized_event_types = serialize_event_types(event_types)
+        normalized_name = (name or '').strip() or None
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is not None:
+                    cursor.execute('''
+                    UPDATE message_notifications
+                    SET name = ?, event_types = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                    ''', (normalized_name, serialized_event_types, enabled, rule_id, user_id))
+                else:
+                    cursor.execute('''
+                    UPDATE message_notifications
+                    SET name = ?, event_types = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''', (normalized_name, serialized_event_types, enabled, rule_id))
+                self.conn.commit()
+                logger.debug(f"更新通知规则: {rule_id}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新通知规则失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def get_account_notifications(self, cookie_id: str, user_id: int = None,
+                                  event_type: str = None) -> List[Dict[str, any]]:
+        """获取账号的通知规则，可按事件类型过滤"""
+        from app.notification_events import parse_event_types
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                sql = '''
+                SELECT mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config,
+                       mn.name, mn.event_types
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
                 JOIN cookies c ON mn.cookie_id = c.id
@@ -3210,13 +3413,18 @@ class DBManager:
 
                 notifications = []
                 for row in cursor.fetchall():
+                    rule_event_types = parse_event_types(row[7])
+                    if event_type and rule_event_types and event_type not in rule_event_types:
+                        continue
                     notifications.append({
                         'id': row[0],
                         'channel_id': row[1],
                         'enabled': bool(row[2]),
                         'channel_name': row[3],
                         'channel_type': row[4],
-                        'channel_config': row[5]
+                        'channel_config': row[5],
+                        'name': row[6],
+                        'event_types': rule_event_types,
                     })
 
                 return notifications
@@ -3225,12 +3433,15 @@ class DBManager:
                 return []
 
     def get_all_message_notifications(self, user_id: int = None) -> Dict[str, List[Dict[str, any]]]:
-        """获取所有账号的通知配置"""
+        """获取所有账号的通知规则"""
+        from app.notification_events import parse_event_types
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 sql = '''
-                SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
+                SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config,
+                       mn.name, mn.event_types
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
                 JOIN cookies c ON mn.cookie_id = c.id
@@ -3257,7 +3468,9 @@ class DBManager:
                         'enabled': bool(row[3]),
                         'channel_name': row[4],
                         'channel_type': row[5],
-                        'channel_config': row[6]
+                        'channel_config': row[6],
+                        'name': row[7],
+                        'event_types': parse_event_types(row[8]),
                     })
 
                 return result

@@ -376,7 +376,23 @@ export interface MessageNotification {
   channel_id: number;
   channel_name: string;
   channel_type?: NotificationChannelType;
+  name?: string | null;
+  event_types?: string[] | null;
   enabled: boolean;
+}
+
+export type NotificationPriority = 'critical' | 'warning' | 'info';
+
+export interface NotificationEventDefinition {
+  id: string;
+  label: string;
+  priority: NotificationPriority;
+  description: string;
+}
+
+export interface NotificationPriorityDefinition {
+  id: NotificationPriority;
+  label: string;
 }
 
 export interface RiskControlLog {

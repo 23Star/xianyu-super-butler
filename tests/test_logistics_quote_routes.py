@@ -138,6 +138,72 @@ class PriceModelTests(unittest.TestCase):
         self.assertIsNone(build_price_model({"rule_type": "banded_additional", "first_price": 42.0}))
         self.assertIsNone(build_price_model({"rule_type": "unknown_rule"}))
 
+    def test_overflow_without_first_price_uses_largest_tier(self):
+        """没有显式首重列时，用最大固定档作为溢出段起点，而不是丢弃整行。"""
+        model = build_price_model({
+            "rule_type": "fixed_tiers_overflow",
+            "fixed_tiers": [
+                {"up_to_kg": 1.0, "price": 16.0, "up_to": False},
+                {"up_to_kg": 3.0, "price": 28.0, "up_to": False},
+            ],
+            "first_price": None,
+            "continued_price": 4.2,
+            "continued_unit_kg": 1.0,
+            "raw": {"1KG价格": "16", "3KG价格": "28", "续重(1KG)价格": "4.2"},
+        })
+        self.assertEqual(model, {
+            "tiers": {"1": 16.0, "3": 28.0},
+            "first_weight": 3.0,
+            "first_weight_price": 28.0,
+            "continued_unit": 1.0,
+            "continued_weight_price": 4.2,
+        })
+
+    def test_up_to_fixed_tiers_flag(self):
+        model = build_price_model({
+            "rule_type": "fixed_tiers",
+            "fixed_tiers": [
+                {"up_to_kg": 1.0, "price": 12.0, "up_to": True},
+                {"up_to_kg": 3.0, "price": 19.0, "up_to": True},
+            ],
+            "raw": {},
+        })
+        self.assertEqual(model, {"tiers": {"1": 12.0, "3": 19.0}, "tiers_up_to": True})
+
+    def test_total_basis_banded_model(self):
+        model = build_price_model({
+            "rule_type": "banded_additional",
+            "first_weight_kg": 30.0,
+            "first_price": 50.0,
+            "continued_tiers": [
+                {"min_exclusive_kg": 0.0, "max_inclusive_kg": 100.0, "price_per_kg": 1.5, "basis": "total"},
+                {"min_exclusive_kg": 100.0, "max_inclusive_kg": 500.0, "price_per_kg": 1.3, "basis": "total"},
+                {"min_exclusive_kg": 500.0, "price_per_kg": 1.1, "basis": "total"},
+            ],
+            "raw": {},
+        })
+        self.assertEqual(model, {
+            "first_weight": 30.0,
+            "first_weight_price": 50.0,
+            "continued_unit": 1.0,
+            "continued_tiers": {"100": 1.5, "500": 1.3},
+            "overflow_continued_price": 1.1,
+            "continued_tiers_basis": "total",
+        })
+
+    def test_mixed_tier_bases_are_rejected(self):
+        self.assertIsNone(build_price_model({
+            "rule_type": "banded_additional",
+            "first_weight_kg": 30.0,
+            "first_price": 50.0,
+            "continued_tiers": [
+                {"max_inclusive_kg": 100.0, "price_per_kg": 1.5, "basis": "continued"},
+                {"min_exclusive_kg": 100.0, "max_inclusive_kg": 500.0, "price_per_kg": 1.3, "basis": "total"},
+                {"min_exclusive_kg": 500.0, "price_per_kg": 1.1, "basis": "total"},
+            ],
+            "raw": {},
+        }))
+
 
 class RouteImportTests(unittest.TestCase):
     def test_build_route_rows_from_express_csv(self):
@@ -165,6 +231,18 @@ class RouteImportTests(unittest.TestCase):
         duplicated = EXPRESS_CSV.decode("utf-8-sig") + "中通,江西省,河北省,5,2\n"
         rows, _ = build_route_rows(parse_csv(duplicated.encode("utf-8-sig")))
         self.assertEqual(len(rows), 4)
+
+    def test_review_rows_are_not_imported(self):
+        """存在语义疑点的行不进入线路明细，避免错误价格直接生效。"""
+        result = parse_csv(EXPRESS_CSV)
+        for row in result["rows"]:
+            if row["carrier"] == "中通" and row["destination_province"] == "河北省":
+                row["review_state"] = "review"
+        rows, warnings = build_route_rows(result)
+        self.assertFalse(any(
+            row["carrier"] == "中通" and row["dest_province"] == "河北" for row in rows
+        ))
+        self.assertTrue(any("需人工确认" in warning for warning in warnings))
 
 
 class RouteServiceTestDatabase:

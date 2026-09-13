@@ -58,25 +58,75 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 # 表头模式规则：优先于别名词典，区分"首重(30KG)价格"这类复合表头中的价格列与重量列。
+# "首重(元/KG)"这类只有计价单位、没有"价格"字样的列也按价格处理，避免被别名词典当成重量。
 _HEADER_FIELD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"首重[^。]*?(价格|费用|价|费)", re.IGNORECASE), "first_price"),
-    (re.compile(r"续重[^。]*?(价格|费用|价|费)", re.IGNORECASE), "continued_price"),
+    (re.compile(r"首重[^。]*?(价格|费用|单价|价|费|元\s*/\s*(?:kg|公斤|千克))", re.IGNORECASE), "first_price"),
+    (re.compile(r"续重[^。]*?(价格|费用|单价|价|费|元\s*/\s*(?:kg|公斤|千克))", re.IGNORECASE), "continued_price"),
     (re.compile(r"最低价格|最低价"), "first_price"),
     (re.compile(r"首重.*(重量|kg|公斤)", re.IGNORECASE), "first_weight_kg"),
     (re.compile(r"续重.*(重量|kg|公斤)", re.IGNORECASE), "continued_unit_kg"),
 )
 
-# 阶梯续重表头（如"0<续重重量≤100kg / 续重价格"或"0<续重重量≤100kg续重价格"），返回 (下界, 上界)；开放档上界为 None。
-_TIER_HEADER_RE = re.compile(
-    r"^(?:(\d+(?:\.\d+)?)\s*<\s*)?续重(?:重量)?\s*(?:≤|<=)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
-    re.IGNORECASE,
+# 分档表头。返回 (下界, 上界, 口径)，口径 basis 取值 "continued"（续重部分）或
+# "total"（计费重量/总重量）；开放档上界为 None。表头写法与口径的对应关系：
+# - "0<续重重量≤100kg"、"续重0-100KG"：区间针对续重部分；
+# - "0<计费重量≤100kg"、"0<总重量≤100kg"：区间针对计费总重；
+# - "0-100KG续重价格"：区间写在前面时按计费总重理解。
+_TIER_BANDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^(?:(\d+(?:\.\d+)?)\s*<\s*)?续重(?:重量)?\s*(?:≤|<=)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
+            re.IGNORECASE,
+        ),
+        "continued",
+    ),
+    (
+        re.compile(
+            r"^续重(?:重量|价格)?\s*[（(]?\s*(\d+(?:\.\d+)?)\s*[-~至到]\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
+            re.IGNORECASE,
+        ),
+        "continued",
+    ),
+    (
+        re.compile(
+            r"^(?:(\d+(?:\.\d+)?)\s*<\s*)?(?:计费重(?:量)?|总重(?:量)?)\s*(?:≤|<=)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
+            re.IGNORECASE,
+        ),
+        "total",
+    ),
+    (
+        re.compile(
+            r"^(?:计费重(?:量)?|总重(?:量)?)\s*(\d+(?:\.\d+)?)\s*[-~至到]\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?",
+            re.IGNORECASE,
+        ),
+        "total",
+    ),
+    (
+        re.compile(
+            r"^(\d+(?:\.\d+)?)\s*[-~至到]\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)\s*(?:续重|重量)",
+            re.IGNORECASE,
+        ),
+        "total",
+    ),
 )
-_TIER_OPEN_HEADER_RE = re.compile(
-    r"^续重(?:重量)?\s*>\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)",
-    re.IGNORECASE,
+_TIER_OPEN_BANDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^续重(?:重量)?\s*(?:>|>=|≥)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)", re.IGNORECASE), "continued"),
+    (
+        re.compile(
+            r"^续重(?:重量|价格)?\s*[（(]?\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?\s*(?:以上|起)",
+            re.IGNORECASE,
+        ),
+        "continued",
+    ),
+    (re.compile(r"^(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?\s*(?:以上|起)\s*(?:续重|重量)", re.IGNORECASE), "continued"),
+    (re.compile(r"^(?:计费重(?:量)?|总重(?:量)?)\s*(?:>|>=|≥)\s*(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)", re.IGNORECASE), "total"),
+    (
+        re.compile(r"^(\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)?\s*(?:以上|起)\s*(?:计费重(?:量)?|总重(?:量)?)", re.IGNORECASE),
+        "total",
+    ),
 )
 _FIXED_TIER_HEADER_RE = re.compile(
-    r"(?P<weight>\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)(?:以内|以下|及以下|含)?(?:重量)?(?:价格|费用|价|费)",
+    r"(?P<weight>\d+(?:\.\d+)?)\s*(?:kg|公斤|千克)(?P<upto>以内|以下|及以下|含)?(?:重量)?(?:价格|费用|价|费)",
     re.IGNORECASE,
 )
 _IMPLIED_WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)[kK][gG]")
@@ -109,23 +159,32 @@ def _match_header_field(header: str) -> tuple[str | None, str | None]:
     return best_field, None
 
 
-def _match_tier_header(header: str) -> tuple[float | None, float | None] | None:
-    match = _TIER_HEADER_RE.match(header)
-    if match:
-        lower = float(match.group(1)) if match.group(1) else 0.0
-        return lower, float(match.group(2))
-    match = _TIER_OPEN_HEADER_RE.match(header)
-    if match:
-        return float(match.group(1)), None
+def _match_tier_header(header: str) -> tuple[float | None, float | None, str] | None:
+    """识别分段续重表头，返回 (下界, 上界, 口径)；开放档上界为 None。"""
+    for pattern, basis in _TIER_BANDS:
+        match = pattern.match(header)
+        if match:
+            lower = float(match.group(1)) if match.group(1) else 0.0
+            return lower, float(match.group(2)), basis
+    for pattern, basis in _TIER_OPEN_BANDS:
+        match = pattern.match(header)
+        if match:
+            return float(match.group(1)), None, basis
     return None
 
 
-def _match_fixed_tier_header(header: str) -> float | None:
-    """识别"1KG价格"这类固定重量档，避免和首重/续重列混淆。"""
+def _match_fixed_tier_header(header: str) -> tuple[float, bool] | None:
+    """识别"1KG价格"这类固定重量档，避免和首重/续重列混淆。
+
+    返回 (重量, 是否"以内/以下"档)；带"以内/以下"字样的档位按不超过该
+    重量计价，未带字样的档位保持精确命中语义。
+    """
     if any(marker in header for marker in ("首重", "续重", "最低")):
         return None
     match = _FIXED_TIER_HEADER_RE.search(header)
-    return float(match.group("weight")) if match else None
+    if not match:
+        return None
+    return float(match.group("weight")), bool(match.group("upto"))
 
 
 def _header_implied_weight(header: str) -> float | None:
@@ -162,7 +221,7 @@ def _detect_header(
             if fixed_tier is not None:
                 if column not in mapping:
                     mapping[column] = "fixed_tier"
-                    specs[column] = {"up_to_kg": fixed_tier}
+                    specs[column] = {"up_to_kg": fixed_tier[0], "up_to": fixed_tier[1]}
                 continue
             field, conflict = _match_header_field(header)
             if conflict:

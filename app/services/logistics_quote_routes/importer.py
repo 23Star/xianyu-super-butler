@@ -36,14 +36,22 @@ def _region_pair(province: Any, city: Any, fallback: Any) -> tuple[str, str]:
 
 
 def build_route_rows(parse_result: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    """把解析结果转换为线路行；返回 (线路行列表, 告警列表)。"""
+    """把解析结果转换为线路行；返回 (线路行列表, 告警列表)。
+
+    只有 review_state 为 valid 的行才进入线路明细：review/rejected 行存在
+    语义或取值疑点时宁可不报价，避免错误价格直接生效。
+    """
     warnings: list[str] = []
+    skipped_review = 0
     skipped_unbuildable = 0
     skipped_routeless = 0
     routes: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
 
     for row in parse_result.get("rows", []):
-        if row.get("review_state") == "rejected":
+        state = row.get("review_state")
+        if state not in (None, "valid"):
+            if state == "review":
+                skipped_review += 1
             continue
         carrier = (row.get("carrier") or "").strip()
         if not carrier:
@@ -72,6 +80,8 @@ def build_route_rows(parse_result: dict[str, Any]) -> tuple[list[dict[str, Any]]
             "price_model": price_model,
         }
 
+    if skipped_review:
+        warnings.append(f"{skipped_review} 行存在疑点需人工确认，未纳入线路明细")
     if skipped_unbuildable:
         warnings.append(f"{skipped_unbuildable} 行价格形态不完整，未纳入线路明细")
     if skipped_routeless:

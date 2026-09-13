@@ -1622,6 +1622,14 @@ class NotificationChannelUpdate(BaseModel):
 class MessageNotificationIn(BaseModel):
     channel_id: int
     enabled: bool = True
+    name: Optional[str] = None
+    event_types: Optional[List[str]] = None
+
+
+class MessageNotificationUpdate(BaseModel):
+    name: Optional[str] = None
+    event_types: Optional[List[str]] = None
+    enabled: Optional[bool] = None
 
 
 class MessageFilterIn(BaseModel):
@@ -1744,6 +1752,23 @@ def validate_notification_channel(
         normalized_type,
         json.dumps(config_data, ensure_ascii=False, separators=(",", ":")),
     )
+
+
+def validate_notification_rule(
+    name: Optional[str],
+    event_types: Optional[List[str]],
+) -> Tuple[Optional[str], Optional[List[str]]]:
+    """Validate and normalize account notification rule data."""
+    from app.notification_events import normalize_event_types
+
+    normalized_name = (name or "").strip()
+    if len(normalized_name) > 80:
+        raise ValueError("通知规则名称不能超过 80 个字符")
+    try:
+        normalized_events = normalize_event_types(event_types)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    return normalized_name or None, normalized_events
 
 
 class SystemSettingIn(BaseModel):
@@ -3459,6 +3484,16 @@ def delete_notification_channel(channel_id: int, current_user: Dict[str, Any] = 
 
 # ------------------------- 消息通知配置接口 -------------------------
 
+@app.get('/notification-events')
+def get_notification_events(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取可订阅的通知事件类型和优先级"""
+    from app.notification_events import get_event_definitions, get_priority_definitions
+    return {
+        'priorities': get_priority_definitions(),
+        'events': get_event_definitions(),
+    }
+
+
 @app.get('/message-notifications')
 def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_current_user)):
     """获取当前用户所有账号的消息通知配置"""
@@ -3492,7 +3527,7 @@ def get_account_notifications(cid: str, current_user: Dict[str, Any] = Depends(g
 
 @app.post('/message-notifications/{cid}')
 def set_message_notification(cid: str, notification_data: MessageNotificationIn, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """设置账号的消息通知"""
+    """创建或设置账号的消息通知规则"""
     from app.db_manager import db_manager
     try:
         # 检查cookie是否属于当前用户
@@ -3507,11 +3542,66 @@ def set_message_notification(cid: str, notification_data: MessageNotificationIn,
         if not channel:
             raise HTTPException(status_code=404, detail='通知渠道不存在')
 
+        try:
+            rule_name, rule_events = validate_notification_rule(
+                notification_data.name,
+                notification_data.event_types,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 带规则名或事件类型的请求视为新建规则；旧客户端只开关绑定，保持原语义
+        if notification_data.name is not None or notification_data.event_types is not None:
+            rule_id = db_manager.create_notification_rule(
+                cid,
+                notification_data.channel_id,
+                rule_name,
+                rule_events,
+                notification_data.enabled,
+            )
+            return {'msg': 'message notification rule created', 'id': rule_id}
+
         success = db_manager.set_message_notification(cid, notification_data.channel_id, notification_data.enabled)
         if success:
             return {'msg': 'message notification set'}
         else:
             raise HTTPException(status_code=400, detail='设置失败')
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/message-notifications/rule/{rule_id}')
+def update_message_notification_rule(rule_id: int, rule_data: MessageNotificationUpdate,
+                                     current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新账号通知规则"""
+    from app.db_manager import db_manager
+    try:
+        user_id = current_user['user_id']
+        existing_rule = db_manager.get_notification_rule(rule_id, user_id)
+        if not existing_rule:
+            raise HTTPException(status_code=404, detail='通知规则不存在')
+
+        try:
+            rule_name, rule_events = validate_notification_rule(
+                rule_data.name if rule_data.name is not None else existing_rule['name'],
+                rule_data.event_types if rule_data.event_types is not None else existing_rule['event_types'],
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        success = db_manager.update_notification_rule(
+            rule_id,
+            rule_name,
+            rule_events,
+            rule_data.enabled if rule_data.enabled is not None else existing_rule['enabled'],
+            user_id,
+        )
+        if success:
+            return {'msg': 'message notification rule updated'}
+        else:
+            raise HTTPException(status_code=404, detail='通知规则不存在')
     except HTTPException:
         raise
     except Exception as e:

@@ -113,9 +113,9 @@ function validateCarrier(config) {
 
   const table = config.price_table;
   object(table, 'price_table', [
-    'tiers', 'first_weight', 'first_weight_price', 'continued_unit',
+    'tiers', 'tiers_up_to', 'first_weight', 'first_weight_price', 'continued_unit',
     'continued_weight_price', 'minimum_price', 'per_kg_price',
-    'continued_tiers', 'overflow_continued_price',
+    'continued_tiers', 'continued_tiers_basis', 'overflow_continued_price',
   ]);
   for (const [key, value] of Object.entries(table)) {
     if (key === 'tiers') {
@@ -126,6 +126,9 @@ function validateCarrier(config) {
         }
         number(price, `price_table.tiers.${weight}`, 0);
       }
+    } else if (key === 'tiers_up_to') {
+      if (typeof value !== 'boolean') fail('price_table_invalid', 'price_table.tiers_up_to', 'tiers_up_to 必须是布尔值');
+      if (!own(table, 'tiers')) fail('price_table_invalid', 'price_table.tiers_up_to', 'tiers_up_to 只能与 tiers 同时使用');
     } else if (key === 'continued_tiers') {
       object(value, 'price_table.continued_tiers');
       for (const [threshold, price] of Object.entries(value)) {
@@ -133,6 +136,11 @@ function validateCarrier(config) {
           fail('price_table_invalid', 'price_table.continued_tiers', '分段续重门槛必须为正安全整数');
         }
         number(price, `price_table.continued_tiers.${threshold}`, 0);
+      }
+    } else if (key === 'continued_tiers_basis') {
+      choice(value, ['continued', 'total'], 'price_table.continued_tiers_basis');
+      if (!own(table, 'continued_tiers')) {
+        fail('price_table_invalid', 'price_table.continued_tiers_basis', 'continued_tiers_basis 只能与 continued_tiers 同时使用');
       }
     } else {
       number(value, `price_table.${key}`, 0, key === 'first_weight' || key === 'continued_unit');
@@ -147,16 +155,30 @@ function validateCarrier(config) {
   }
 }
 
+function tierPrice(weight, table) {
+  if (!table.tiers) return null;
+  if (own(table.tiers, weight)) return money(table.tiers[weight]);
+  if (table.tiers_up_to) {
+    // "N KG以内/以下"表头：取不小于计费重的最小档位。
+    const hit = Object.keys(table.tiers).map(Number).sort((a, b) => a - b).find((key) => key >= weight);
+    if (hit !== undefined) return money(table.tiers[hit]);
+  }
+  return null;
+}
+
 function basePrice(weight, table) {
-  if (table.tiers && own(table.tiers, weight)) return money(table.tiers[weight]);
+  const tiered = tierPrice(weight, table);
+  if (tiered !== null) return tiered;
   if (table.continued_tiers) {
-    // 分段续重：续重部分 = 计费重 - 首重，按续重部分所在区间取单价。
+    // 分段续重：续重部分 = 计费重 - 首重。分档门槛默认对续重部分；
+    // continued_tiers_basis = 'total' 时门槛对计费总重（表头写"计费重量/总重量"）。
     if (weight <= table.first_weight) return money(table.first_weight_price);
     const continued = weight - table.first_weight;
+    const basis_weight = table.continued_tiers_basis === 'total' ? weight : continued;
     const thresholds = Object.keys(table.continued_tiers).map(Number).sort((a, b) => a - b);
     let rate = table.overflow_continued_price;
     for (const threshold of thresholds) {
-      if (continued <= threshold) {
+      if (basis_weight <= threshold) {
         rate = table.continued_tiers[threshold];
         break;
       }
