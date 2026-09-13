@@ -72,6 +72,7 @@ class GraphDeps:
     settings_store: AgentSettingsStore
     route_service: Any
     extract_fn: Callable[[str, AgentSettings, str, SessionState], ExtractedQuote]
+    notification_publisher: Callable[[dict[str, Any]], Any] | None = None
 
 
 def extract_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, Any]:
@@ -430,6 +431,29 @@ def finalize_node(deps: GraphDeps, state: LogisticsGraphState) -> dict[str, Any]
             ),
         )],
     }
+    # 所有可行动的失败/人工结果从同一出口发布，避免遗漏分支或重复通知。
+    from app.services.logistics_agent.notifications import build_logistics_quote_event
+
+    event = build_logistics_quote_event(
+        account_id=state.get("cookie_id", ""),
+        message_id=message_id,
+        chat_id=state.get("chat_id", ""),
+        item_id=state.get("item_id", ""),
+        thread_id=state.get("thread_id", ""),
+        decision_action=state.get("action", ""),
+        reason=state.get("reason", ""),
+        mode=state.get("mode", ""),
+    )
+    if event:
+        publisher = deps.notification_publisher
+        if publisher is None:
+            from app.services.logistics_agent.notifications import publish_logistics_quote_event
+
+            publisher = lambda payload: publish_logistics_quote_event(payload, db=deps.db)
+        try:
+            updates["notification_result"] = publisher(event)
+        except Exception as exc:  # noqa: BLE001 - 通知故障不得阻断报价
+            logger.error(f"物流报价事件发布失败：{type(exc).__name__}: {exc}")
     if rendered:
         updates["messages"] = [
             _agent_message(message_id, index, text) for index, text in enumerate(rendered)

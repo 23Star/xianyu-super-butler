@@ -24,6 +24,17 @@ from app.delivery_template import send_payload as send_delivery_payload
 from app.product_automation import ProductAutomationService
 from app.file_log_collector import setup_file_logging, get_file_log_collector
 from app.ai_reply_engine import ai_reply_engine
+from app.services.notification_channels import (
+    NOTIFICATION_CHANNEL_REQUIRED_FIELDS,
+    NOTIFICATION_CHANNEL_TYPE_ALIASES,
+    validate_notification_channel,
+)
+from app.services.notification_sender import NotificationSender
+from app.services.notification_test import (
+    NotificationTestError,
+    NotificationTestService,
+    notification_test_rate_limiter,
+)
 from app.routers.delivery_block import create_delivery_block_router
 from app.routers.logistics_quote import create_logistics_quote_router
 from app.routers.logistics_agent import create_logistics_agent_router
@@ -39,6 +50,12 @@ from utils.order_status_rules import (
 from loguru import logger
 
 product_automation = ProductAutomationService(db_manager)
+notification_sender = NotificationSender()
+notification_test_service = NotificationTestService(
+    db_manager,
+    sender=notification_sender,
+    limiter=notification_test_rate_limiter,
+)
 
 # 刮刮乐远程控制路由
 try:
@@ -1672,86 +1689,6 @@ def validate_message_filter(cookie_id: str, keyword: str, filter_type: str) -> T
     if normalized_type not in MESSAGE_FILTER_TYPES:
         raise ValueError("无效的过滤类型")
     return normalized_cookie_id, normalized_keyword, normalized_type
-
-
-NOTIFICATION_CHANNEL_REQUIRED_FIELDS = {
-    "dingtalk": ("webhook_url",),
-    "feishu": ("webhook_url",),
-    "bark": ("device_key",),
-    "email": ("smtp_server", "smtp_port", "email_user", "email_password", "recipient_email"),
-    "webhook": ("webhook_url",),
-    "wechat": ("webhook_url",),
-    "telegram": ("bot_token", "chat_id"),
-}
-NOTIFICATION_CHANNEL_TYPE_ALIASES = {
-    "ding_talk": "dingtalk",
-    "lark": "feishu",
-}
-
-
-def validate_notification_channel(
-    name: str,
-    channel_type: str,
-    config: str,
-) -> Tuple[str, str, str]:
-    """Validate and normalize notification channel data before persistence."""
-    normalized_name = (name or "").strip()
-    if not normalized_name:
-        raise ValueError("通知渠道名称不能为空")
-    if len(normalized_name) > 80:
-        raise ValueError("通知渠道名称不能超过 80 个字符")
-
-    normalized_type = (channel_type or "").strip().lower()
-    normalized_type = NOTIFICATION_CHANNEL_TYPE_ALIASES.get(normalized_type, normalized_type)
-    if normalized_type not in NOTIFICATION_CHANNEL_REQUIRED_FIELDS:
-        raise ValueError("不支持的通知渠道类型")
-
-    try:
-        config_data = json.loads(config)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("通知渠道配置必须是有效的 JSON") from exc
-    if not isinstance(config_data, dict):
-        raise ValueError("通知渠道配置必须是 JSON 对象")
-
-    missing_fields = [
-        field
-        for field in NOTIFICATION_CHANNEL_REQUIRED_FIELDS[normalized_type]
-        if config_data.get(field) in (None, "")
-    ]
-    if missing_fields:
-        raise ValueError(f"通知渠道配置缺少字段: {', '.join(missing_fields)}")
-
-    if normalized_type == "email":
-        try:
-            smtp_port = int(config_data["smtp_port"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError("SMTP 端口必须是数字") from exc
-        if not 1 <= smtp_port <= 65535:
-            raise ValueError("SMTP 端口必须在 1-65535 之间")
-        config_data["smtp_port"] = smtp_port
-
-    if normalized_type == "webhook":
-        http_method = str(config_data.get("http_method", "POST")).upper()
-        if http_method not in {"POST", "PUT"}:
-            raise ValueError("Webhook 请求方法仅支持 POST 或 PUT")
-        config_data["http_method"] = http_method
-
-        headers = config_data.get("headers")
-        if isinstance(headers, str) and headers.strip():
-            try:
-                parsed_headers = json.loads(headers)
-            except json.JSONDecodeError as exc:
-                raise ValueError("Webhook 请求头必须是有效的 JSON 对象") from exc
-            if not isinstance(parsed_headers, dict):
-                raise ValueError("Webhook 请求头必须是 JSON 对象")
-        elif headers is not None and not isinstance(headers, dict):
-            raise ValueError("Webhook 请求头必须是 JSON 对象")
-
-    return (
-        normalized_name,
-        normalized_type,
-        json.dumps(config_data, ensure_ascii=False, separators=(",", ":")),
-    )
 
 
 def validate_notification_rule(
@@ -3504,6 +3441,44 @@ def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_cur
         return db_manager.get_all_message_notifications(user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/message-notifications/rule/{rule_id}/test')
+async def test_message_notification_rule(
+    rule_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """向一条账号通知规则绑定的渠道发送一条真实测试消息。"""
+    user_info = {
+        "user_id": current_user.get("user_id"),
+        "username": current_user.get("username", ""),
+    }
+    try:
+        return await notification_test_service.send_rule_test(
+            rule_id,
+            int(current_user["user_id"]),
+            user_info,
+        )
+    except NotificationTestError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail(),
+            headers=headers,
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - keep unexpected errors non-sensitive
+        log_with_user(
+            "error",
+            f"source=notification_test rule_id={rule_id} result=server_error",
+            user_info,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "notification_send_failed",
+                "message": "通知测试服务暂时不可用，请稍后重试",
+            },
+        ) from exc
 
 
 @app.get('/message-notifications/{cid}')

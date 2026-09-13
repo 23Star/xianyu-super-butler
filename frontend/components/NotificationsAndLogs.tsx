@@ -3,6 +3,8 @@ import {
   Activity,
   BellRing,
   Check,
+  CheckCircle2,
+  CircleAlert,
   ChevronLeft,
   ChevronRight,
   Edit3,
@@ -11,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Send,
   ShieldAlert,
   Trash2,
   X,
@@ -39,6 +42,7 @@ import {
   getRiskControlLogs,
   getSystemLogs,
   setMessageNotification,
+  testMessageNotification,
   updateMessageNotificationRule,
   updateNotificationChannel,
 } from '../services/api';
@@ -128,6 +132,25 @@ const CHANNEL_DEFINITIONS: Record<NotificationChannelType, ChannelDefinition> = 
 
 const PAGE_SIZE = 20;
 
+type NotificationTestState = {
+  status: 'sending' | 'success' | 'error';
+  message: string;
+  requestId?: string;
+  sentAt?: string;
+};
+
+const getNotificationTestErrorMessage = (error: unknown): string => {
+  const detail = (error as {
+    response?: { data?: { detail?: unknown } };
+  } | undefined)?.response?.data?.detail;
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  return error instanceof Error && error.message ? error.message : '测试发送失败，请稍后重试';
+};
+
 const accountLabel = (account: AccountDetail) =>
   account.nickname || account.remark || account.id;
 
@@ -142,6 +165,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
   const [accounts, setAccounts] = useState<AccountDetail[]>([]);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [bindings, setBindings] = useState<MessageNotification[]>([]);
+  const [notificationTestStates, setNotificationTestStates] = useState<Record<string, NotificationTestState>>({});
   const [eventDefinitions, setEventDefinitions] = useState<NotificationEventDefinition[]>([]);
   const [priorityDefinitions, setPriorityDefinitions] = useState<NotificationPriorityDefinition[]>([]);
   const [loadingBase, setLoadingBase] = useState(true);
@@ -181,6 +205,12 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
       setAccounts(accountData);
       setChannels(channelData.data);
       setBindings(bindingData.data);
+      setNotificationTestStates((current) => {
+        const existingIds = new Set(bindingData.data.map((item) => String(item.id)));
+        return Object.fromEntries(
+          Object.entries(current).filter(([ruleId]) => existingIds.has(ruleId)),
+        );
+      });
       setEventDefinitions(eventData.events);
       setPriorityDefinitions(eventData.priorities);
     } catch (error) {
@@ -368,12 +398,46 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
     }
   };
 
+  const testBinding = async (binding: MessageNotification) => {
+    const ruleId = String(binding.id);
+    setNotificationTestStates((current) => ({
+      ...current,
+      [ruleId]: { status: 'sending', message: '发送中' },
+    }));
+    try {
+      const result = await testMessageNotification(binding.id);
+      const message = `${result.message} · ${result.channel.name}`;
+      setNotificationTestStates((current) => ({
+        ...current,
+        [ruleId]: {
+          status: 'success',
+          message,
+          requestId: result.request_id,
+          sentAt: result.sent_at,
+        },
+      }));
+      notify(`${message}（请求 ID：${result.request_id}）`, 'success');
+    } catch (error) {
+      const message = getNotificationTestErrorMessage(error);
+      setNotificationTestStates((current) => ({
+        ...current,
+        [ruleId]: { status: 'error', message },
+      }));
+      notify(`测试发送失败：${message}`, 'error');
+    }
+  };
+
   const removeBinding = async (binding: MessageNotification) => {
     const ruleLabel = binding.name || binding.channel_name;
     if (!await confirmAction(`确认删除通知规则“${ruleLabel}”？`)) return;
     try {
       await deleteMessageNotification(binding.id);
       setBindings((current) => current.filter((item) => item.id !== binding.id));
+      setNotificationTestStates((current) => {
+        const next = { ...current };
+        delete next[String(binding.id)];
+        return next;
+      });
     } catch (error) {
       notify(`删除通知规则失败：${(error as Error).message}`);
     }
@@ -542,7 +606,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
         <section className="section-panel">
           <SectionHeader
             title="账号通知规则"
-            description="同一账号可配置多条规则，按事件类型选择要通知的内容。"
+            description="同一账号可配置多条规则，按事件类型选择要通知的内容；测试发送会真实触达当前渠道。"
             icon={Link2}
             actions={(
               <button
@@ -558,12 +622,19 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
           <div className="divide-y divide-gray-100 px-4">
             {bindings.map((binding) => {
               const account = accounts.find((item) => item.id === binding.cookie_id);
+              const testState = notificationTestStates[String(binding.id)];
+              const isTesting = testState?.status === 'sending';
               return (
-                <div key={binding.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center">
+                <div
+                  key={binding.id}
+                  className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"
+                  aria-busy={isTesting || undefined}
+                >
                   <button
                     type="button"
                     role="switch"
                     aria-checked={binding.enabled}
+                    aria-label={`${binding.name || binding.channel_name}通知规则开关`}
                     onClick={() => void toggleBinding(binding)}
                     className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${binding.enabled ? 'bg-[#ffe100]' : 'bg-gray-300'}`}
                     title={binding.enabled ? '暂停规则' : '启用规则'}
@@ -578,13 +649,28 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
-                      {account ? accountLabel(account) : binding.cookie_id} · {binding.enabled ? '接收通知' : '已暂停'}
+                      {account ? accountLabel(account) : binding.cookie_id} · {
+                        binding.channel_enabled === false
+                          ? '渠道已停用'
+                          : binding.enabled ? '接收通知' : '已暂停'
+                      }
                     </p>
                     <p className="mt-1 break-words text-xs text-gray-500">
                       通知内容：{ruleEventSummary(binding)}
                     </p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void testBinding(binding)}
+                      disabled={isTesting}
+                      aria-label={`测试发送规则${binding.name || binding.channel_name}`}
+                      title={binding.enabled ? '向该渠道真实发送一条测试消息' : '规则已暂停，仅验证渠道配置'}
+                      className="ios-btn-secondary flex min-h-11 items-center gap-1.5 rounded-md px-3 text-xs disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {isTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                      {isTesting ? '发送中' : '测试发送'}
+                    </button>
                     <button
                       type="button"
                       onClick={() => openEditRuleEditor(binding)}
@@ -601,6 +687,23 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
+                    {testState && testState.status !== 'sending' && (
+                      <span
+                        role="status"
+                        className={`flex max-w-full items-center gap-1 text-xs ${
+                          testState.status === 'success' ? 'text-emerald-700' : 'text-red-700'
+                        }`}
+                        title={testState.requestId ? `请求 ID：${testState.requestId}` : undefined}
+                      >
+                        {testState.status === 'success'
+                          ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                          : <CircleAlert className="h-3.5 w-3.5 shrink-0" />}
+                        <span className="break-words">
+                          {testState.message}
+                          {testState.sentAt ? ` · ${formatTime(testState.sentAt)}` : ''}
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
               );
@@ -734,7 +837,7 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
             description="最多读取最近 300 行，可按级别和来源快速定位运行异常。"
             icon={Activity}
           />
-          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-[160px_1fr_auto]">
+          <div className="grid gap-3 border-b border-gray-200 bg-gray-50/60 p-4 sm:grid-cols-[160px_minmax(0,1fr)_auto_auto]">
             <select
               value={systemLevel}
               onChange={(event) => setSystemLevel(event.target.value)}
@@ -752,6 +855,18 @@ const NotificationsAndLogs: React.FC<NotificationsAndLogsProps> = ({ isAdmin }) 
               placeholder="按日志来源筛选"
               className="ios-input rounded-md px-3 py-2.5 text-sm"
             />
+            <button
+              type="button"
+              aria-pressed={systemSource === 'logistics_quote'}
+              onClick={() => setSystemSource((value) => value === 'logistics_quote' ? '' : 'logistics_quote')}
+              className={`rounded-md px-3 py-2.5 text-sm font-bold ${
+                systemSource === 'logistics_quote'
+                  ? 'bg-[#ffe100] text-gray-900'
+                  : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-100'
+              }`}
+            >
+              物流报价
+            </button>
             <button
               type="button"
               onClick={() => void loadSystemLogs()}

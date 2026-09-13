@@ -78,6 +78,12 @@ EVENT_DEFINITIONS: List[Dict[str, str]] = [
         "priority": "info",
         "description": "收到买家私聊消息",
     },
+    {
+        "id": "logistics_quote",
+        "label": "物流报价异常",
+        "priority": "warning",
+        "description": "物流报价失败或需要转人工处理",
+    },
 ]
 
 EVENT_IDS = [item["id"] for item in EVENT_DEFINITIONS]

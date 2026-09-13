@@ -3356,6 +3356,50 @@ class DBManager:
                 logger.error(f"获取通知规则失败: {e}")
                 return None
 
+    def get_notification_test_target(self, rule_id: int, user_id: int) -> Optional[Dict[str, any]]:
+        """读取测试发送所需的完整目标，并同时校验账号与渠道归属。
+
+        与 ``get_account_notifications`` 不同，这里刻意不按启用状态过滤，
+        这样停用规则或渠道仍可以用于排查配置连通性。
+        """
+        from app.notification_events import parse_event_types
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT mn.id, mn.cookie_id, mn.channel_id, mn.name, mn.event_types,
+                           mn.enabled, nc.name, nc.type, nc.config, nc.enabled,
+                           c.user_id, nc.user_id
+                    FROM message_notifications mn
+                    JOIN cookies c ON c.id = mn.cookie_id
+                    JOIN notification_channels nc ON nc.id = mn.channel_id
+                    WHERE mn.id = ? AND c.user_id = ? AND nc.user_id = ?
+                    """,
+                    (rule_id, user_id, user_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
+                    "cookie_id": row[1],
+                    "channel_id": row[2],
+                    "name": row[3],
+                    "event_types": parse_event_types(row[4]),
+                    "enabled": bool(row[5]),
+                    "channel_name": row[6],
+                    "channel_type": row[7],
+                    "channel_config": row[8],
+                    "channel_enabled": bool(row[9]),
+                    "account_user_id": row[10],
+                    "channel_user_id": row[11],
+                }
+            except Exception as e:
+                logger.error(f"获取通知测试目标失败: {e}")
+                return None
+
     def update_notification_rule(self, rule_id: int, name: str = None, event_types=None,
                                  enabled: bool = True, user_id: int = None) -> bool:
         """更新通知规则的名称、订阅事件和启用状态"""
@@ -3441,15 +3485,14 @@ class DBManager:
                 cursor = self.conn.cursor()
                 sql = '''
                 SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config,
-                       mn.name, mn.event_types
+                       mn.name, mn.event_types, nc.enabled
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
                 JOIN cookies c ON mn.cookie_id = c.id
-                WHERE nc.enabled = 1
                 '''
                 params = []
                 if user_id is not None:
-                    sql += ' AND c.user_id = ? AND nc.user_id = ?'
+                    sql += ' WHERE c.user_id = ? AND nc.user_id = ?'
                     params.extend([user_id, user_id])
                 sql += '''
                 ORDER BY mn.cookie_id, mn.id
@@ -3471,6 +3514,7 @@ class DBManager:
                         'channel_config': row[6],
                         'name': row[7],
                         'event_types': parse_event_types(row[8]),
+                        'channel_enabled': bool(row[9]),
                     })
 
                 return result

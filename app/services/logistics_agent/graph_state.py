@@ -79,3 +79,4 @@ class LogisticsGraphState(TypedDict, total=False):
     rendered_messages: list[str]
     action: str
     reason: str
+    notification_result: dict[str, Any]

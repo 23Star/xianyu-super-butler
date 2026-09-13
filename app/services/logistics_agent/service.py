@@ -60,16 +60,27 @@ def _thread_lock(thread_id: str) -> threading.Lock:
 class LogisticsQuoteAgent:
     """面向店家的物流报价 Agent。"""
 
-    def __init__(self, db_manager: Any, checkpointer: Any = None):
+    def __init__(
+        self,
+        db_manager: Any,
+        checkpointer: Any = None,
+        notification_publisher: Any = None,
+    ):
         self.db = db_manager
         self.route_service = LogisticsRouteService(db_manager)
         self.settings_store = AgentSettingsStore(db_manager)
         self.checkpointer = checkpointer or get_checkpointer(db_manager)
+        from app.services.logistics_agent.notifications import publish_logistics_quote_event
+
+        self.notification_publisher = notification_publisher or (
+            lambda event: publish_logistics_quote_event(event, db=self.db)
+        )
         self.graph = build_logistics_graph(
             GraphDeps(
                 db=db_manager,
                 settings_store=self.settings_store,
                 route_service=self.route_service,
+                notification_publisher=self.notification_publisher,
                 # 通过模块属性在调用时解析，便于测试替换识别管线。
                 extract_fn=lambda cookie_id, settings, message, session: extract_from_model(
                     cookie_id, settings, message, session,
@@ -289,11 +300,35 @@ class LogisticsQuoteAgent:
             # 会让通用模型自行猜测运费；故障不标记消息已处理，可安全重试。
             logger.warning(f"物流 Agent 模型调用失败：{type(exc).__name__}: {exc}")
             failure = _model_failure_state(session, exc, self.settings_store.load(cookie_id), message_id)
+            failure.update({
+                "cookie_id": cookie_id,
+                "chat_id": chat_id,
+                "item_id": item_id,
+                "mode": mode,
+                "thread_id": thread_id,
+            })
             self._persist_failure(thread_id, failure)
             return failure
 
     def _persist_failure(self, thread_id: str, failure: dict[str, Any]) -> None:
         """把故障降级结果写回 checkpoint：快照、决策与审计保持一致。"""
+        from app.services.logistics_agent.notifications import build_logistics_quote_event
+
+        event = build_logistics_quote_event(
+            account_id=failure.get("cookie_id", ""),
+            message_id=failure.get("message_id", ""),
+            chat_id=failure.get("chat_id", ""),
+            item_id=failure.get("item_id", ""),
+            thread_id=thread_id,
+            decision_action=failure.get("action", ""),
+            reason=failure.get("reason", ""),
+            mode=failure.get("mode", ""),
+        )
+        if event:
+            try:
+                failure["notification_result"] = self.notification_publisher(event)
+            except Exception as exc:  # noqa: BLE001 - 通知故障不得阻断降级
+                logger.error(f"物流报价事件发布失败：{type(exc).__name__}: {exc}")
         try:
             self.graph.update_state(
                 {"configurable": {"thread_id": thread_id}}, failure, as_node="finalize",
@@ -317,6 +352,7 @@ def _model_failure_state(
     if not getattr(settings, "auto_send", False):
         action = "draft"
     return {
+        "message_id": message_id,
         "session": state,
         "rendered_messages": [failure_text],
         "messages": [_agent_message(message_id, 0, failure_text)],

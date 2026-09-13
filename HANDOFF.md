@@ -1311,3 +1311,105 @@ pm run build 成功（Vite 2401 modules）。
 - python -m pytest -q 当前环境未能收集测试：缺少 execjs、langchain_core、qrcode 等依赖；需按 requirements.txt 安装依赖后重跑。
 ## 发布状态
 - 下一步将 main 推送到 origin/main。
+
+## 第五步通知与日志文档（2026-09-13）
+
+### 任务目标
+确认物流报价第五步的“报价失败/转人工”是否能进入通知与日志，并形成实现文档，交由 gpt-5.6-terra 最高推理级别子代理执行。
+
+### 实施记录
+- 核对 `app/services/logistics_agent/service.py`、`nodes.py`：已定位第五步入口及 `workflow_failed`、`route_not_found`、`render_failed`、`template_unresolved`、模型失败等结果路径。
+- 核对 `app/reply_server.py:log_with_user` 与 `XianyuAutoAsync.py:send_system_notification`：确认可复用的系统日志和外部通知出口。
+- 更新 `LOGISTICS_QUOTE_NOTIFICATION_IMPLEMENTATION.md`，补充真实代码入口、事件模型、统一发布器、幂等、脱敏、接入点、验证清单与风险。
+- 已启动子代理 `/root/implement_logistics_notifications`，模型 `gpt-5.6-terra`，最高推理级别，要求按文档执行实现。
+
+### 验证与状态
+- 已完成代码检索和文档更新；尚未运行测试。
+- 子代理当前仍在实施中，本轮未产生可确认的代码变更。
+
+### 后续步骤
+等待子代理完成后检查其代码、测试和本文件更新，再运行针对性测试并汇报结果。
+
+## 账号通知测试发送按钮规划（2026-09-13）
+
+### 任务目标
+
+用户要求在“通知与日志 → 账号通知”区域增加一个测试功能按钮，用于验证对应账号通知规则绑定的外部消息渠道是否可以发送成功；本轮只输出规划文档，不修改业务代码。
+
+### 已完成
+
+- 已读取并遵循现有 `HANDOFF.md`。
+- 已检查 `frontend/components/NotificationsAndLogs.tsx`、`frontend/services/api.ts`、`app/reply_server.py`、`app/db_manager.py`、`app/notification_events.py` 与 `XianyuAutoAsync.py` 的通知配置和发送链路。
+- 新增规划文档：`NOTIFICATION_TEST_BUTTON_PLAN.md`。
+- 规划覆盖账号通知行内按钮、后端测试接口、权限校验、复用发送逻辑、敏感信息脱敏、限流、系统日志、前后端测试、分阶段实施和待确认事项。
+
+### 验证记录
+
+- 仅做代码与文档只读检查，未修改 `frontend/`、`app/` 或测试代码。
+- 未运行构建、测试或真实外部通知发送，因为用户明确要求只写规划。
+
+### 已知风险与下一步
+
+- 发送函数目前主要分散在 `XianyuAutoAsync.py`；实施时需决定抽取公共通知发送服务还是安全复用现有实例方法。
+- “测试停用规则/渠道是否允许”“成功的定义是接口接受还是最终到达”“邮件和 Telegram 是否使用原接收方”等事项需在编码前确认。
+- 后续如获准实施，应先按规划完成接口和权限，再接入前端按钮，最后用 mock 测试和低风险真实渠道完成验收。
+
+## 账号通知测试发送实现（2026-09-13）
+
+### 任务目标
+
+按 `NOTIFICATION_TEST_BUTTON_PLAN.md` 在“通知与日志 → 账号通知”实现按规则发送真实测试消息的入口；实现应复用通知渠道校验、保持前后端现有框架风格，并避免泄露渠道凭据。
+
+### 实施记录
+
+- 新增 `app/services/notification_channels.py`：集中管理七类现有渠道的类型别名、必填项、JSON/SMTP/Webhook 校验；通知渠道新增和更新接口复用该模块。
+- 新增 `app/services/notification_sender.py`：从账号运行时的吞错发送分支中分离出可确认结果的单渠道发送服务，支持钉钉、飞书、Bark、邮件、Webhook、企业微信、Telegram；统一 10 秒默认超时、HTTP/供应商拒绝、网络错误和邮件 SMTP 错误分类。服务端不记录 URL、Token、密码、签名或请求正文。
+- 新增 `app/services/notification_test.py`：按规则读取最新渠道配置、校验账号和渠道同时归属当前用户、固定测试消息与 `request_id`、用户+规则每分钟 3 次限流、`notification_test` 结构化日志。停用规则和停用渠道仍可测试，且不会改变启停状态。
+- `app/db_manager.py`：增加 `get_notification_test_target()` 单查询所有权校验；账号通知列表返回停用渠道绑定及 `channel_enabled`，以保留测试入口。
+- `app/reply_server.py`：增加 `POST /message-notifications/rule/{rule_id}/test`，返回渠道、请求 ID、服务端确认时间和耗时；失败稳定映射为配置错误、超时、第三方拒绝、一般发送失败或限流状态。
+- `frontend/services/api.ts`、`frontend/types.ts`：增加测试请求类型和渠道启用状态映射。
+- `frontend/components/NotificationsAndLogs.tsx`：每条账号通知规则增加“测试发送”按钮；只锁定当前行，展示成功/失败、请求 ID、确认时间，明确真实外发，复用既有按钮、Lucide 图标和响应式操作行布局。
+- 新增 `tests/test_notification_test_service.py`：覆盖所有渠道 mock 分支、异步邮件 mock、错误分类、停用配置、所有权、限流、日志脱敏和错误发送器返回值。
+- 已执行前端构建恢复 `static/index.html` 与 `static/assets/`。构建会按 Vite 哈希替换旧静态文件，这是正常产物变化。
+
+### 验证记录
+
+- `.venv-win\\Scripts\\python.exe -m unittest tests.test_notification_test_service tests.test_notification_and_risk_logs tests.test_logistics_quote_notifications -q`：25 项通过。
+- `.venv-win\\Scripts\\python.exe -m py_compile app/services/notification_channels.py app/services/notification_sender.py app/services/notification_test.py app/reply_server.py app/db_manager.py tests/test_notification_test_service.py`：通过。
+- `frontend/` 下 `npx tsc --noEmit`：通过。
+- `frontend/` 下 `npm run build`：通过，Vite 构建 2401 个模块。
+- `git diff --check`：通过。
+
+### 已知风险与后续步骤
+
+- “发送成功”表示供应商 HTTP/API 已接受请求，不能证明最终阅读或送达；UI 和接口保持“测试消息已发送”的表述，不承诺最终到达。
+- 限流是单进程内存状态；若未来部署多个 Web 实例，需要改为 Redis 或数据库共享限流。
+- 未对真实钉钉、飞书、Bark、邮件、Webhook、企业微信、Telegram 渠道做外发验收，单元测试全部使用 mock；发布前应在低风险测试渠道逐一确认实际到达。
+- 工作区保留此前已有的物流报价、物流 Agent、通知事件和静态资源未提交变更；本次未回滚或覆盖这些改动。
+
+## PR公开范围与物流报价占位（2026-09-13）
+
+任务目标：准备向原作者仓库提交 PR；物流报价实现暂不公开，界面显示‘持续优化中’并保留品牌图标。
+
+实施变更：将 frontend/components/logistics/LogisticsQuotes.tsx 改为占位页，隐藏物流报价工作流入口与实现细节。
+验证：待执行前端类型检查/构建。
+已知事项：本地数据、交接文档和设计文档不应加入 PR；物流报价相关后端文件也应在提交时排除。
+
+## 设计文档归档（2026-09-13）
+
+### 任务目标
+
+将项目根目录散落的设计、规划、实施与复核 Markdown 文档集中到单一文件夹，保留项目根目录的 `README.md` 与 `HANDOFF.md`。
+
+### 实施记录
+
+- 新建 `docs/design/`。
+- 已移动 8 份设计相关文档：物流报价的 LangChain、承运商识别、实现、通知实现、优化计划、优化复核、修复计划，以及账号通知测试发送规划。
+
+### 验证记录
+
+- 已核验 `docs/design/` 含 8 个目标 Markdown 文件，文件名与迁移前一致。
+
+### 已知风险与后续步骤
+
+- 未发现项目内对这些根目录旧路径的引用；后续新增设计文档应直接放入 `docs/design/`。

@@ -376,6 +376,7 @@ export interface MessageNotification {
   channel_id: number;
   channel_name: string;
   channel_type?: NotificationChannelType;
+  channel_enabled?: boolean;
   name?: string | null;
   event_types?: string[] | null;
   enabled: boolean;

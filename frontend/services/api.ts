@@ -985,6 +985,7 @@ export const getMessageNotifications = async (): Promise<{ success: boolean; dat
           channel_id: item.channel_id,
           channel_name: item.channel_name,
           channel_type: item.channel_type,
+          channel_enabled: item.channel_enabled !== false,
           name: item.name ?? null,
           event_types: item.event_types ?? null,
           enabled: item.enabled,
@@ -1025,6 +1026,25 @@ export const deleteMessageNotification = async (notificationId: string): Promise
 
 export const deleteAccountNotifications = async (cookieId: string): Promise<ApiResponse> => {
   return del(`/message-notifications/account/${cookieId}`);
+}
+
+export interface NotificationTestResponse {
+  success: boolean;
+  message: string;
+  request_id: string;
+  channel: {
+    id: number;
+    name: string;
+    type: NotificationChannelType;
+  };
+  sent_at: string;
+  duration_ms?: number;
+}
+
+export const testMessageNotification = async (
+  ruleId: string | number,
+): Promise<NotificationTestResponse> => {
+  return post(`/message-notifications/rule/${ruleId}/test`);
 }
 
 export const getRiskControlLogs = async (params: {
