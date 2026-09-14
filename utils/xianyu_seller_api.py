@@ -40,6 +40,82 @@ class SellerApiError(Exception):
         super().__init__(f"{api} 调用失败: {'; '.join(ret) if ret else '未知错误'}")
 
 
+def _sku_row_name(row: Dict[str, Any]) -> str:
+    """把 SKU 行的 propertyList 拼成展示名，多属性用 " / " 连接。"""
+    properties = row.get("propertyList") or row.get("properties") or []
+    names: List[str] = []
+    for prop in properties:
+        if not isinstance(prop, dict):
+            continue
+        value = (
+            prop.get("actualValueText")
+            or prop.get("valueText")
+            or prop.get("value")
+            or prop.get("string")
+        )
+        if value:
+            names.append(str(value).strip())
+    joined = " / ".join(name for name in names if name)
+    return joined or str(row.get("name") or row.get("skuDesc") or "").strip()
+
+
+def normalize_sku_rows(rows: Any) -> List[Dict[str, Any]]:
+    """把平台 SKU 数组归一化成 ``{platform_sku_id, name}``，过滤无身份的行。"""
+    options: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        sku_id = str(row.get("skuId") or row.get("inventoryId") or "").strip()
+        name = _sku_row_name(row)
+        if not sku_id or not name:
+            continue
+        identity = sku_id.lower()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        options.append({"platform_sku_id": sku_id, "name": name})
+    return options
+
+
+def classify_sku_discovery_error(exc: Exception) -> str:
+    """把 SKU 识别失败归类为 ``risk_control`` / ``unauthorized`` / ``error``。"""
+    text = str(exc)
+    if risk_control.is_risk_control_error(text):
+        return "risk_control"
+    if "UNAUTHORIZED" in text.upper():
+        return "unauthorized"
+    return "error"
+
+
+def find_sku_rows(value: Any, depth: int = 0) -> List[Dict[str, Any]]:
+    """深度查找含 ``skuId/inventoryId`` 且 ``propertyList`` 为数组的 SKU 数组。
+
+    买家详情响应的 SKU 位置不固定（``itemDO.skuList``、``data.skuList`` 等），
+    按字段名优先取，取不到时用这里的深度扫描兜底。
+    """
+    if depth > 8 or not isinstance(value, (dict, list)):
+        return []
+    if isinstance(value, list):
+        if any(
+            isinstance(row, dict)
+            and (row.get("skuId") or row.get("inventoryId"))
+            and isinstance(row.get("propertyList"), list)
+            for row in value
+        ):
+            return value
+        for child in value:
+            found = find_sku_rows(child, depth + 1)
+            if found:
+                return found
+        return []
+    for child in value.values():
+        found = find_sku_rows(child, depth + 1)
+        if found:
+            return found
+    return []
+
+
 class XianyuSellerAPI:
     """卖家端接口客户端。
 
@@ -49,6 +125,7 @@ class XianyuSellerAPI:
     APP_KEY = "34839810"
     BASE_URL = "https://h5api.m.goofish.com/h5/{api}/{version}/"
     ORIGIN = "https://seller.goofish.com"
+    BUYER_ORIGIN = "https://www.goofish.com"
     SPM_CNT = "a21107h.42826273.0.0"
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -118,6 +195,8 @@ class XianyuSellerAPI:
             # 卖家端接口校验来源，指向 www.goofish.com 会被判定为会话过期
             "origin": self.ORIGIN,
             "referer": f"{self.ORIGIN}/",
+            # 无此头商家接口按业务线鉴权会返回 FAIL_BIZ_IDLE_USER_UNAUTHORIZED
+            "idle_site_biz_code": "COMMONPRO",
             "user-agent": self.USER_AGENT,
             "cookie": self.cookies_str.replace("\n", "").replace("\r", ""),
         }
@@ -231,6 +310,91 @@ class XianyuSellerAPI:
         current.update(updates)
         self.cookies_str = "; ".join(f"{k}={v}" for k, v in current.items())
         logger.debug(f"【{self.cookie_id}】卖家端 Cookie 已更新: {', '.join(updates)}")
+
+    async def _call_buyer(
+        self,
+        api: str,
+        payload: Dict[str, Any],
+        spm_cnt: str = "a21ybx.item.0.0",
+        version: str = "1.0",
+        timeout: int = 20,
+    ) -> Dict[str, Any]:
+        """调用买家端（www.goofish.com）接口并返回完整响应。
+
+        与 :meth:`_call` 分开：买家接口校验 ``origin`` 必须是 www.goofish.com，
+        沿用卖家来源会被服务端拒绝。令牌过期时同样用响应下发的新令牌重签一次。
+        """
+        if not self.cookies_str:
+            raise SellerApiError(api, ["Cookie 为空，无法调用买家端接口"])
+
+        guard = risk_control.registry.get(self.cookie_id)
+        if guard.is_blocked:
+            raise risk_control.RiskControlBlocked(
+                self.cookie_id, guard.remaining_seconds, guard.last_hit_reason
+            )
+
+        data_val = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        last_ret: List[str] = []
+
+        for attempt in range(2):
+            timestamp = str(int(time.time() * 1000))
+            params = {
+                "jsv": "2.7.2",
+                "appKey": self.APP_KEY,
+                "t": timestamp,
+                "sign": generate_sign(timestamp, self._token(), data_val),
+                "v": version,
+                "type": "originaljson",
+                "accountSite": "xianyu",
+                "dataType": "json",
+                "timeout": "20000",
+                "api": api,
+                "sessionOption": "AutoLoginOnly",
+                "spm_cnt": spm_cnt,
+            }
+            headers = {
+                "accept": "application/json",
+                "content-type": "application/x-www-form-urlencoded",
+                "origin": self.BUYER_ORIGIN,
+                "referer": f"{self.BUYER_ORIGIN}/",
+                "user-agent": self.USER_AGENT,
+                "cookie": self.cookies_str.replace("\n", "").replace("\r", ""),
+            }
+
+            session = await self._ensure_session()
+            url = self.BASE_URL.format(api=api, version=version)
+            await guard.acquire()
+            async with session.post(
+                url,
+                params=params,
+                data={"data": data_val},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                result = await response.json(content_type=None)
+                self._merge_response_cookies(response)
+
+            ret_list = [str(value) for value in (result.get("ret", []) if isinstance(result, dict) else [])]
+            if any("SUCCESS" in value for value in ret_list):
+                guard.reset()
+                return result
+
+            last_ret = ret_list
+            if risk_control.is_risk_control_error("; ".join(ret_list)):
+                guard.trip("; ".join(ret_list))
+                raise SellerApiError(api, ret_list)
+
+            token_expired = any(
+                "TOKEN_EXPIRED" in value
+                or "TOKEN_EXOIRED" in value
+                or "FAIL_SYS_TOKEN_EMPTY" in value
+                for value in ret_list
+            )
+            if not token_expired or attempt == 1:
+                break
+            logger.debug(f"【{self.cookie_id}】{api} 令牌过期，使用新令牌重试")
+
+        raise SellerApiError(api, last_ret)
 
     # ------------------------------------------------------------------
     # 订单
@@ -398,6 +562,47 @@ class XianyuSellerAPI:
                     counts[code] = 0
         return counts
 
+    async def search_item_skus(self, item_id: str) -> List[Dict[str, Any]]:
+        """通过闲鱼小铺商家接口读取商品 SKU（无需订单）。"""
+        payload = {
+            "pageNo": 1,
+            "pageSize": 50,
+            "itemStatus": "0,-9",
+            "bizType": "commonPro",
+            "searchRequest": json.dumps({"itemId": str(item_id)}, separators=(",", ":"), ensure_ascii=False),
+        }
+        result = await self._call("mtop.alibaba.idle.seller.pc.common.item.search", payload)
+        data = result.get("data") or {}
+        response = data.get("data") if isinstance(data.get("data"), dict) else data
+        items = response.get("itemSearchResponseList") or response.get("items") or []
+        matched = [item for item in items if str(item.get("itemId") or item.get("id") or "") == str(item_id)]
+        item = matched[0] if matched else (items[0] if len(items) == 1 else {})
+        rows = item.get("idleItemSkuList") or item.get("skuList") or []
+        return normalize_sku_rows(rows)
+
+    async def search_item_skus_buyer(self, item_id: str) -> List[Dict[str, Any]]:
+        """通过买家端商品详情接口读取 SKU（卖家接口无权限时的兜底）。
+
+        买家详情响应把规格放在 ``itemDO.skuList``（也可能是 ``idleItemSkuList``
+        或更深层字段），SKU 身份与卖家接口一致（``skuId + propertyList``），
+        因此解析后可以直接和订单观测、防薅规则共用同一套 ``id:`` key。
+        """
+        result = await self._call_buyer(
+            "mtop.taobao.idle.pc.detail",
+            {"itemId": str(item_id)},
+            spm_cnt="a21ybx.item.0.0",
+        )
+        data = result.get("data") or {}
+        item_do = data.get("itemDO") if isinstance(data.get("itemDO"), dict) else {}
+        rows = (
+            item_do.get("skuList")
+            or item_do.get("idleItemSkuList")
+            or data.get("skuList")
+            or find_sku_rows(data)
+            or find_sku_rows(result)
+        )
+        return normalize_sku_rows(rows)
+
     async def get_expected_order_total(self) -> Optional[int]:
         """读取服务端认定的订单总数，用于校验拉取完整性；失败返回 None。"""
         try:
@@ -460,77 +665,12 @@ class XianyuSellerAPI:
 
         注意：这是买家端接口，origin 必须指向 www.goofish.com。
         """
-        guard = risk_control.registry.get(self.cookie_id)
-        if guard.is_blocked:
-            raise risk_control.RiskControlBlocked(
-                self.cookie_id, guard.remaining_seconds, guard.last_hit_reason
-            )
-
-        if not self.cookies_str:
-            raise SellerApiError("mtop.idle.web.trade.order.detail", ["Cookie 为空"])
-
-        last_ret: List[str] = []
-        data_val = json.dumps({"tid": str(order_id)}, separators=(",", ":"))
-        timestamp = str(int(time.time() * 1000))
-
-        headers = {
-            "accept": "application/json",
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "content-type": "application/x-www-form-urlencoded",
-            "origin": "https://www.goofish.com",
-            "referer": "https://www.goofish.com/",
-            "user-agent": self.USER_AGENT,
-            "cookie": self.cookies_str.replace("\n", "").replace("\r", ""),
-        }
-
-        for attempt in range(2):
-            params = {
-                "jsv": "2.7.2",
-                "appKey": self.APP_KEY,
-                "t": timestamp,
-                "sign": generate_sign(timestamp, self._token(), data_val),
-                "v": "1.0",
-                "type": "originaljson",
-                "accountSite": "xianyu",
-                "dataType": "json",
-                "timeout": "20000",
-                "api": "mtop.idle.web.trade.order.detail",
-                "sessionOption": "AutoLoginOnly",
-                "spm_cnt": "a21ybx.order-detail.0.0",
-            }
-
-            session = await self._ensure_session()
-            url = self.BASE_URL.format(api="mtop.idle.web.trade.order.detail", version="1.0")
-            await guard.acquire()
-            async with session.post(
-                url,
-                params=params,
-                data={"data": data_val},
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as response:
-                result = await response.json(content_type=None)
-                self._merge_response_cookies(response)
-
-            ret_list = [str(v) for v in (result.get("ret", []) if isinstance(result, dict) else [])]
-            if any("SUCCESS" in v for v in ret_list):
-                guard.reset()
-                return (result.get("data") or {}) or {}
-
-            last_ret = ret_list
-            if risk_control.is_risk_control_error("; ".join(ret_list)):
-                guard.trip("; ".join(ret_list))
-                raise SellerApiError("mtop.idle.web.trade.order.detail", ret_list)
-
-            token_expired = any(
-                "TOKEN_EXPIRED" in v or "TOKEN_EXOIRED" in v or "FAIL_SYS_TOKEN_EMPTY" in v
-                for v in ret_list
-            )
-            if not token_expired or attempt == 1:
-                break
-            logger.debug(f"【{self.cookie_id}】order.detail 令牌过期，使用新令牌重试")
-
-        raise SellerApiError("mtop.idle.web.trade.order.detail", last_ret)
+        result = await self._call_buyer(
+            "mtop.idle.web.trade.order.detail",
+            {"tid": str(order_id)},
+            spm_cnt="a21ybx.order-detail.0.0",
+        )
+        return (result.get("data") or {}) or {}
 
     # ------------------------------------------------------------------
     # 退款
@@ -681,6 +821,15 @@ class XianyuSellerAPI:
         result = await self._call(
             "mtop.taobao.idlemessage.red.flower",
             {"orderId": str(order_id)},
+            value_type=None,
+        )
+        return (result.get("data") or {}) or {}
+
+    async def receive_flower(self, order_id: str) -> Dict[str, Any]:
+        """收下买家赠送的小红花。"""
+        result = await self._call(
+            "mtop.taobao.red.flower.seller.receive",
+            {"orderNo": str(order_id), "drawModel": 0, "channel": "", "bizType": ""},
             value_type=None,
         )
         return (result.get("data") or {}) or {}
