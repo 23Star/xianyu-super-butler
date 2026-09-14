@@ -917,14 +917,14 @@ const AccountList: React.FC = () => {
                 <p className="text-xs text-gray-500 mt-1">当前Cookie长度: {editForm.cookie.length} 字符</p>
               </div>
 
-              {/* 自动确认收货 */}
+              {/* 自动确认发货 */}
               <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
                 <div>
                   <div className="font-bold text-gray-900 flex items-center gap-2">
                     <Check className="w-4 h-4 text-green-500" />
-                    自动确认收货
+                    自动确认发货
                   </div>
-                  <div className="text-xs text-gray-500">自动点击确认收货按钮</div>
+                  <div className="text-xs text-gray-500">发卡成功后自动点击闲鱼“发货”按钮</div>
                 </div>
                 <button
                   type="button"
