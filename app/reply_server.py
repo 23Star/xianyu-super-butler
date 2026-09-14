@@ -39,6 +39,7 @@ from app.routers.delivery_block import create_delivery_block_router
 from app.routers.logistics_quote import create_logistics_quote_router
 from app.routers.logistics_agent import create_logistics_agent_router
 from utils.qr_login import qr_login_manager
+from utils.browser_identity import user_agent
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
 from utils.order_status_rules import (
@@ -9271,10 +9272,7 @@ async def get_fresh_captcha_url(
     headers = {
         'accept': 'application/json',
         'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-        ),
+        'user-agent': user_agent(),
         'referer': 'https://www.goofish.com/',
         'origin': 'https://www.goofish.com',
         'cookie': cookies_str,

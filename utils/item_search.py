@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from utils.browser_identity import user_agent
 import sys
 import os
 from datetime import datetime
@@ -732,7 +733,7 @@ class XianyuSearcher:
                 user_data_dir,  # 第一个参数是用户数据目录，用于持久化
                 headless=True,  # 无头模式，后台运行
                 args=browser_args,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                user_agent=user_agent(),
                 viewport={'width': 1280, 'height': 720},
                 locale='zh-CN',  # 设置语言为中文
                 # 持久化上下文会自动保存和加载：

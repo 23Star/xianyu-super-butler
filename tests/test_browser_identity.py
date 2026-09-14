@@ -154,25 +154,34 @@ class FlowWiringTests(unittest.TestCase):
 
     REPO = Path(__file__).resolve().parent.parent
 
+    # 登录 / 令牌刷新 / 心跳 / 发货 / 过验证码 五条链路上所有发请求的模块。
+    # 新增发请求的模块时把它加进来，否则又会悄悄长出第四份硬编码。
+    WIRED_MODULES = (
+        "utils/qr_login.py",                 # 登录
+        "utils/refresh_util.py",             # 令牌刷新
+        "utils/xianyu_seller_api.py",        # 发货
+        "utils/order_detail_fetcher.py",     # 发货
+        "utils/manual_captcha.py",           # 过验证码（人工）
+        "utils/xianyu_slider_stealth.py",    # 过验证码（自动）
+        "utils/browser_pool.py",             # 过验证码（浏览器池）
+        "utils/slider_patch.py",             # 过验证码（补丁路径）
+        "utils/item_polish.py",              # 发货（商品擦亮）
+        "utils/item_search.py",              # 发货（商品检索）
+        "utils/image_uploader.py",           # 发货（图片卡券）
+        "app/reply_server.py",               # 登录 / 过验证码接口
+        "XianyuAutoAsync.py",                # 令牌刷新 / 心跳 / 发货
+    )
+
     def _read(self, relative: str) -> str:
         return (self.REPO / relative).read_text(encoding="utf-8")
 
-    def test_login_uses_shared_identity(self):
-        text = self._read("utils/qr_login.py")
+    def test_every_wired_module_uses_shared_identity(self):
+        missing = [
+            path for path in self.WIRED_MODULES
+            if "browser_identity" not in self._read(path)
+        ]
 
-        self.assertIn("browser_identity", text)
-        self.assertIn("user_agent()", text)
-
-    def test_token_refresh_uses_shared_identity(self):
-        text = self._read("utils/refresh_util.py")
-
-        self.assertIn("browser_identity", text)
-        self.assertIn("client_hint_headers()", text)
-
-    def test_delivery_uses_shared_identity(self):
-        for path in ("utils/xianyu_seller_api.py", "utils/order_detail_fetcher.py"):
-            text = self._read(path)
-            self.assertIn("browser_identity", text, path)
+        self.assertEqual(missing, [], f"这些模块没有引用统一来源: {missing}")
 
     def test_order_detail_fetcher_sends_a_user_agent(self):
         """只发 Client Hints 不发 UA 是明显异常指纹。"""
@@ -180,24 +189,41 @@ class FlowWiringTests(unittest.TestCase):
 
         self.assertIn('"user-agent"', text)
 
+    def test_no_stale_hardcoded_ua_left_in_wired_modules(self):
+        """五条链路里不该再有任何硬编码 UA 残留。
+
+        历史版本分别写成 120（登录）、133（令牌刷新/心跳）、138 与 139
+        （发货/过验证码），这正是跨请求指纹跳变的来源。
+        """
+        leftovers = []
+        for path in self.WIRED_MODULES:
+            text = self._read(path)
+            for i, line in enumerate(text.splitlines(), 1):
+                if re.search(r"Chrome/\d+\.0\.0\.0", line):
+                    # /reg 的 DingTalk 协议 ua 字段声明的是 IM 客户端身份，
+                    # 不是浏览器指纹，故意保留。
+                    if '"ua":' in line:
+                        continue
+                    leftovers.append(f"{path}:{i}")
+
+        self.assertEqual(leftovers, [], f"仍有硬编码 UA: {leftovers}")
+
     def test_config_websocket_version_matches_shared_identity(self):
+        """global_config.yml 是 YAML，没法 import，只能靠断言盯住一致性。"""
         config = self._read("global_config.yml")
 
         self.assertIn(f"Chrome/{CHROME_MAJOR}.0.0.0", config)
         self.assertNotIn("Chrome/133.0.0.0", config)
         self.assertNotIn("Chrome/120.0.0.0", config)
 
-    def test_no_stale_versions_left_in_wired_flows(self):
-        """四条链路里不该再有 120/133 这类旧版本残留。"""
-        for path in (
-            "utils/qr_login.py",
-            "utils/refresh_util.py",
-            "utils/xianyu_seller_api.py",
-            "utils/order_detail_fetcher.py",
-        ):
-            text = self._read(path)
-            for stale in ("Chrome/120.0.0.0", "Chrome/133.0.0.0"):
-                self.assertNotIn(stale, text, f"{path} 仍残留 {stale}")
+    def test_config_client_hints_match_its_user_agent(self):
+        """配置文件里 UA 和 sec-ch-ua 也必须同版本。"""
+        config = self._read("global_config.yml")
+        ua_versions = set(re.findall(r"Chrome/(\d+)\.0\.0\.0", config))
+        hint_versions = set(re.findall(r'v="(\d+)"', config))
+
+        self.assertEqual(ua_versions, {CHROME_MAJOR})
+        self.assertIn(CHROME_MAJOR, hint_versions)
 
 
 if __name__ == "__main__":

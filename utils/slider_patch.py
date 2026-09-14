@@ -4,6 +4,7 @@
 """
 from typing import Any
 from loguru import logger
+from utils.browser_identity import user_agent
 from utils import browser_limit
 import time
 import random
@@ -1734,7 +1735,7 @@ def patch_login_with_password_headful():
                         headless=not show_browser,
                         args=browser_args,
                         viewport={'width': 1980, 'height': 1024},
-                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                        user_agent=user_agent(),
                         accept_downloads=True,
                         ignore_https_errors=True
                     )

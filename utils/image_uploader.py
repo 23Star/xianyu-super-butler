@@ -1,3 +1,4 @@
+from utils.browser_identity import user_agent
 """
 图片上传器 - 负责将图片上传到闲鱼CDN
 """
@@ -27,7 +28,7 @@ class ImageUploader:
                 connector=connector,
                 timeout=timeout,
                 headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': user_agent()
                 }
             )
     
@@ -117,7 +118,7 @@ class ImageUploader:
             headers = {
                 'cookie': self.cookies_str,
                 'Referer': 'https://www.goofish.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': user_agent(),
                 'x-requested-with': 'XMLHttpRequest',
                 'Accept': 'application/json, text/javascript, */*; q=0.01',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',

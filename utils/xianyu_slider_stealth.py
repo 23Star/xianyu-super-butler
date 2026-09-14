@@ -6,6 +6,7 @@
 """
 
 import time
+from utils.browser_identity import user_agent
 import random
 import json
 import os
@@ -3026,7 +3027,7 @@ class XianyuSliderStealth:
                 headless=not show_browser,
                 args=browser_args,
                 viewport={'width': 1980, 'height': 1024},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                user_agent=user_agent(),
                 locale='zh-CN',  # 设置浏览器区域为中文
                 accept_downloads=True,
                 ignore_https_errors=True,
