@@ -546,28 +546,51 @@ class XianyuLive:
         text = str(message or '')
         return any(marker in text for marker in cls.RISK_CONTROL_MARKERS)
 
-    def _calculate_retry_delay(self, error_msg: str) -> int:
-        """根据错误类型和失败次数计算重试延迟"""
+    def _calculate_retry_delay(self, error_msg: str) -> float:
+        """根据错误类型和失败次数计算重试延迟（指数/线性退避 + 抖动）。
+
+        末尾统一叠加 0~30% 随机抖动。多账号场景下纯确定性公式会让所有账号
+        在同一时刻重连 —— 同一原因（比如闲鱼侧抖动）导致的集体掉线，会在
+        退避结束后一起回来，形成"重连风暴"再把这批连接打掉一次。抖动让它们
+        自然错开。
+        """
         # 平台风控 - 指数退避，最长 30 分钟
         if self.is_risk_control_error(error_msg):
-            delay = min(60 * (2 ** max(0, self.connection_failures - 1)), 1800)
+            base = min(60 * (2 ** max(0, self.connection_failures - 1)), 1800)
             logger.warning(
-                f"【{self.cookie_id}】检测到平台风控，退避 {delay} 秒后重试"
+                f"【{self.cookie_id}】检测到平台风控，退避 {base} 秒后重试"
                 f"（第 {self.connection_failures} 次）"
             )
-            return delay
-
         # WebSocket意外断开 - 短延迟
-        if "no close frame received or sent" in error_msg:
-            return min(3 * self.connection_failures, 15)
-
+        elif "no close frame received or sent" in error_msg:
+            base = min(3 * self.connection_failures, 15)
         # 网络连接问题 - 长延迟
         elif "Connection refused" in error_msg or "timeout" in error_msg.lower():
-            return min(10 * self.connection_failures, 60)
-
+            base = min(10 * self.connection_failures, 60)
         # 其他未知错误 - 中等延迟
         else:
-            return min(5 * self.connection_failures, 30)
+            base = min(5 * self.connection_failures, 30)
+
+        # 0% ~ 30% 抖动。风控退避最长 30 分钟，抖动上限也一并放大，
+        # 否则长退避场景下几千秒的等待仍是整齐对齐的。
+        jitter = random.uniform(0, base * 0.3)
+        return round(base + jitter, 1)
+
+    @staticmethod
+    def is_ws_closed(ws) -> bool:
+        """安全判断 WebSocket 是否已关闭。
+
+        直接读 ``ws.closed`` 在连接对象处于半初始化或已被回收的状态下会抛
+        AttributeError。心跳循环把它当成"发送失败"累计，连续 3 次就停止心跳、
+        把一条其实还活着的连接判成断开。这里统一兜住异常并按"已关闭"处理，
+        让判定只依赖明确的 False。
+        """
+        if ws is None:
+            return True
+        try:
+            return bool(ws.closed)
+        except Exception:
+            return True
 
     def _cleanup_instance_caches(self):
         """清理实例级别的缓存，防止内存泄漏"""
@@ -6962,7 +6985,7 @@ class XianyuLive:
                             # 注意：只关闭WebSocket，不重启整个实例（后台任务继续运行）
                             
                             # 关闭当前WebSocket连接
-                            if self.ws and not self.ws.closed:
+                            if not self.is_ws_closed(self.ws):
                                 try:
                                     logger.info(f"【{self.cookie_id}】关闭当前WebSocket连接以使用新Token重连...")
                                     await self.ws.close()
@@ -7263,8 +7286,10 @@ class XianyuLive:
 
     async def send_heartbeat(self, ws):
         """发送心跳包"""
-        # 检查WebSocket连接状态，如果已关闭则不发送
-        if ws.closed:
+        # 检查WebSocket连接状态，如果已关闭则不发送。
+        # 用 is_ws_closed 而不是直接读 ws.closed：半初始化/已回收的连接对象读
+        # 属性会抛 AttributeError，被下面当成"发送失败"累计，连续 3 次就停心跳。
+        if self.is_ws_closed(ws):
             raise ConnectionError("WebSocket连接已关闭，无法发送心跳")
         
         msg = {
@@ -7299,7 +7324,7 @@ class XianyuLive:
                         break
 
                     # 检查WebSocket连接状态
-                    if ws.closed:
+                    if self.is_ws_closed(ws):
                         logger.warning(f"【{self.cookie_id}】WebSocket连接已关闭，停止心跳循环")
                         break
 
@@ -8209,7 +8234,7 @@ class XianyuLive:
                 )
 
                 # 重新启动心跳任务
-                if heartbeat_was_running and self.ws and not self.ws.closed:
+                if heartbeat_was_running and not self.is_ws_closed(self.ws):
                     logger.warning(f"【{self.cookie_id}】重新启动心跳任务")
                     self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
 
@@ -8259,7 +8284,7 @@ class XianyuLive:
                 self.last_cookie_refresh_time = current_time
             finally:
                 # 确保心跳任务恢复（如果WebSocket仍然连接）
-                if (self.ws and not self.ws.closed and
+                if (not self.is_ws_closed(self.ws) and
                     (not self.heartbeat_task or self.heartbeat_task.done())):
                     logger.info(f"【{self.cookie_id}】Cookie刷新完成，心跳任务正常运行")
                     self.heartbeat_task = asyncio.create_task(self.heartbeat_loop(self.ws))
@@ -9445,8 +9470,24 @@ class XianyuLive:
                 raise
 
     async def _create_websocket_connection(self, headers):
-        """创建WebSocket连接，兼容不同版本的websockets库"""
+        """创建WebSocket连接，兼容不同版本的websockets库。
+
+        显式传入超时与底层 PING 参数：
+
+        - ``open_timeout=30``：默认握手超时 10 秒在网络抖动时太短，TLS 握手
+          还没完成就被判失败，表现为"连不上、反复重连"。
+        - ``ping_interval=20`` / ``ping_timeout=15``：让 websockets 库自己发
+          PING 帧。应用层心跳只证明"我们还能往对端写"，而库级 PING 需要对方
+          回 PONG —— TCP 假活（对端已经不处理了但我们这边还没收到 FIN）时，
+          它是唯一能发现连接已死并触发重连的机制。
+        """
         import websockets
+
+        connect_kwargs = {
+            'open_timeout': 30,
+            'ping_interval': 20,
+            'ping_timeout': 15,
+        }
 
         # 获取websockets版本用于调试
         websockets_version = getattr(websockets, '__version__', '未知')
@@ -9456,7 +9497,8 @@ class XianyuLive:
             # 尝试使用extra_headers参数
             return websockets.connect(
                 self.base_url,
-                extra_headers=headers
+                extra_headers=headers,
+                **connect_kwargs
             )
         except Exception as e:
             # 捕获所有异常类型，不仅仅是TypeError
@@ -9469,7 +9511,8 @@ class XianyuLive:
                 try:
                     return websockets.connect(
                         self.base_url,
-                        additional_headers=headers
+                        additional_headers=headers,
+                        **connect_kwargs
                     )
                 except Exception as e2:
                     error_msg2 = self._safe_str(e2)
@@ -9478,7 +9521,7 @@ class XianyuLive:
                     if "additional_headers" in error_msg2 or "unexpected keyword argument" in error_msg2:
                         # 如果都不支持，则不传递headers
                         logger.warning("websockets库不支持headers参数，使用基础连接模式")
-                        return websockets.connect(self.base_url)
+                        return websockets.connect(self.base_url, **connect_kwargs)
                     else:
                         raise e2
             else:
