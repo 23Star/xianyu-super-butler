@@ -18,6 +18,13 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 from utils import browser_limit
+from utils.captcha_strict import (
+    collect_x5sec_values,
+    describe_verification_failure,
+    is_verification_page_expired,
+    pick_manual_verification_url,
+    verification_passed,
+)
 
 LOGIN_URL = "https://www.goofish.com/"
 
@@ -207,15 +214,24 @@ async def open_manual_session(
 
         page = await context.new_page()
 
+        # 拖动前先记下旧的 x5sec 值。账号 Cookie 里本来就可能有上次通过留下的
+        # x5sec，不记快照就无法区分「人工真的过验证了」和「页面本来就有旧凭证」。
+        try:
+            previous_x5sec = collect_x5sec_values(await context.cookies())
+        except Exception as snap_err:
+            previous_x5sec = {}
+            logger.warning(f"【{cookie_id}】读取拖动前 x5sec 快照失败: {snap_err}")
+
         # 惩罚页 URL 优先：只有导航到它才会弹出滑块。
         # 原实现导航到闲鱼首页，首页没有滑块 → check_completion 立刻误判
         # “已完成” → 浏览器秒关，用户连上控制页时会话已不存在。
         #
         # 先触发一次实时 Token 刷新拿最新 URL（账号正在风控才返回）；拿不到
         # 再退回 DB 里最近一次惩罚 URL（可能已过期，等滑块时会发现）。
-        verification_url = await _fetch_live_verification_url(cookie_id, cookies_str)
-        if not verification_url:
-            verification_url = get_verification_url(cookie_id)
+        verification_url = pick_manual_verification_url(
+            await _fetch_live_verification_url(cookie_id, cookies_str),
+            get_verification_url(cookie_id),
+        )
         if not verification_url:
             result["message"] = "未找到该账号的滑块惩罚 URL，无法开启人工验证"
             logger.warning(f"【{cookie_id}】{result['message']}")
@@ -227,6 +243,20 @@ async def open_manual_session(
             logger.warning(f"【{cookie_id}】导航惩罚页失败: {exc}")
         # 给验证组件一点渲染时间，否则截图可能是空白
         await asyncio.sleep(2)
+
+        # 惩罚链接是一次性的、约 1 小时失效，过期后打开只有一句错误文案。
+        # 先显式识别，给用户一句能照做的提示，而不是让他对着空白截图拖滑块。
+        try:
+            page_content = await page.content()
+        except Exception:
+            page_content = ""
+        if is_verification_page_expired(page_content):
+            result["message"] = (
+                "验证链接已过期（页面提示访问出现问题）。"
+                "请让账号重新触发风控以获取新链接后再试"
+            )
+            logger.warning(f"【{cookie_id}】{result['message']}")
+            return result
 
         # 等滑块真正出现再建会话 —— 找不到滑块说明 x5secdata 已失效，
         # 此时即使建了会话也拖不出结果，尽早告知用户更合适。
@@ -274,10 +304,27 @@ async def open_manual_session(
             result["message"] = "验证已完成但未取到 Cookie"
             return result
 
+        # 人工也不能只看「滑块消失了」：必须真的拿到新的 x5sec，并且页面已经
+        # 离开验证地址。否则把旧凭证或挑战态 cookie 写回账号，人工验证等于白做。
+        try:
+            final_url = page.url or ""
+        except Exception:
+            final_url = ""
+        try:
+            final_cookies = await context.cookies()
+        except Exception:
+            final_cookies = []
+
+        if not verification_passed(previous_x5sec, final_cookies, final_url):
+            reason = describe_verification_failure(previous_x5sec, final_cookies, final_url)
+            result["message"] = f"验证未真正通过（{reason}），请重试或重新获取验证链接"
+            logger.warning(f"【{cookie_id}】人工验证严格判定未通过: {reason}")
+            return result
+
         result["success"] = True
         result["cookies_str"] = new_cookies
         result["message"] = "人工验证完成"
-        logger.info(f"【{cookie_id}】人工验证完成，已取得新 Cookie")
+        logger.info(f"【{cookie_id}】人工验证完成，已取得新的 x5sec")
         return result
     except Exception as exc:
         result["message"] = f"人工验证会话异常: {exc}"

@@ -21,6 +21,15 @@ from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
 from utils import browser_limit
+from utils.captcha_strict import (
+    PUNISH_URL_MARKERS,
+    collect_x5_cookies_for_log,
+    collect_x5sec_values,
+    describe_verification_failure,
+    is_verification_page_expired,
+    select_newest_x5_cookies,
+    verification_passed,
+)
 
 # 滑块优先用 Patchright —— Playwright 的反检测分支，修掉了 CDP 层面的自动化痕迹。
 # 实测同一份 Chromium：Playwright 下 navigator.webdriver 为 true（最基础也最致命的
@@ -102,12 +111,16 @@ SLIDER_FAILURE_KEYWORDS = (
 
 # punish 页 URL 的特征片段。取回凭证前若 URL 仍命中其中任一项，说明服务端没有
 # 把我们放行走，页面上的 x5* 只是挑战态残留，不能当成通行凭证。
-PUNISH_URL_MARKERS = (
-    "punish",
-    "x5step=2",
-    "action=captcha",
-    "pureCaptcha",
-)
+#
+# 判定逻辑统一放在 utils.captcha_strict（那里是唯一来源），这里保留同名别名，
+# 避免两处常量各自漂移 —— 之前就是这个常量和 Ydisks 的标记列表不一致，
+# 导致 /captcha 形式的验证页漏判。
+PUNISH_URL_MARKERS = PUNISH_URL_MARKERS
+
+# 滑块拖完后等新 x5sec 落地的窗口。服务端下发新凭证有延迟，只读一次容易
+# 读到旧值并误判成失败；这里轮询到出现新值或超时。
+X5SEC_WAIT_TIMEOUT = 15.0
+X5SEC_POLL_INTERVAL = 0.25
 
 
 def replay_trajectory(trajectory, start_x, start_y, move, sleep=time.sleep):
@@ -792,14 +805,19 @@ class XianyuSliderStealth:
     def _get_cookies_after_success(self):
         """取回验证通过后的 x5 系列 Cookie，取不到有效凭证时返回 None。
 
-        两道关卡，缺一不可：
+        严格通过判定（对照 Ydisks 的生产契约），三件事缺一不可：
 
-        1. URL 还停在 punish 路径上，说明服务端根本没放行，此刻页面上的
-           cookie 只是挑战态残留。
-        2. 必须含 x5sec —— 它才是通行凭证。x5secdata / x5sectag / x5step 是我们
-           导航进 punish 页时自己带进去的挑战标记，永远存在；只要拿「有没有
-           x5* 」当成功判据，就等于无条件判成功，然后把一堆挑战 cookie 写回
-           账号，token 刷新永远返回 FAIL_SYS_USER_VALIDATE，形成死循环。
+        1. **必须出现新的 x5sec。** 账号 Cookie 里本来就可能带着上次通过留下的
+           x5sec，只判「有 x5sec」等于无条件判成功。这里拿拖动前的快照比对，
+           旧值不算、空值不算。
+        2. **URL 必须已经离开 punish。** 还停在验证页说明服务端根本没放行，
+           此刻页面上的 cookie 只是挑战态残留。
+        3. **同名 Cookie 按域优先级取值。** x5sec 由 h5api.m.goofish.com 子域下发，
+           与 .goofish.com 上的同名 Cookie 并存；扁平字典会让后读到的覆盖先读到的，
+           顺序不确定，可能把旧值写回账号。
+
+        `.nc-container` 消失、滑块隐藏、成功图标出现都不能单独证明通过 ——
+        它们只说明前端组件收起了，不代表服务端放行。
         """
         try:
             logger.info(f"【{self.pure_user_id}】开始获取滑块验证成功后的页面cookie...")
@@ -819,43 +837,46 @@ class XianyuSliderStealth:
             # 从 punish 跳走后留个窗口，让 set-cookie 落盘
             time.sleep(1)
 
-            if any(k in current_url for k in PUNISH_URL_MARKERS):
-                logger.error(
-                    f"【{self.pure_user_id}】❌ 取 cookie 前发现 URL 仍在 punish，"
-                    f"验证未真正通过: {current_url[:120]}"
-                )
-                return None
+            # 等新 x5sec 落地。滑块通过到服务端下发新凭证之间有延迟，
+            # 只读一次容易读到旧值，误判成失败。
+            previous = getattr(self, '_previous_x5sec_values', {}) or {}
+            cookies = []
+            fresh_seen = False
+            deadline = time.monotonic() + X5SEC_WAIT_TIMEOUT
+            while True:
+                try:
+                    cookies = self.context.cookies()
+                except Exception as read_err:
+                    logger.warning(f"【{self.pure_user_id}】读取浏览器 Cookie 失败: {read_err}")
+                    return None
 
-            cookies = self.context.cookies()
+                if verification_passed(previous, cookies, current_url):
+                    fresh_seen = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(X5SEC_POLL_INTERVAL)
+
             if not cookies:
                 logger.warning(f"【{self.pure_user_id}】未获取到任何cookie")
                 return None
 
-            new_cookies = {c['name']: c['value'] for c in cookies}
-            logger.info(
-                f"【{self.pure_user_id}】滑块验证成功后已获取cookie，"
-                f"共{len(new_cookies)}个cookie"
-            )
-            logger.info(f"【{self.pure_user_id}】获取到的所有cookie: {list(new_cookies.keys())}")
-
-            filtered_cookies = {}
-            for cookie_name, cookie_value in new_cookies.items():
-                if cookie_name.lower().startswith('x5'):
-                    filtered_cookies[cookie_name] = cookie_value
-
-            logger.info(
-                f"【{self.pure_user_id}】找到{len(filtered_cookies)}个x5相关cookies: "
-                f"{list(filtered_cookies.keys())}"
-            )
-
-            if 'x5sec' not in filtered_cookies:
+            if not fresh_seen:
+                # 明确区分两种失败，便于线上定位：是没拿到新凭证，还是拿到了
+                # 新凭证但服务端仍把页面留在验证地址。
+                reason = describe_verification_failure(previous, cookies, current_url)
                 logger.error(
-                    f"【{self.pure_user_id}】❌ x5 cookie 中没有 x5sec，"
-                    f"滑块视觉通过但服务端并未放行。已有key: "
-                    f"{list(filtered_cookies.keys())}"
+                    f"【{self.pure_user_id}】❌ 严格判定未通过：{reason}。"
+                    f"已有 x5 字段: {[n for n, _ in collect_x5_cookies_for_log(cookies)]}"
                 )
                 return None
 
+            logger.info(
+                f"【{self.pure_user_id}】✅ 严格判定通过：新 x5sec 且已离开验证页"
+            )
+
+            # 按域优先级取值，让真正签发 x5sec 的子域胜出
+            filtered_cookies = select_newest_x5_cookies(cookies)
             logger.info(
                 f"【{self.pure_user_id}】返回过滤后的x5相关cookie: "
                 f"{list(filtered_cookies.keys())}"
@@ -4382,6 +4403,21 @@ class XianyuSliderStealth:
                     f"【{self.pure_user_id}】未提供账号 Cookie —— 验证通过后风控可能不解除"
                 )
 
+            # 拖动前先记下旧的 x5sec 值。账号 Cookie 里本来就可能有上次通过留下的
+            # x5sec，不记快照就只能判「x5* 存在」，等于无条件判成功 —— 这正是
+            # 「滑块明显过了却一直 FAIL_SYS_USER_VALIDATE」的根因。注入之后取，
+            # 保证快照包含账号自带的旧值。
+            try:
+                self._previous_x5sec_values = collect_x5sec_values(self.context.cookies())
+                if self._previous_x5sec_values:
+                    logger.info(
+                        f"【{self.pure_user_id}】拖动前已有 x5sec 值 {len(self._previous_x5sec_values)} 个，"
+                        "本次必须是新值才算通过"
+                    )
+            except Exception as snap_err:
+                self._previous_x5sec_values = {}
+                logger.warning(f"【{self.pure_user_id}】读取拖动前 x5sec 快照失败: {snap_err}")
+
             # 导航到目标URL，快速加载
             logger.info(f"【{self.pure_user_id}】导航到URL: {url}")
             # 记录下来供重试时重新加载 —— 验证失败后控件会锁死，
@@ -4411,6 +4447,17 @@ class XianyuSliderStealth:
             
             # 检查页面内容
             page_content = self.page.content()
+
+            # 惩罚链接是一次性的、约 1 小时失效。过期后打开只会看到
+            # 「抱歉，页面访问出现了问题」，此时既没有滑块可拖，继续跑流程还会
+            # 白白访问一次验证页加重风控 —— 直接判失败，让上层去取新链接。
+            if is_verification_page_expired(page_content):
+                logger.error(
+                    f"【{self.pure_user_id}】惩罚链接已过期（页面提示访问出现问题），"
+                    "不再尝试滑动，需重新获取新鲜链接"
+                )
+                return False, None
+
             if any(keyword in page_content for keyword in ["验证码", "captcha", "滑块", "slider"]):
                 logger.info(f"【{self.pure_user_id}】页面内容包含验证码相关关键词")
                 

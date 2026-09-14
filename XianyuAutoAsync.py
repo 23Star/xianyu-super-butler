@@ -11,7 +11,11 @@ from utils import browser_limit
 import websockets
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
-    generate_device_id, generate_sign, CAPTCHA_CHALLENGE_COOKIES
+    generate_device_id, generate_sign
+)
+from utils.captcha_strict import (
+    collect_x5sec_values,
+    merge_captcha_cookies,
 )
 from app.config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
@@ -2986,6 +2990,12 @@ class XianyuLive:
                 import asyncio
                 import concurrent.futures
 
+                # 拖动前先记下账号当前已有的 x5sec 值。Cookie 里本来就可能带着
+                # 上次通过留下的 x5sec，不记快照就只能判「有没有 x5sec」——
+                # 那等于无条件判成功，这正是「滑块明显过了却一直
+                # FAIL_SYS_USER_VALIDATE」的根因。
+                previous_x5sec = collect_x5sec_values(self.cookies_str)
+
                 loop = asyncio.get_event_loop()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     # 执行滑块验证。必须把账号 Cookie 一并传入 ——
@@ -2999,75 +3009,54 @@ class XianyuLive:
                     )
 
                 if success and cookies:
-                    # 边界防御：只有 x5sec 才是通行凭证。x5secdata / x5sectag 是挑战
-                    # 标记，必然存在，不能拿它们当验证通过的证据 —— 否则会把一堆
-                    # 挑战 cookie 写回账号，token 刷新永远 FAIL_SYS_USER_VALIDATE。
-                    if 'x5sec' not in {k.lower() for k in cookies}:
+                    # 严格判定：必须出现**新的** x5sec。旧值不算，只有挑战标记也不算。
+                    # x5secdata / x5sectag 是「这个请求还有一道验证没做完」的标记，
+                    # 必然存在，拿它们当通过证据会把挑战 cookie 写回账号，
+                    # token 刷新永远返回 FAIL_SYS_USER_VALIDATE。
+                    fresh_x5sec = [
+                        name for name, value in cookies.items()
+                        if name.lower() == 'x5sec'
+                        and value
+                        and value not in previous_x5sec.values()
+                    ]
+                    if not fresh_x5sec:
                         logger.error(
-                            f"【{self.cookie_id}】滑块返回的 cookie 中没有 x5sec，"
+                            f"【{self.cookie_id}】滑块返回的 cookie 中没有新的 x5sec，"
                             f"视觉通过但服务端未放行，按失败处理。"
-                            f"已有key: {list(cookies.keys())}"
+                            f"已有key: {list(cookies.keys())}, "
+                            f"拖动前旧值数: {len(previous_x5sec)}"
                         )
                         success = False
                         cookies = None
 
                 if success and cookies:
-                    logger.info(f"【{self.cookie_id}】滑块验证成功，获取到新的cookies")
+                    logger.info(f"【{self.cookie_id}】滑块验证成功，获取到新的 x5sec")
 
-                    # 只提取x5sec相关的cookie值进行更新
-                    updated_cookies = self.cookies.copy()  # 复制现有cookies
-                    new_cookie_count = 0
-                    updated_cookie_count = 0
-                    x5sec_cookies = {}
+                    # 备份原有 cookies，供数据库更新失败时回滚
+                    old_cookies_str = self.cookies_str
+                    old_cookies_dict = self.cookies.copy()
 
-                    # 筛选出x5相关的cookies（包括x5sec, x5step等）
-                    for cookie_name, cookie_value in cookies.items():
-                        cookie_name_lower = cookie_name.lower()
-                        if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
-                            x5sec_cookies[cookie_name] = cookie_value
+                    # 按域优先级合并 x5 系列 Cookie。x5sec 由 h5api.m.goofish.com
+                    # 子域下发，与 .goofish.com 上的同名 Cookie 并存；扁平字典合并
+                    # 会让「后读到的」覆盖「先读到的」，顺序不确定，可能把旧值写回
+                    # 账号。merge_captcha_cookies 同时负责清掉挑战标记。
+                    cookies_str, x5sec_cookies = merge_captcha_cookies(
+                        self.cookies_str, cookies
+                    )
+                    updated_cookies = trans_cookies(cookies_str)
 
-                    logger.info(f"【{self.cookie_id}】找到{len(x5sec_cookies)}个x5相关cookies: {list(x5sec_cookies.keys())}")
+                    new_cookie_count = sum(
+                        1 for k in x5sec_cookies if k not in old_cookies_dict
+                    )
+                    updated_cookie_count = len(x5sec_cookies) - new_cookie_count
 
-                    # 只更新x5相关的cookies
-                    for cookie_name, cookie_value in x5sec_cookies.items():
-                        if cookie_name in updated_cookies:
-                            if updated_cookies[cookie_name] != cookie_value:
-                                logger.warning(f"【{self.cookie_id}】更新x5 cookie: {cookie_name}")
-                                updated_cookies[cookie_name] = cookie_value
-                                updated_cookie_count += 1
-                            else:
-                                logger.warning(f"【{self.cookie_id}】x5 cookie值未变: {cookie_name}")
-                        else:
-                            logger.warning(f"【{self.cookie_id}】新增x5 cookie: {cookie_name}")
-                            updated_cookies[cookie_name] = cookie_value
-                            new_cookie_count += 1
-
-                    # 拿到 x5sec 就必须清掉挑战标记。x5secdata / x5sectag 表示"这个请求
-                    # 还有一道未完成的人机验证"，而 x5sec 才是通过凭证。
-                    # 原来只做新增和覆盖、从不删除，于是滑块过了以后 Cookie 里
-                    # x5sec 和旧的 x5secdata 同时存在 —— 闲鱼据此认为挑战仍未完成，
-                    # 继续返回 FAIL_SYS_USER_VALIDATE，表现为"滑块过了却一直用不了"。
-                    if 'x5sec' in {k.lower() for k in x5sec_cookies}:
-                        for stale in CAPTCHA_CHALLENGE_COOKIES:
-                            for name in [k for k in updated_cookies if k.lower() == stale]:
-                                # 本次滑块响应又下发了同名值时以新值为准，不要删
-                                if name not in x5sec_cookies:
-                                    updated_cookies.pop(name, None)
-                                    logger.warning(
-                                        f"【{self.cookie_id}】已清除过期的验证挑战标记: {name}"
-                                    )
-
-                    # 将合并后的cookies字典转换为字符串格式
-                    cookies_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items()])
-
-                    logger.info(f"【{self.cookie_id}】x5 Cookie更新完成: 新增{new_cookie_count}个, 更新{updated_cookie_count}个, 总计{len(updated_cookies)}个")
+                    logger.info(
+                        f"【{self.cookie_id}】x5 Cookie更新完成: 新增{new_cookie_count}个, "
+                        f"更新{updated_cookie_count}个, 总计{len(updated_cookies)}个"
+                    )
 
                     # 自动更新数据库中的cookie
                     try:
-                        # 备份原有cookies
-                        old_cookies_str = self.cookies_str
-                        old_cookies_dict = self.cookies.copy()
-
                         # 更新当前实例的cookies（使用合并后的cookies）
                         self.cookies_str = cookies_str
                         self.cookies = updated_cookies
