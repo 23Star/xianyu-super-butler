@@ -17,6 +17,7 @@ from app.specification import (
     combine_legacy_specification,
     specification_text,
 )
+from utils.browser_identity import client_hint_headers, user_agent
 
 
 def _cached_specification_fields(order: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,9 +73,10 @@ class OrderDetailFetcher:
             "cache-control": "no-cache",
             "pragma": "no-cache",
             "priority": "u=0, i",
-            "sec-ch-ua": "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "\"Windows\"",
+            **client_hint_headers(),
+            # 只发 Client Hints 不发 UA 是明显的异常指纹：真实浏览器一定会
+            # 同时带 User-Agent。这里补上统一来源的那一份。
+            "user-agent": user_agent(),
             "sec-fetch-dest": "document",
             "sec-fetch-mode": "navigate",
             "sec-fetch-site": "same-origin",

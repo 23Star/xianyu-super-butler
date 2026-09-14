@@ -40,14 +40,14 @@ DEFAULT_HEADERS:
   pragma: no-cache
   priority: u=1, i
   referer: https://www.goofish.com/
-  sec-ch-ua: '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"'
+  sec-ch-ua: '"Not(A:Brand";v="99", "Google Chrome";v="138", "Chromium";v="138"'
   sec-ch-ua-mobile: ?0
   sec-ch-ua-platform: '"Windows"'
   sec-fetch-dest: empty
   sec-fetch-mode: cors
   sec-fetch-site: same-site
   user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
-    like Gecko) Chrome/133.0.0.0 Safari/537.36
+    like Gecko) Chrome/138.0.0.0 Safari/537.36
 HEARTBEAT_INTERVAL: 15
 HEARTBEAT_TIMEOUT: 30
 LOG_CONFIG:
@@ -76,5 +76,5 @@ WEBSOCKET_HEADERS:
   Origin: https://www.goofish.com
   Pragma: no-cache
   User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
-    like Gecko) Chrome/133.0.0.0 Safari/537.36
+    like Gecko) Chrome/138.0.0.0 Safari/537.36
 WEBSOCKET_URL: wss://wss-goofish.dingtalk.com/

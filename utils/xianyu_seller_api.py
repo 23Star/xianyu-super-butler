@@ -21,6 +21,7 @@ import aiohttp
 from loguru import logger
 
 from utils import risk_control
+from utils.browser_identity import user_agent
 from utils.xianyu_utils import generate_sign, trans_cookies
 
 
@@ -50,11 +51,8 @@ class XianyuSellerAPI:
     BASE_URL = "https://h5api.m.goofish.com/h5/{api}/{version}/"
     ORIGIN = "https://seller.goofish.com"
     SPM_CNT = "a21107h.42826273.0.0"
-    USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/138.0.0.0 Safari/537.36"
-    )
+    # 统一来源：与浏览器、其他子系统报同一个版本，避免跨请求指纹跳变
+    USER_AGENT = user_agent()
 
     # sold.get 的订单状态筛选，值来自 merchant.order.count 的 countInfoList
     QUERY_CODES = (

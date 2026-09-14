@@ -11,6 +11,8 @@ import random
 from loguru import logger
 from DrissionPage import Chromium, ChromiumOptions
 
+from utils.browser_identity import client_hint_headers, user_agent
+
 def log_captcha_event(cookie_id: str, event_type: str, success: bool = None, details: str = ""):
     """简单记录滑块验证事件到txt文件"""
     try:
@@ -1742,13 +1744,11 @@ class XianyuApis:
             'pragma': 'no-cache',
             'priority': 'u=1, i',
             'referer': 'https://www.goofish.com/',
-            'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
+            **client_hint_headers(),
             'sec-fetch-dest': 'empty',
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-site',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+            'user-agent': user_agent(),
         })
         
     def clear_duplicate_cookies(self):

@@ -466,12 +466,17 @@ except Exception as e:
 
 
 def _verify_browser_launchable():
-    """启动时实际拉起一次浏览器，确认版本匹配。
+    """启动时实际拉起一次浏览器，确认版本匹配，并核对对外声明的浏览器身份。
 
     仅检查目录存在是不够的：playwright 与 Chromium revision 强绑定，
     版本不匹配时 launch 会报 "Executable doesn't exist"。此时滑块验证、
     扫码登录、账号资料抓取会全部静默失效 —— 滑块处理在 0.3 秒内就崩掉，
     看日志只会看到"验证失败"，很难联想到是浏览器问题。
+
+    顺带读一次实测 UA 并和 utils/browser_identity.py 声明的版本比对：HTTP
+    请求（登录、令牌刷新、发货、心跳）报的版号和浏览器实际版本不一致时，
+    风控可以据此识别。这里只告警、不改写返回值 —— 升级浏览器不该静默改变
+    线上身份，把"该更新常量了"变成一条看得见的日志更安全。
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -483,8 +488,27 @@ def _verify_browser_launchable():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            browser.close()
+            try:
+                actual_ua = ""
+                try:
+                    page = browser.new_page()
+                    actual_ua = page.evaluate("() => navigator.userAgent") or ""
+                except Exception:
+                    # 读不到 UA 不影响"能不能启动"这个结论
+                    actual_ua = ""
+            finally:
+                browser.close()
         print(f"{_OK} 浏览器自检通过，滑块验证与扫码登录可用")
+        if actual_ua:
+            try:
+                from utils.browser_identity import describe_identity_problem
+                mismatch = describe_identity_problem(actual_ua)
+            except Exception:
+                mismatch = ""
+            if mismatch:
+                print(f"{_WARN} 浏览器身份不一致：{mismatch}")
+            else:
+                print(f"{_OK} 浏览器身份一致（{actual_ua.split(' ')[-1]}）")
         return True
     except Exception as exc:
         detail = str(exc)
