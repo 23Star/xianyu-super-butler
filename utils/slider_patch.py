@@ -9,7 +9,8 @@ import time
 import random
 
 
-def send_notification(user_id: str, title: str, message: str, notification_type: str = "info"):
+def send_notification(user_id: str, title: str, message: str, notification_type: str = "info",
+                      event_type: str = None):
     """
     发送通知的公共方法（支持多种通知渠道）
     
@@ -26,6 +27,7 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
         title: 通知标题
         message: 通知内容
         notification_type: 通知类型 (info/warning/error/success)
+        event_type: 通知事件类型，用于匹配账号规则订阅；为空则发送给全部规则
     
     Returns:
         bool: 是否成功发送至少一个通知
@@ -36,7 +38,7 @@ def send_notification(user_id: str, title: str, message: str, notification_type:
         # 获取账号的通知配置
         try:
             from app.db_manager import db_manager
-            notifications = db_manager.get_account_notifications(user_id)
+            notifications = db_manager.get_account_notifications(user_id, event_type=event_type)
             
             if not notifications:
                 logger.debug(f"【{user_id}】未配置消息通知，跳过发送")
@@ -1637,7 +1639,13 @@ def _send_qr_verification_notification(cookie_id: str, qr_url: str):
         )
         
         # 使用公共通知方法发送
-        send_notification(cookie_id, notification_title, notification_message, "warning")
+        send_notification(
+            cookie_id,
+            notification_title,
+            notification_message,
+            "warning",
+            event_type="captcha_manual",
+        )
         
     except Exception as e:
         logger.error(f"【{cookie_id}】发送二维码验证通知失败: {e}")
@@ -1991,7 +1999,13 @@ def patch_login_with_password_headful():
                                             f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                                             f"请检查账号和密码是否正确，然后重新配置。"
                                         )
-                                        send_notification(user_id, notification_title, notification_message, "error")
+                                        send_notification(
+                                            user_id,
+                                            notification_title,
+                                            notification_message,
+                                            "error",
+                                            event_type="login_failed",
+                                        )
                                     except Exception as notify_err:
                                         logger.warning(f"【{user_id}】发送账密错误通知失败: {notify_err}")
                                     

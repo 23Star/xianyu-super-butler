@@ -36,8 +36,6 @@ from app.services.notification_test import (
     notification_test_rate_limiter,
 )
 from app.routers.delivery_block import create_delivery_block_router
-from app.routers.logistics_quote import create_logistics_quote_router
-from app.routers.logistics_agent import create_logistics_agent_router
 from utils.qr_login import qr_login_manager
 from utils.xianyu_utils import trans_cookies
 from utils.image_utils import image_manager
@@ -357,11 +355,6 @@ else:
 app.include_router(create_delivery_block_router(get_current_user, db_manager))
 logger.info("已注册发货拦截规则路由")
 
-app.include_router(create_logistics_quote_router(get_current_user, db_manager))
-logger.info("已注册物流报价解析路由")
-
-app.include_router(create_logistics_agent_router(get_current_user, db_manager))
-logger.info("已注册物流 Agent 路由")
 
 # 初始化文件日志收集器
 setup_file_logging()
