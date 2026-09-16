@@ -1,10 +1,10 @@
 {
   "repository": "23Star/xianyu-super-butler",
-  "main_stars": 966,
+  "main_stars": 971,
   "fork_count": 618,
   "starred_fork_count": 12,
-  "fork_stars": 1915,
-  "total_stars": 2881,
+  "fork_stars": 1916,
+  "total_stars": 2887,
   "top_forks": [
     {
       "repository": "Mxucc/xianyu-super-butler",
@@ -12,14 +12,14 @@
       "url": "https://github.com/Mxucc/xianyu-super-butler"
     },
     {
+      "repository": "adzcsx2/xianyu-seller",
+      "stars": 2,
+      "url": "https://github.com/adzcsx2/xianyu-seller"
+    },
+    {
       "repository": "szhadmin/xianyu-super-butler",
       "stars": 2,
       "url": "https://github.com/szhadmin/xianyu-super-butler"
-    },
-    {
-      "repository": "adzcsx2/xianyu-seller",
-      "stars": 1,
-      "url": "https://github.com/adzcsx2/xianyu-seller"
     },
     {
       "repository": "Elichenx/xianyu-super-butler",
@@ -32,5 +32,5 @@
       "url": "https://github.com/founderqiang/xianyu-super-butler"
     }
   ],
-  "updated_at": "2026-09-16 11:44"
+  "updated_at": "2026-09-16 17:05"
 }
