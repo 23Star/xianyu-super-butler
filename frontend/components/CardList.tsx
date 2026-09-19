@@ -1,13 +1,25 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Card } from '../types';
-import { getCards, createCard, updateCard, deleteCard } from '../services/api';
+import { Card, CardShipment } from '../types';
+import { getCards, createCard, updateCard, deleteCard, getCardShipments, clearCardShipments } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Plus, CreditCard, FileText, Image as ImageIcon, Code, Edit, Trash2, Save, X, Package, Boxes } from 'lucide-react';
+import { Plus, CreditCard, FileText, Image as ImageIcon, Code, Edit, Trash2, Save, X, Package, PackageCheck, Boxes } from 'lucide-react';
 import { EmptyState, PageHeader, SectionHeader } from './ui';
+import DeliveryContentConfig from './DeliveryContentConfig';
+
+const formatShipmentTime = (value?: string) => {
+  if (!value) return '';
+  // SQLite CURRENT_TIMESTAMP 是 UTC 且没有时区标记，前端按 UTC 解析后再本地化
+  const date = new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+};
 
 const CardList: React.FC = () => {
   const [cards, setCards] = useState<Card[]>([]);
+  const [shipments, setShipments] = useState<CardShipment[]>([]);
+  const [shipmentTotal, setShipmentTotal] = useState(0);
+  const [showShipmentsModal, setShowShipmentsModal] = useState(false);
+  const [clearingShipments, setClearingShipments] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
@@ -18,12 +30,35 @@ const CardList: React.FC = () => {
     content: '',
     description: '',
     enabled: true,
-    delay_seconds: 0
+    delay_seconds: 0,
+    delivery_template: '',
+    delivery_template_enabled: false,
+    delivery_template_images: {} as Record<string, string>
   });
+
+  const loadShipments = useCallback(() => {
+    getCardShipments(200)
+      .then(({ total, shipments: records }) => {
+        setShipmentTotal(total);
+        setShipments(records);
+      })
+      .catch((error) => {
+        console.error('获取已发货卡密失败:', error);
+      });
+  }, []);
 
   useEffect(() => {
     getCards().then(setCards);
-  }, []);
+    loadShipments();
+    // 自动发货发生在后端，页面每 15 秒拉一次，保证已发货卡片数量能跟着涨
+    const timer = window.setInterval(loadShipments, 15000);
+    const handleFocus = () => loadShipments();
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [loadShipments]);
 
   const CardIcon = ({ type }: { type: string }) => {
       switch(type) {
@@ -55,6 +90,9 @@ const CardList: React.FC = () => {
       // 通用配置
       delay_seconds: card.delay_seconds || 0,
       description: card.description || '',
+      delivery_template: card.delivery_template || '',
+      delivery_template_enabled: Boolean(card.delivery_template_enabled),
+      delivery_template_images: card.delivery_template_images || {},
       enabled: card.enabled
     });
     setShowEditModal(true);
@@ -72,6 +110,14 @@ const CardList: React.FC = () => {
       notify('请选择卡密类型');
       return;
     }
+    if (
+      editForm.type !== 'image'
+      && editForm.delivery_template_enabled
+      && !editForm.delivery_template?.trim()
+    ) {
+      notify('请填写发货详情文案，或关闭发货文案开关');
+      return;
+    }
 
     try {
       const updateData: Partial<Card> = {
@@ -79,6 +125,9 @@ const CardList: React.FC = () => {
         type: editForm.type as any,
         description: editForm.description?.trim(),
         delay_seconds: editForm.delay_seconds || 0,
+        delivery_template: editForm.delivery_template || '',
+        delivery_template_enabled: editForm.type !== 'image' && Boolean(editForm.delivery_template_enabled),
+        delivery_template_images: editForm.delivery_template_images || {},
         enabled: editForm.enabled ?? true
       };
 
@@ -131,6 +180,14 @@ const CardList: React.FC = () => {
       notify(addForm.type === 'api' ? '请输入 API 地址' : '请输入卡密内容');
       return;
     }
+    if (
+      addForm.type !== 'image'
+      && addForm.delivery_template_enabled
+      && !addForm.delivery_template.trim()
+    ) {
+      notify('请填写发货详情文案，或关闭发货文案开关');
+      return;
+    }
 
     try {
       const createData: Partial<Card> = {
@@ -138,7 +195,10 @@ const CardList: React.FC = () => {
         type: addForm.type,
         description: addForm.description.trim(),
         enabled: addForm.enabled,
-        delay_seconds: addForm.delay_seconds
+        delay_seconds: addForm.delay_seconds,
+        delivery_template: addForm.delivery_template,
+        delivery_template_enabled: addForm.type !== 'image' && addForm.delivery_template_enabled,
+        delivery_template_images: addForm.delivery_template_images
       };
 
       if (addForm.type === 'text') {
@@ -163,7 +223,10 @@ const CardList: React.FC = () => {
         content: '',
         description: '',
         enabled: true,
-        delay_seconds: 0
+        delay_seconds: 0,
+        delivery_template: '',
+        delivery_template_enabled: false,
+        delivery_template_images: {}
       });
       getCards().then(setCards);
     } catch (error) {
@@ -181,11 +244,28 @@ const CardList: React.FC = () => {
     }
   };
 
+  const handleClearShipments = async () => {
+    if (!(await confirmAction('确认清空全部已发货记录吗？库存不会受影响。'))) return;
+    setClearingShipments(true);
+    try {
+      await clearCardShipments();
+      setShipments([]);
+      setShipmentTotal(0);
+      notify('已清空发货记录');
+    } catch (error) {
+      console.error('清空已发货记录失败:', error);
+      notify('清空失败，请重试');
+    } finally {
+      setClearingShipments(false);
+    }
+  };
+
   const enabledCount = cards.filter(card => card.enabled).length;
   const batchInventory = cards.reduce((total, card) => {
     if (card.type !== 'data' || !card.data_content) return total;
     return total + card.data_content.split('\n').filter(line => line.trim()).length;
   }, 0);
+  const latestShipment = shipments[0];
 
   return (
     <div className="page-stack animate-fade-in">
@@ -204,7 +284,7 @@ const CardList: React.FC = () => {
         )}
       />
 
-      <div className="metric-grid">
+      <div className="metric-grid metric-grid--four">
         <div className="metric-card">
           <p className="metric-card__label">卡密组</p>
           <p className="metric-card__value">{cards.length}</p>
@@ -220,6 +300,18 @@ const CardList: React.FC = () => {
           <p className="metric-card__value">{batchInventory}</p>
           <p className="metric-card__meta">按有效非空行统计</p>
         </div>
+        <button
+          type="button"
+          onClick={() => { loadShipments(); setShowShipmentsModal(true); }}
+          className="metric-card metric-card--action"
+          aria-label="查看批量库存已发货内容"
+        >
+          <p className="metric-card__label">批量库存已发货内容</p>
+          <p className="metric-card__value">{shipmentTotal}</p>
+          <p className="metric-card__meta metric-card__meta--truncate" title={latestShipment?.content || ''}>
+            {latestShipment ? `最近：${latestShipment.content}` : '暂无发货内容，点击查看'}
+          </p>
+        </button>
       </div>
 
       <section className="section-panel">
@@ -285,12 +377,19 @@ const CardList: React.FC = () => {
                       </span>
                     </td>
                     <td data-label="说明">
-                      <span
-                        className="block max-w-[220px] truncate text-sm text-gray-500"
-                        title={card.description || '-'}
-                      >
-                        {card.description || '-'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        {card.delivery_template_enabled && card.delivery_template && (
+                          <span className="inline-flex shrink-0 rounded-full bg-[#fff8d1] px-2 py-0.5 text-[10px] font-bold text-[#8a6300]">
+                            发货文案
+                          </span>
+                        )}
+                        <span
+                          className="block max-w-[220px] truncate text-sm text-gray-500"
+                          title={card.description || '-'}
+                        >
+                          {card.description || '-'}
+                        </span>
+                      </div>
                     </td>
                     <td data-label="状态">
                       <button
@@ -383,7 +482,14 @@ const CardList: React.FC = () => {
                     <label className="block text-sm font-bold text-gray-700 mb-2">卡券类型</label>
                     <select
                       value={editForm.type || 'text'}
-                      onChange={(e) => setEditForm({ ...editForm, type: e.target.value as any })}
+                      onChange={(e) => {
+                        const nextType = e.target.value as Card['type'];
+                        setEditForm({
+                          ...editForm,
+                          type: nextType,
+                          ...(nextType === 'image' ? { delivery_template_enabled: false } : {})
+                        });
+                      }}
                       className="ios-input w-full rounded-md px-3 py-2.5"
                     >
                       <option value="">请选择类型</option>
@@ -537,16 +643,30 @@ const CardList: React.FC = () => {
                   <p className="text-xs text-gray-500 mt-1">0表示立即发货，最大3600秒（1小时）</p>
                 </div>
 
-                {/* 备注信息 */}
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">备注信息</label>
-                  <textarea
-                    value={editForm.description || ''}
-                    onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                    className="ios-input h-32 w-full resize-y rounded-md px-3 py-2.5"
-                    placeholder="可选的备注信息"
+                {/* 发货内容：开关在原备注描述与发货详情文案之间切换 */}
+                {editForm.type !== 'image' ? (
+                  <DeliveryContentConfig
+                    idPrefix="edit-card"
+                    enabled={Boolean(editForm.delivery_template_enabled)}
+                    onEnabledChange={(enabled) => setEditForm((prev) => ({ ...prev, delivery_template_enabled: enabled }))}
+                    description={editForm.description || ''}
+                    onDescriptionChange={(description) => setEditForm((prev) => ({ ...prev, description }))}
+                    template={editForm.delivery_template || ''}
+                    onTemplateChange={(delivery_template) => setEditForm((prev) => ({ ...prev, delivery_template }))}
+                    images={editForm.delivery_template_images || {}}
+                    onImagesChange={(delivery_template_images) => setEditForm((prev) => ({ ...prev, delivery_template_images }))}
                   />
-                </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">备注信息</label>
+                    <textarea
+                      value={editForm.description || ''}
+                      onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                      className="ios-input h-32 w-full resize-y rounded-md px-3 py-2.5"
+                      placeholder="可选的备注信息"
+                    />
+                  </div>
+                )}
 
                 {/* 启用状态 */}
                 <div className="flex items-center justify-between gap-4 rounded-md border border-gray-200 bg-gray-50 p-4">
@@ -646,7 +766,7 @@ const CardList: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setAddForm({ ...addForm, type: 'image' })}
+                      onClick={() => setAddForm({ ...addForm, type: 'image', delivery_template_enabled: false })}
                       className={`rounded-md border p-3 text-sm font-bold transition-colors ${addForm.type === 'image' ? 'border-amber-400 bg-[#ffe100] text-black' : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
                     >
                       <ImageIcon className="w-5 h-5 mx-auto mb-1" />
@@ -702,15 +822,30 @@ const CardList: React.FC = () => {
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">描述</label>
-                  <textarea
-                    value={addForm.description}
-                    onChange={(e) => setAddForm({ ...addForm, description: e.target.value })}
-                    placeholder="卡密用途描述"
-                    className="ios-input h-20 w-full resize-y rounded-md px-3 py-2.5"
+                {/* 发货内容：开关在原备注描述与发货详情文案之间切换 */}
+                {addForm.type !== 'image' ? (
+                  <DeliveryContentConfig
+                    idPrefix="add-card"
+                    enabled={addForm.delivery_template_enabled}
+                    onEnabledChange={(delivery_template_enabled) => setAddForm((prev) => ({ ...prev, delivery_template_enabled }))}
+                    description={addForm.description}
+                    onDescriptionChange={(description) => setAddForm((prev) => ({ ...prev, description }))}
+                    template={addForm.delivery_template}
+                    onTemplateChange={(delivery_template) => setAddForm((prev) => ({ ...prev, delivery_template }))}
+                    images={addForm.delivery_template_images}
+                    onImagesChange={(delivery_template_images) => setAddForm((prev) => ({ ...prev, delivery_template_images }))}
                   />
-                </div>
+                ) : (
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">描述</label>
+                    <textarea
+                      value={addForm.description}
+                      onChange={(e) => setAddForm({ ...addForm, description: e.target.value })}
+                      placeholder="卡密用途描述"
+                      className="ios-input h-20 w-full resize-y rounded-md px-3 py-2.5"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">延时发货（秒）</label>
@@ -742,6 +877,91 @@ const CardList: React.FC = () => {
                 >
                   <Plus className="w-4 h-4" />
                   添加卡密
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 已发货卡密记录弹窗 - 使用 Portal */}
+      {showShipmentsModal && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container">
+            <div className="modal-header">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">批量库存已发货内容</h3>
+                  <p className="mt-1 text-xs text-gray-500">批量卡密每发出一行，就会从库存移除并记录在这里。</p>
+                </div>
+                <button
+                  onClick={() => setShowShipmentsModal(false)}
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭批量库存已发货内容"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-body">
+              {shipments.length === 0 ? (
+                <EmptyState
+                  compact
+                  icon={PackageCheck}
+                  title="暂无已发货内容"
+                  description="批量卡密发送后，内容会自动出现在这里。"
+                />
+              ) : (
+                <div className="space-y-2">
+                  {shipments.map((record) => (
+                    <div key={record.id} className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate text-xs font-bold text-gray-500">
+                          {record.card_name || '批量卡密'}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-gray-400">
+                          {formatShipmentTime(record.shipped_at)}
+                        </span>
+                      </div>
+                      <p className="mt-1.5 break-all font-mono text-sm text-gray-900">{record.content}</p>
+                      {(record.order_id || record.buyer_id) && (
+                        <p className="mt-1.5 truncate text-[11px] text-gray-500">
+                          {record.order_id ? `订单 ${record.order_id}` : ''}
+                          {record.order_id && record.buyer_id ? ' · ' : ''}
+                          {record.buyer_id ? `买家 ${record.buyer_id}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {shipmentTotal > shipments.length && (
+                    <p className="pt-1 text-center text-xs text-gray-400">
+                      仅展示最近 {shipments.length} 条，共 {shipmentTotal} 条
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <div className="flex w-full gap-2">
+                {shipments.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearShipments}
+                    disabled={clearingShipments}
+                    className="ios-btn-danger rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+                  >
+                    清空记录
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowShipmentsModal(false)}
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
+                >
+                  关闭
                 </button>
               </div>
             </div>
