@@ -17,6 +17,9 @@ from app.specification import (
     specification_text,
 )
 
+_UNSET = object()
+
+
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
     
@@ -221,6 +224,9 @@ class DBManager:
                 description TEXT,
                 enabled BOOLEAN DEFAULT TRUE,
                 delay_seconds INTEGER DEFAULT 0,
+                delivery_template TEXT,
+                delivery_template_enabled BOOLEAN DEFAULT FALSE,
+                delivery_template_images TEXT,
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 spec_name TEXT,
                 spec_value TEXT,
@@ -230,6 +236,26 @@ class DBManager:
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
             ''')
+
+            # 创建卡密发货记录表：批量卡密每发出一行就落一条，库存扣减与记录写入在同一事务
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS card_shipments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER,
+                card_name TEXT DEFAULT '',
+                content TEXT NOT NULL,
+                order_id TEXT DEFAULT '',
+                item_id TEXT DEFAULT '',
+                buyer_id TEXT DEFAULT '',
+                cookie_id TEXT DEFAULT '',
+                user_id INTEGER NOT NULL DEFAULT 1,
+                shipped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_card_shipments_user_time "
+                "ON card_shipments(user_id, id DESC)"
+            )
 
             # 创建订单表
             cursor.execute('''
@@ -304,6 +330,202 @@ class DBManager:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_personal_blacklist_owner_buyer "
                 "ON personal_blacklist(owner_id, buyer_id, is_enabled)"
+            )
+
+            # 创建物流报价表识别结果表（仅保存解析摘要，不保存原始文件）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '',
+                book_kind TEXT,
+                service_count INTEGER DEFAULT 0,
+                route_count INTEGER DEFAULT 0,
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, sha256),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_books_user "
+                "ON logistics_quote_books(user_id, updated_at DESC)"
+            )
+
+            # 物流报价线路明细：按报价表导入批次保存规范化线路，供地址匹配与计费查询
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_route_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_type TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0,
+                sha256 TEXT NOT NULL,
+                book_kind TEXT,
+                service_count INTEGER DEFAULT 0,
+                route_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                warnings TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, sha256),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_route_imports_user "
+                "ON logistics_quote_route_imports(user_id, created_at DESC)"
+            )
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                import_id INTEGER NOT NULL,
+                carrier TEXT NOT NULL,
+                book_kind TEXT,
+                origin_province TEXT DEFAULT '',
+                origin_city TEXT DEFAULT '',
+                dest_province TEXT DEFAULT '',
+                dest_city TEXT DEFAULT '',
+                price_model TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (import_id) REFERENCES logistics_quote_route_imports(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_routes_match "
+                "ON logistics_quote_routes(user_id, book_kind, carrier, "
+                "origin_province, origin_city, dest_province, dest_city)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_routes_city "
+                "ON logistics_quote_routes(user_id, origin_city)"
+            )
+
+            # 物流 Agent 按账号（cookie）保存的第五步配置
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_settings (
+                cookie_id TEXT PRIMARY KEY,
+                enabled INTEGER DEFAULT 0,
+                model_name TEXT DEFAULT 'deepseek-v4-flash',
+                book_ids TEXT DEFAULT '[]',
+                auto_send INTEGER DEFAULT 0,
+                recommend_mode TEXT DEFAULT 'lowest',
+                no_route_policy TEXT DEFAULT 'manual',
+                item_scope TEXT DEFAULT 'all',
+                item_ids TEXT DEFAULT '[]',
+                carrier_config TEXT DEFAULT '{}',
+                default_volume_ratios TEXT DEFAULT '{}',
+                pricing_config TEXT DEFAULT '{}',
+                templates TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
+            # 物流询价会话状态：按 cookie + 会话 + 商品隔离，多轮合并参数
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                item_id TEXT DEFAULT '',
+                state TEXT NOT NULL DEFAULT '{}',
+                state_version INTEGER DEFAULT 1,
+                status TEXT DEFAULT 'active',
+                last_message_id TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cookie_id, chat_id, item_id)
+            )
+            ''')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_sessions_updated "
+                "ON logistics_quote_sessions(cookie_id, updated_at DESC)"
+            )
+
+            # 物流报价发送记录：幂等与审计（消息 ID、状态版本、报价表版本）
+            # status：pending=已登记待发送，sent=已发送，failed=发送失败。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_quote_send_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                item_id TEXT DEFAULT '',
+                message_id TEXT DEFAULT '',
+                state_version INTEGER DEFAULT 0,
+                book_sha256 TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_training_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                buyer_message TEXT NOT NULL,
+                agent_reply TEXT NOT NULL,
+                decision_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, thread_id, buyer_message, agent_reply)
+            )
+            ''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS logistics_agent_training_rounds (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                cookie_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_logistics_training_rounds_owner
+            ON logistics_agent_training_rounds(user_id, cookie_id, created_at DESC)
+            ''')
+            # 旧问答仍可回看、导出；固定来源 ID 保证重复启动不会重复迁移。
+            cursor.execute('''
+            INSERT OR IGNORE INTO logistics_agent_training_rounds
+                (id,user_id,cookie_id,thread_id,name,messages_json,created_at)
+            SELECT 'legacy-' || id,user_id,cookie_id,thread_id,'历史训练样本 ' || id,
+                json_array(
+                    json_object('role','buyer','content',buyer_message,'position',0),
+                    json_object('role','agent','content',agent_reply,'position',1,
+                        'decision',json(CASE WHEN json_valid(decision_json) THEN decision_json ELSE '{}' END))
+                ),created_at
+            FROM logistics_agent_training_samples
+            ''')
+            # 兼容旧库：已存在的表补 status 列。
+            try:
+                self._execute_sql(cursor, "SELECT status FROM logistics_quote_send_logs LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 logistics_quote_send_logs 表添加 status 列...")
+                self._execute_sql(
+                    cursor,
+                    "ALTER TABLE logistics_quote_send_logs ADD COLUMN status TEXT DEFAULT 'pending'",
+                )
+                logger.info("logistics_quote_send_logs 表 status 列添加完成")
+            # 同一条买家消息只允许一条待发送/已发送记录（唯一键防重发）。
+            try:
+                self._execute_sql(
+                    cursor,
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_logistics_quote_send_logs_unique "
+                    "ON logistics_quote_send_logs(cookie_id, chat_id, item_id, message_id) "
+                    "WHERE message_id != ''",
+                )
+            except sqlite3.OperationalError as e:
+                logger.warning(f"创建物流发送记录唯一索引失败（可能存在历史重复数据）: {e}")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_logistics_quote_send_logs_chat "
+                "ON logistics_quote_send_logs(cookie_id, chat_id, created_at DESC)"
             )
 
             # 检查并添加 is_bargain 列（用于标记小刀订单）
@@ -515,6 +737,32 @@ class DBManager:
             ON variant_delivery_bindings(user_id, card_id, enabled)
             ''')
 
+            # SKU 识别快照与按买家维度的防薅计数。复用 product_variants 的商品/SKU身份，
+            # 规则只保存于此表，避免改变现有卡密绑定语义。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_sku_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL, item_id TEXT NOT NULL, sku_key TEXT NOT NULL,
+                sku_name TEXT NOT NULL, platform_sku_id TEXT, source TEXT NOT NULL DEFAULT 'order',
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cookie_id, item_id, sku_key)
+            )''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_sku_rules (
+                cookie_id TEXT NOT NULL, item_id TEXT NOT NULL, sku_key TEXT NOT NULL,
+                sku_name TEXT NOT NULL, max_deliveries INTEGER NOT NULL DEFAULT 1,
+                block_message TEXT NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(cookie_id, item_id, sku_key)
+            )''')
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS delivery_sku_claims (
+                cookie_id TEXT NOT NULL, buyer_id TEXT NOT NULL, item_id TEXT NOT NULL,
+                sku_key TEXT NOT NULL, delivery_count INTEGER NOT NULL DEFAULT 0,
+                last_order_id TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(cookie_id, buyer_id, item_id, sku_key)
+            )''')
+
             # 创建默认回复表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS default_replies (
@@ -594,18 +842,19 @@ class DBManager:
             )
             ''')
 
-            # 创建消息通知配置表
+            # 创建消息通知规则表（同一账号+渠道可有多条规则，按事件类型区分）
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS message_notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cookie_id TEXT NOT NULL,
                 channel_id INTEGER NOT NULL,
+                name TEXT,
+                event_types TEXT,
                 enabled BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
-                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE,
-                UNIQUE(cookie_id, channel_id)
+                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE
             )
             ''')
 
@@ -759,6 +1008,23 @@ class DBManager:
 
             # 检查并更新CHECK约束（重建表以支持image类型）
             self._update_cards_table_constraints(cursor)
+
+            # 卡片发货详情文案配置：开关、文案内容、图片映射。
+            # 放在约束重建之后，避免重建时硬编码列丢失新字段。
+            cursor.execute("PRAGMA table_info(cards)")
+            card_columns = [column[1] for column in cursor.fetchall()]
+            delivery_template_columns = {
+                'delivery_template': "TEXT",
+                'delivery_template_enabled': "BOOLEAN DEFAULT FALSE",
+                'delivery_template_images': "TEXT",
+            }
+            for column_name, column_type in delivery_template_columns.items():
+                if column_name not in card_columns:
+                    logger.info(f"添加cards表的{column_name}列...")
+                    cursor.execute(
+                        f"ALTER TABLE cards ADD COLUMN {column_name} {column_type}"
+                    )
+                    logger.info(f"数据库迁移完成：添加{column_name}列")
 
             # 检查cookies表是否存在remark列
             cursor.execute("PRAGMA table_info(cookies)")
@@ -955,6 +1221,13 @@ class DBManager:
                 self.upgrade_item_multi_quantity_default(cursor)
                 self.set_system_setting("db_version", "1.6", "数据库版本号")
                 logger.info("数据库升级到版本1.6完成")
+
+            # 升级到版本1.7 - 消息通知绑定支持规则名和事件类型订阅
+            if current_version < "1.7":
+                logger.info("开始升级数据库到版本1.7...")
+                self.upgrade_message_notifications_rules(cursor)
+                self.set_system_setting("db_version", "1.7", "数据库版本号")
+                logger.info("数据库升级到版本1.7完成")
 
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
@@ -1200,7 +1473,7 @@ class DBManager:
         的账号默认关闭（与「有实际影响的动作默认关闭」保持一致）。
         """
         added = []
-        for column in ('auto_rate_enabled', 'auto_flower_enabled', 'auto_thanks_enabled'):
+        for column in ('auto_rate_enabled', 'auto_flower_enabled', 'auto_thanks_enabled', 'auto_receive_flower_enabled'):
             try:
                 self._execute_sql(cursor, f"SELECT {column} FROM cookies LIMIT 1")
             except sqlite3.OperationalError:
@@ -1227,6 +1500,7 @@ class DBManager:
         'auto_rate_enabled': False,
         'auto_flower_enabled': False,
         'auto_thanks_enabled': False,
+        'auto_receive_flower_enabled': False,
     }
 
     def get_buyer_interaction_settings(self, cookie_id: str) -> dict:
@@ -1236,7 +1510,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 self._execute_sql(
                     cursor,
-                    "SELECT auto_rate_enabled, auto_flower_enabled, auto_thanks_enabled "
+                    "SELECT auto_rate_enabled, auto_flower_enabled, auto_thanks_enabled, auto_receive_flower_enabled "
                     "FROM cookies WHERE id = ?",
                     [cookie_id]
                 )
@@ -1247,6 +1521,7 @@ class DBManager:
                 'auto_rate_enabled': bool(row[0]),
                 'auto_flower_enabled': bool(row[1]),
                 'auto_thanks_enabled': bool(row[2]),
+                'auto_receive_flower_enabled': bool(row[3]),
             }
         except Exception as e:
             logger.error(f"读取账号买家互动开关失败 {cookie_id}: {e}")
@@ -1255,7 +1530,7 @@ class DBManager:
 
     def update_buyer_interaction_settings(
         self, cookie_id: str, auto_rate_enabled=None, auto_flower_enabled=None,
-        auto_thanks_enabled=None
+        auto_thanks_enabled=None, auto_receive_flower_enabled=None
     ) -> bool:
         """更新指定账号的买家互动开关，未传的字段保持不变。"""
         updates = []
@@ -1264,6 +1539,7 @@ class DBManager:
             ('auto_rate_enabled', auto_rate_enabled),
             ('auto_flower_enabled', auto_flower_enabled),
             ('auto_thanks_enabled', auto_thanks_enabled),
+            ('auto_receive_flower_enabled', auto_receive_flower_enabled),
         ):
             if value is not None:
                 updates.append(f"{column} = ?")
@@ -1507,6 +1783,66 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"升级notification_channels表类型失败: {e}")
+            raise
+
+    def upgrade_message_notifications_rules(self, cursor):
+        """把账号通知绑定升级为可按事件类型订阅的规则。
+
+        旧表 UNIQUE(cookie_id, channel_id) 限制同一账号同一渠道只能有一条绑定，
+        且没有规则名和事件类型字段。这里重建表并原样保留旧数据，旧记录的
+        event_types 为空，表示继续接收全部事件。
+        """
+        try:
+            logger.info("开始升级message_notifications表...")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='message_notifications'"
+            )
+            if not cursor.fetchone():
+                logger.info("message_notifications表不存在，无需升级")
+                return
+
+            columns = {
+                row[1]
+                for row in cursor.execute("PRAGMA table_info(message_notifications)").fetchall()
+            }
+            unique_indexes = [
+                row
+                for row in cursor.execute("PRAGMA index_list(message_notifications)").fetchall()
+                if len(row) > 3 and row[2] and row[3] == 'u'
+            ]
+            if 'event_types' in columns and not unique_indexes:
+                logger.info("message_notifications表已是规则结构，无需升级")
+                return
+
+            name_expr = "name" if "name" in columns else "NULL"
+            event_expr = "event_types" if "event_types" in columns else "NULL"
+
+            cursor.execute("DROP TABLE IF EXISTS message_notifications_new")
+            cursor.execute('''
+            CREATE TABLE message_notifications_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                name TEXT,
+                event_types TEXT,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
+                FOREIGN KEY (channel_id) REFERENCES notification_channels(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute(f'''
+            INSERT INTO message_notifications_new
+                (id, cookie_id, channel_id, name, event_types, enabled, created_at, updated_at)
+            SELECT id, cookie_id, channel_id, {name_expr}, {event_expr}, enabled, created_at, updated_at
+            FROM message_notifications
+            ''')
+            cursor.execute("DROP TABLE message_notifications")
+            cursor.execute("ALTER TABLE message_notifications_new RENAME TO message_notifications")
+            logger.info("message_notifications表升级完成")
+        except Exception as e:
+            logger.error(f"升级message_notifications表失败: {e}")
             raise
 
     def upgrade_cookies_table_for_account_login(self, cursor):
@@ -1844,6 +2180,18 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有Cookie失败: {e}")
                 return {}
+
+    def get_cookie_owner_user(self, cookie_id: str) -> Optional[int]:
+        """获取Cookie归属的系统用户ID；账号不存在时返回 None。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "SELECT user_id FROM cookies WHERE id = ?", (cookie_id,))
+                row = cursor.fetchone()
+                return int(row[0]) if row else None
+            except Exception as e:
+                logger.error(f"获取Cookie归属用户失败: {e}")
+                return None
 
 
 
@@ -2892,31 +3240,207 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    # -------------------- 消息通知配置操作 --------------------
-    def set_message_notification(self, cookie_id: str, channel_id: int, enabled: bool = True) -> bool:
-        """设置账号的消息通知"""
+    # -------------------- 消息通知规则操作 --------------------
+    def set_message_notification(self, cookie_id: str, channel_id: int, enabled: bool = True,
+                                 name=_UNSET, event_types=_UNSET) -> bool:
+        """设置账号+渠道的通知规则（存在则更新第一条，不存在则创建）。
+
+        name/event_types 未传入时保留原值，旧客户端仅开关绑定时不会清掉规则订阅。
+        """
+        from app.notification_events import serialize_event_types
+
+        if event_types is _UNSET:
+            serialized_event_types = _UNSET
+        else:
+            try:
+                serialized_event_types = serialize_event_types(event_types)
+            except ValueError as e:
+                logger.error(f"设置消息通知失败: {e}")
+                return False
+
+        normalized_name = _UNSET if name is _UNSET else ((name or '').strip() or None)
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT OR REPLACE INTO message_notifications (cookie_id, channel_id, enabled)
-                VALUES (?, ?, ?)
-                ''', (cookie_id, channel_id, enabled))
+                SELECT id FROM message_notifications
+                WHERE cookie_id = ? AND channel_id = ?
+                ORDER BY id LIMIT 1
+                ''', (cookie_id, channel_id))
+                row = cursor.fetchone()
+                if row:
+                    assignments = ["enabled = ?", "updated_at = CURRENT_TIMESTAMP"]
+                    params = [enabled]
+                    if normalized_name is not _UNSET:
+                        assignments.append("name = ?")
+                        params.append(normalized_name)
+                    if serialized_event_types is not _UNSET:
+                        assignments.append("event_types = ?")
+                        params.append(serialized_event_types)
+                    params.append(row[0])
+                    cursor.execute(
+                        f"UPDATE message_notifications SET {', '.join(assignments)} WHERE id = ?",
+                        params,
+                    )
+                    logger.debug(f"更新消息通知规则: {cookie_id} -> {channel_id} (ID: {row[0]})")
+                else:
+                    cursor.execute('''
+                    INSERT INTO message_notifications (cookie_id, channel_id, name, event_types, enabled)
+                    VALUES (?, ?, ?, ?, ?)
+                    ''', (
+                        cookie_id,
+                        channel_id,
+                        None if normalized_name is _UNSET else normalized_name,
+                        None if serialized_event_types is _UNSET else serialized_event_types,
+                        enabled,
+                    ))
+                    logger.debug(f"创建消息通知规则: {cookie_id} -> {channel_id}")
                 self.conn.commit()
-                logger.debug(f"设置消息通知: {cookie_id} -> {channel_id}")
                 return True
             except Exception as e:
                 logger.error(f"设置消息通知失败: {e}")
                 self.conn.rollback()
                 return False
 
-    def get_account_notifications(self, cookie_id: str, user_id: int = None) -> List[Dict[str, any]]:
-        """获取账号的通知配置"""
+    def create_notification_rule(self, cookie_id: str, channel_id: int, name: str = None,
+                                 event_types=None, enabled: bool = True) -> int:
+        """创建账号通知规则"""
+        from app.notification_events import serialize_event_types
+
+        serialized_event_types = serialize_event_types(event_types)
+        normalized_name = (name or '').strip() or None
+        with self.lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+            INSERT INTO message_notifications (cookie_id, channel_id, name, event_types, enabled)
+            VALUES (?, ?, ?, ?, ?)
+            ''', (cookie_id, channel_id, normalized_name, serialized_event_types, enabled))
+            self.conn.commit()
+            rule_id = cursor.lastrowid
+            logger.debug(f"创建通知规则: {cookie_id} -> {channel_id} (ID: {rule_id})")
+            return rule_id
+
+    def get_notification_rule(self, rule_id: int, user_id: int = None) -> Optional[Dict[str, any]]:
+        """获取指定通知规则"""
+        from app.notification_events import parse_event_types
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 sql = '''
-                SELECT mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
+                SELECT mn.id, mn.cookie_id, mn.channel_id, mn.name, mn.event_types,
+                       mn.enabled, nc.name, nc.type
+                FROM message_notifications mn
+                JOIN notification_channels nc ON mn.channel_id = nc.id
+                WHERE mn.id = ?
+                '''
+                params = [rule_id]
+                if user_id is not None:
+                    sql += ' AND mn.cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)'
+                    params.append(user_id)
+                cursor.execute(sql, params)
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'id': row[0],
+                    'cookie_id': row[1],
+                    'channel_id': row[2],
+                    'name': row[3],
+                    'event_types': parse_event_types(row[4]),
+                    'enabled': bool(row[5]),
+                    'channel_name': row[6],
+                    'channel_type': row[7],
+                }
+            except Exception as e:
+                logger.error(f"获取通知规则失败: {e}")
+                return None
+
+    def get_notification_test_target(self, rule_id: int, user_id: int) -> Optional[Dict[str, any]]:
+        """读取测试发送所需的完整目标，并同时校验账号与渠道归属。
+
+        与 ``get_account_notifications`` 不同，这里刻意不按启用状态过滤，
+        这样停用规则或渠道仍可以用于排查配置连通性。
+        """
+        from app.notification_events import parse_event_types
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT mn.id, mn.cookie_id, mn.channel_id, mn.name, mn.event_types,
+                           mn.enabled, nc.name, nc.type, nc.config, nc.enabled,
+                           c.user_id, nc.user_id
+                    FROM message_notifications mn
+                    JOIN cookies c ON c.id = mn.cookie_id
+                    JOIN notification_channels nc ON nc.id = mn.channel_id
+                    WHERE mn.id = ? AND c.user_id = ? AND nc.user_id = ?
+                    """,
+                    (rule_id, user_id, user_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
+                    "cookie_id": row[1],
+                    "channel_id": row[2],
+                    "name": row[3],
+                    "event_types": parse_event_types(row[4]),
+                    "enabled": bool(row[5]),
+                    "channel_name": row[6],
+                    "channel_type": row[7],
+                    "channel_config": row[8],
+                    "channel_enabled": bool(row[9]),
+                    "account_user_id": row[10],
+                    "channel_user_id": row[11],
+                }
+            except Exception as e:
+                logger.error(f"获取通知测试目标失败: {e}")
+                return None
+
+    def update_notification_rule(self, rule_id: int, name: str = None, event_types=None,
+                                 enabled: bool = True, user_id: int = None) -> bool:
+        """更新通知规则的名称、订阅事件和启用状态"""
+        from app.notification_events import serialize_event_types
+
+        serialized_event_types = serialize_event_types(event_types)
+        normalized_name = (name or '').strip() or None
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is not None:
+                    cursor.execute('''
+                    UPDATE message_notifications
+                    SET name = ?, event_types = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                    ''', (normalized_name, serialized_event_types, enabled, rule_id, user_id))
+                else:
+                    cursor.execute('''
+                    UPDATE message_notifications
+                    SET name = ?, event_types = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''', (normalized_name, serialized_event_types, enabled, rule_id))
+                self.conn.commit()
+                logger.debug(f"更新通知规则: {rule_id}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新通知规则失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def get_account_notifications(self, cookie_id: str, user_id: int = None,
+                                  event_type: str = None) -> List[Dict[str, any]]:
+        """获取账号的通知规则，可按事件类型过滤"""
+        from app.notification_events import parse_event_types
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                sql = '''
+                SELECT mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config,
+                       mn.name, mn.event_types
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
                 JOIN cookies c ON mn.cookie_id = c.id
@@ -2933,13 +3457,18 @@ class DBManager:
 
                 notifications = []
                 for row in cursor.fetchall():
+                    rule_event_types = parse_event_types(row[7])
+                    if event_type and rule_event_types and event_type not in rule_event_types:
+                        continue
                     notifications.append({
                         'id': row[0],
                         'channel_id': row[1],
                         'enabled': bool(row[2]),
                         'channel_name': row[3],
                         'channel_type': row[4],
-                        'channel_config': row[5]
+                        'channel_config': row[5],
+                        'name': row[6],
+                        'event_types': rule_event_types,
                     })
 
                 return notifications
@@ -2948,20 +3477,22 @@ class DBManager:
                 return []
 
     def get_all_message_notifications(self, user_id: int = None) -> Dict[str, List[Dict[str, any]]]:
-        """获取所有账号的通知配置"""
+        """获取所有账号的通知规则"""
+        from app.notification_events import parse_event_types
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 sql = '''
-                SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config
+                SELECT mn.cookie_id, mn.id, mn.channel_id, mn.enabled, nc.name, nc.type, nc.config,
+                       mn.name, mn.event_types, nc.enabled
                 FROM message_notifications mn
                 JOIN notification_channels nc ON mn.channel_id = nc.id
                 JOIN cookies c ON mn.cookie_id = c.id
-                WHERE nc.enabled = 1
                 '''
                 params = []
                 if user_id is not None:
-                    sql += ' AND c.user_id = ? AND nc.user_id = ?'
+                    sql += ' WHERE c.user_id = ? AND nc.user_id = ?'
                     params.extend([user_id, user_id])
                 sql += '''
                 ORDER BY mn.cookie_id, mn.id
@@ -2980,7 +3511,10 @@ class DBManager:
                         'enabled': bool(row[3]),
                         'channel_name': row[4],
                         'channel_type': row[5],
-                        'channel_config': row[6]
+                        'channel_config': row[6],
+                        'name': row[7],
+                        'event_types': parse_event_types(row[8]),
+                        'channel_enabled': bool(row[9]),
                     })
 
                 return result
@@ -3871,9 +4405,35 @@ class DBManager:
             # 那会把收件人邮箱交给第三方，且部署方无从察觉。
             return False
 
+    @staticmethod
+    def _serialize_delivery_template_images(images):
+        """发货文案图片映射入库前统一序列化为 JSON 字符串。"""
+        if images is None:
+            return None
+        if isinstance(images, str):
+            return images
+        import json
+        return json.dumps(images, ensure_ascii=False)
+
+    @staticmethod
+    def _parse_delivery_template_images(images):
+        """读取发货文案图片映射，兼容历史非 JSON 数据。"""
+        if not images:
+            return {}
+        if isinstance(images, dict):
+            return images
+        import json
+        try:
+            parsed = json.loads(images)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def create_card(self, name: str, card_type: str, api_config=None,
                    text_content: str = None, data_content: str = None, image_url: str = None,
                    description: str = None, enabled: bool = True, delay_seconds: int = 0,
+                   delivery_template: str = None, delivery_template_enabled: bool = False,
+                   delivery_template_images=None,
                    is_multi_spec: bool = False, spec_name: str = None, spec_value: str = None,
                    user_id: int = None):
         """创建新卡券（支持多规格）"""
@@ -3915,12 +4475,15 @@ class DBManager:
 
                 cursor.execute('''
                 INSERT INTO cards (name, type, api_config, text_content, data_content, image_url,
-                                 description, enabled, delay_seconds, is_multi_spec,
-                                 spec_name, spec_value, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 description, enabled, delay_seconds, delivery_template,
+                                 delivery_template_enabled, delivery_template_images,
+                                 is_multi_spec, spec_name, spec_value, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (name, card_type, api_config_str, text_content, data_content, image_url,
-                      description, enabled, delay_seconds, is_multi_spec,
-                      spec_name, spec_value, user_id))
+                      description, enabled, delay_seconds, delivery_template,
+                      bool(delivery_template_enabled),
+                      self._serialize_delivery_template_images(delivery_template_images),
+                      is_multi_spec, spec_name, spec_value, user_id))
                 self.conn.commit()
                 card_id = cursor.lastrowid
 
@@ -3942,7 +4505,8 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, created_at, updated_at,
+                           delivery_template, delivery_template_enabled, delivery_template_images
                     FROM cards
                     WHERE user_id = ?
                     ORDER BY created_at DESC
@@ -3951,7 +4515,8 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, created_at, updated_at,
+                           delivery_template, delivery_template_enabled, delivery_template_images
                     FROM cards
                     ORDER BY created_at DESC
                     ''')
@@ -3983,7 +4548,10 @@ class DBManager:
                         'spec_name': row[11],
                         'spec_value': row[12],
                         'created_at': row[13],
-                        'updated_at': row[14]
+                        'updated_at': row[14],
+                        'delivery_template': row[15],
+                        'delivery_template_enabled': bool(row[16]) if row[16] is not None else False,
+                        'delivery_template_images': self._parse_delivery_template_images(row[17])
                     })
 
                 return cards
@@ -4000,14 +4568,16 @@ class DBManager:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, created_at, updated_at,
+                           delivery_template, delivery_template_enabled, delivery_template_images
                     FROM cards WHERE id = ? AND user_id = ?
                     ''', (card_id, user_id))
                 else:
                     cursor.execute('''
                     SELECT id, name, type, api_config, text_content, data_content, image_url,
                            description, enabled, delay_seconds, is_multi_spec,
-                           spec_name, spec_value, created_at, updated_at
+                           spec_name, spec_value, created_at, updated_at,
+                           delivery_template, delivery_template_enabled, delivery_template_images
                     FROM cards WHERE id = ?
                     ''', (card_id,))
 
@@ -4038,7 +4608,10 @@ class DBManager:
                         'spec_name': row[11],
                         'spec_value': row[12],
                         'created_at': row[13],
-                        'updated_at': row[14]
+                        'updated_at': row[14],
+                        'delivery_template': row[15],
+                        'delivery_template_enabled': bool(row[16]) if row[16] is not None else False,
+                        'delivery_template_images': self._parse_delivery_template_images(row[17])
                     }
                 return None
             except Exception as e:
@@ -4049,7 +4622,9 @@ class DBManager:
                    api_config=None, text_content: str = None, data_content: str = None,
                    image_url: str = None, description: str = None, enabled: bool = None,
                    delay_seconds: int = None, is_multi_spec: bool = None, spec_name: str = None,
-                   spec_value: str = None, user_id: int = None):
+                   spec_value: str = None, user_id: int = None,
+                   delivery_template: str = None, delivery_template_enabled: bool = None,
+                   delivery_template_images=None):
         """更新卡券（支持用户隔离）"""
         with self.lock:
             try:
@@ -4095,6 +4670,15 @@ class DBManager:
                 if delay_seconds is not None:
                     update_fields.append("delay_seconds = ?")
                     params.append(delay_seconds)
+                if delivery_template is not None:
+                    update_fields.append("delivery_template = ?")
+                    params.append(delivery_template)
+                if delivery_template_enabled is not None:
+                    update_fields.append("delivery_template_enabled = ?")
+                    params.append(bool(delivery_template_enabled))
+                if delivery_template_images is not None:
+                    update_fields.append("delivery_template_images = ?")
+                    params.append(self._serialize_delivery_template_images(delivery_template_images))
                 if is_multi_spec is not None:
                     update_fields.append("is_multi_spec = ?")
                     params.append(is_multi_spec)
@@ -4254,7 +4838,9 @@ class DBManager:
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.image_url, c.enabled as card_enabled, c.description as card_description,
                        c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
+                       c.is_multi_spec, c.spec_name, c.spec_value,
+                       c.delivery_template, c.delivery_template_enabled,
+                       c.delivery_template_images
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
                 WHERE dr.enabled = 1 AND c.enabled = 1
@@ -4298,7 +4884,10 @@ class DBManager:
                         'card_delay_seconds': row[15] or 0,  # 延时秒数
                         'is_multi_spec': bool(row[16]) if row[16] is not None else False,
                         'spec_name': row[17],
-                        'spec_value': row[18]
+                        'spec_value': row[18],
+                        'card_delivery_template': row[19],
+                        'card_delivery_template_enabled': bool(row[20]) if row[20] is not None else False,
+                        'card_delivery_template_images': self._parse_delivery_template_images(row[21])
                     })
 
                 return rules
@@ -4330,7 +4919,9 @@ class DBManager:
                                WHEN dr.cookie_id = ? AND dr.item_id = ? THEN 0
                                WHEN dr.cookie_id = ? AND dr.item_id IS NULL THEN 1
                                ELSE 2
-                           END AS scope_rank
+                           END AS scope_rank,
+                           c.delivery_template, c.delivery_template_enabled,
+                           c.delivery_template_images
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.enabled = 1 AND c.enabled = 1
@@ -4399,6 +4990,9 @@ class DBManager:
                         'cookie_id': row[19],
                         'item_id': row[20],
                         'scope_rank': row[21],
+                        'card_delivery_template': row[22],
+                        'card_delivery_template_enabled': bool(row[23]) if row[23] is not None else False,
+                        'card_delivery_template_images': self._parse_delivery_template_images(row[24]),
                     })
                 return rules
             except Exception as e:
@@ -4541,7 +5135,9 @@ class DBManager:
                            c.name as card_name, c.type as card_type, c.api_config,
                            c.text_content, c.data_content, c.enabled as card_enabled,
                            c.description as card_description, c.delay_seconds as card_delay_seconds,
-                           c.is_multi_spec, c.spec_name, c.spec_value
+                           c.is_multi_spec, c.spec_name, c.spec_value,
+                           c.delivery_template, c.delivery_template_enabled,
+                           c.delivery_template_images
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
                     WHERE dr.enabled = 1 AND c.enabled = 1
@@ -4585,7 +5181,10 @@ class DBManager:
                             'card_delay_seconds': row[14] or 0,
                             'is_multi_spec': bool(row[15]),
                             'spec_name': row[16],
-                            'spec_value': row[17]
+                            'spec_value': row[17],
+                            'card_delivery_template': row[18],
+                            'card_delivery_template_enabled': bool(row[19]) if row[19] is not None else False,
+                            'card_delivery_template_images': self._parse_delivery_template_images(row[20])
                         })
 
                     if rules:
@@ -4599,7 +5198,9 @@ class DBManager:
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.enabled as card_enabled,
                        c.description as card_description, c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
+                       c.is_multi_spec, c.spec_name, c.spec_value,
+                       c.delivery_template, c.delivery_template_enabled,
+                       c.delivery_template_images
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
                 WHERE dr.enabled = 1 AND c.enabled = 1
@@ -4643,7 +5244,10 @@ class DBManager:
                         'card_delay_seconds': row[14] or 0,
                         'is_multi_spec': bool(row[15]) if row[15] is not None else False,
                         'spec_name': row[16],
-                        'spec_value': row[17]
+                        'spec_value': row[17],
+                        'card_delivery_template': row[18],
+                        'card_delivery_template_enabled': bool(row[19]) if row[19] is not None else False,
+                        'card_delivery_template_images': self._parse_delivery_template_images(row[20])
                     })
 
                 if rules:
@@ -4701,8 +5305,14 @@ class DBManager:
                 self.conn.rollback()
                 raise
 
-    def consume_batch_data_batch(self, card_id: int, quantity: int):
-        """原子消费指定数量的批量数据；库存不足时不修改任何内容。"""
+    def consume_batch_data_batch(self, card_id: int, quantity: int,
+                                 order_id: str = None, item_id: str = None,
+                                 buyer_id: str = None, cookie_id: str = None):
+        """原子消费指定数量的批量数据；库存不足时不修改任何内容。
+
+        消费成功的每一行都会写入 card_shipments（已发货记录），
+        与库存扣减同事务提交，避免出现扣了库存却查不到发货明细的情况。
+        """
         try:
             requested_quantity = int(quantity)
         except (TypeError, ValueError):
@@ -4718,7 +5328,7 @@ class DBManager:
                 cursor = self.conn.cursor()
 
                 # 获取卡券的批量数据
-                self._execute_sql(cursor, "SELECT data_content FROM cards WHERE id = ? AND type = 'data'", (card_id,))
+                self._execute_sql(cursor, "SELECT data_content, name, user_id FROM cards WHERE id = ? AND type = 'data'", (card_id,))
                 result = cursor.fetchone()
 
                 if not result or not result[0]:
@@ -4726,6 +5336,8 @@ class DBManager:
                     return None
 
                 data_content = result[0]
+                card_name = result[1] or ''
+                card_user_id = result[2] if result[2] is not None else 1
                 lines = [line.strip() for line in data_content.split('\n') if line.strip()]
 
                 if not lines:
@@ -4749,6 +5361,14 @@ class DBManager:
                 WHERE id = ?
                 ''', (new_data_content, card_id))
 
+                for content in consumed_lines:
+                    cursor.execute('''
+                    INSERT INTO card_shipments (card_id, card_name, content, order_id,
+                                                item_id, buyer_id, cookie_id, user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (card_id, card_name, content, order_id or '', item_id or '',
+                          buyer_id or '', cookie_id or '', card_user_id))
+
                 self.conn.commit()
 
                 logger.info(
@@ -4762,10 +5382,77 @@ class DBManager:
                 self.conn.rollback()
                 return None
 
-    def consume_batch_data(self, card_id: int):
+    def consume_batch_data(self, card_id: int, order_id: str = None, item_id: str = None,
+                           buyer_id: str = None, cookie_id: str = None):
         """消费批量数据的第一条记录（线程安全）。"""
-        consumed_lines = self.consume_batch_data_batch(card_id, 1)
+        consumed_lines = self.consume_batch_data_batch(
+            card_id, 1,
+            order_id=order_id, item_id=item_id,
+            buyer_id=buyer_id, cookie_id=cookie_id,
+        )
         return consumed_lines[0] if consumed_lines else None
+
+    def get_card_shipments(self, user_id: int = None, limit: int = 200) -> Dict[str, Any]:
+        """获取已发货的批量卡密记录，按发货时间倒序。"""
+        try:
+            page_size = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            page_size = 200
+
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                where_sql = "WHERE user_id = ?" if user_id is not None else ""
+                params: Tuple[Any, ...] = (user_id,) if user_id is not None else ()
+
+                self._execute_sql(cursor, f"SELECT COUNT(*) FROM card_shipments {where_sql}", params)
+                total = cursor.fetchone()[0] or 0
+
+                self._execute_sql(cursor, f'''
+                    SELECT id, card_id, card_name, content, order_id, item_id,
+                           buyer_id, cookie_id, shipped_at
+                    FROM card_shipments
+                    {where_sql}
+                    ORDER BY id DESC
+                    LIMIT ?
+                ''', params + (page_size,))
+
+                shipments = []
+                for row in cursor.fetchall():
+                    shipments.append({
+                        'id': row[0],
+                        'card_id': row[1],
+                        'card_name': row[2] or '',
+                        'content': row[3] or '',
+                        'order_id': row[4] or '',
+                        'item_id': row[5] or '',
+                        'buyer_id': row[6] or '',
+                        'cookie_id': row[7] or '',
+                        'shipped_at': row[8],
+                    })
+
+                return {'total': total, 'shipments': shipments}
+            except Exception as e:
+                logger.error(f"获取已发货卡密记录失败: {e}")
+                return {'total': 0, 'shipments': []}
+
+    def clear_card_shipments(self, user_id: int = None) -> int:
+        """清空已发货卡密记录，返回删除条数。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is not None:
+                    self._execute_sql(cursor, "DELETE FROM card_shipments WHERE user_id = ?", (user_id,))
+                else:
+                    self._execute_sql(cursor, "DELETE FROM card_shipments")
+                deleted = cursor.rowcount or 0
+                self.conn.commit()
+                logger.info(f"已清空卡密发货记录: {deleted} 条 (用户ID: {user_id})")
+                return deleted
+            except Exception as e:
+                logger.error(f"清空已发货卡密记录失败: {e}")
+                self.conn.rollback()
+                return 0
 
     # ==================== 商品信息管理 ====================
 
@@ -5455,7 +6142,9 @@ class DBManager:
                        vdb.delivery_times, vdb.enabled,
                        c.name, c.type, c.api_config, c.text_content,
                        c.data_content, c.image_url, c.enabled, c.description,
-                       c.delay_seconds, pv.enabled
+                       c.delay_seconds, pv.enabled,
+                       c.delivery_template, c.delivery_template_enabled,
+                       c.delivery_template_images
                 FROM product_variants pv
                 LEFT JOIN variant_delivery_bindings vdb
                   ON vdb.variant_id = pv.id
@@ -5524,6 +6213,9 @@ class DBManager:
                 "card_enabled": True,
                 "card_description": row[17],
                 "card_delay_seconds": row[18] or 0,
+                "card_delivery_template": row[20],
+                "card_delivery_template_enabled": bool(row[21]) if row[21] is not None else False,
+                "card_delivery_template_images": self._parse_delivery_template_images(row[22]),
                 "is_multi_spec": bool(config[3]),
                 "spec_name": "规格组合" if bool(config[3]) else None,
                 "spec_value": specification_text(payload) if bool(config[3]) else None,
@@ -5531,6 +6223,105 @@ class DBManager:
                 "cookie_id": cookie_id,
                 "item_id": item_id,
             }
+
+    @staticmethod
+    def normalize_delivery_sku_key(name: str = "", platform_sku_id: str = "", item_id: str = "") -> str:
+        sku_id = str(platform_sku_id or "").strip().lower()
+        if sku_id:
+            return f"id:{sku_id}"
+        normalized = " ".join(str(name or "").split()).lower()
+        if normalized:
+            return normalized
+        return f"single:{item_id}" if str(item_id or "").strip() else ""
+
+    def record_delivery_sku_option(self, cookie_id: str, item_id: str, sku_name: str = "",
+                                   platform_sku_id: str = "", source: str = "order",
+                                   sku_key: str = "") -> bool:
+        key = str(sku_key or "").strip().lower() or self.normalize_delivery_sku_key(sku_name, platform_sku_id, item_id)
+        if not key:
+            return False
+        name = " ".join(str(sku_name or '').split()) or (
+            f"SKU {platform_sku_id}" if str(platform_sku_id or '').strip() else '默认规格'
+        )
+        with self.lock:
+            self.conn.execute('''
+                INSERT INTO delivery_sku_options(cookie_id,item_id,sku_key,sku_name,platform_sku_id,source,last_seen_at)
+                VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(cookie_id,item_id,sku_key) DO UPDATE SET
+                  sku_name=excluded.sku_name, platform_sku_id=COALESCE(excluded.platform_sku_id, platform_sku_id),
+                  source=excluded.source, last_seen_at=CURRENT_TIMESTAMP
+            ''', (cookie_id, item_id, key, name, str(platform_sku_id or '') or None, source))
+            self.conn.commit()
+        return True
+
+    def list_delivery_sku_options(self, cookie_id: str, item_id: str) -> List[Dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute('''SELECT sku_key,sku_name,platform_sku_id,source,last_seen_at
+                FROM delivery_sku_options WHERE cookie_id=? AND item_id=? ORDER BY sku_name''',
+                                     (cookie_id, item_id)).fetchall()
+            if not rows:
+                variants = self.conn.execute('''SELECT display_name,platform_sku_id,source
+                    FROM product_variants WHERE cookie_id=? AND item_id=? AND enabled=1 ORDER BY id''',
+                    (cookie_id, item_id)).fetchall()
+                for name, sku_id, source in variants:
+                    key = self.normalize_delivery_sku_key(name, sku_id, item_id)
+                    if key:
+                        rows.append((key, ' '.join(str(name or '').split()) or f'SKU {sku_id}', sku_id or None, source or 'manual', None))
+        return [dict(zip(('key','name','platform_sku_id','source','last_seen_at'), row)) for row in rows]
+
+    def save_delivery_sku_rules(self, cookie_id: str, item_id: str, rules: List[Dict[str, Any]]) -> None:
+        with self.lock:
+            self.conn.execute('DELETE FROM delivery_sku_rules WHERE cookie_id=? AND item_id=?', (cookie_id, item_id))
+            for rule in (rules or [])[:100]:
+                key = str(rule.get('key') or '').strip().lower()
+                name = ' '.join(str(rule.get('name') or '').split())
+                if not key or not name:
+                    continue
+                limit = max(1, min(100, int(rule.get('max_deliveries') or 1)))
+                self.conn.execute('''INSERT OR REPLACE INTO delivery_sku_rules
+                    (cookie_id,item_id,sku_key,sku_name,max_deliveries,block_message,enabled,updated_at)
+                    VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)''',
+                    (cookie_id, item_id, key, name, limit, str(rule.get('block_message') or '').strip(),
+                     1 if rule.get('enabled', True) else 0))
+            self.conn.commit()
+
+    def claim_delivery_sku(self, cookie_id: str, buyer_id: str, item_id: str, sku_key: str,
+                           order_id: str) -> Dict[str, Any]:
+        """原子地领取一次 SKU 发货额度；同订单重试幂等，超限不增加计数。"""
+        if not buyer_id or not sku_key:
+            return {'allowed': True, 'configured': False}
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute('BEGIN IMMEDIATE')
+            rule = cur.execute('''SELECT max_deliveries,block_message FROM delivery_sku_rules
+                WHERE cookie_id=? AND item_id=? AND sku_key=? AND enabled=1''',
+                (cookie_id, item_id, sku_key)).fetchone()
+            if not rule:
+                self.conn.commit(); return {'allowed': True, 'configured': False}
+            row = cur.execute('''SELECT delivery_count,last_order_id FROM delivery_sku_claims
+                WHERE cookie_id=? AND buyer_id=? AND item_id=? AND sku_key=?''',
+                (cookie_id, buyer_id, item_id, sku_key)).fetchone()
+            if row and str(row[1] or '') == str(order_id or ''):
+                self.conn.commit(); return {'allowed': True, 'configured': True, 'count': row[0]}
+            count = int(row[0]) if row else 0
+            if count >= int(rule[0]):
+                self.conn.commit(); return {'allowed': False, 'configured': True, 'count': count,
+                                            'max_deliveries': int(rule[0]), 'block_message': rule[1] or ''}
+            if row:
+                cur.execute('''UPDATE delivery_sku_claims SET delivery_count=?,last_order_id=?,updated_at=CURRENT_TIMESTAMP
+                    WHERE cookie_id=? AND buyer_id=? AND item_id=? AND sku_key=?''',
+                    (count + 1, order_id, cookie_id, buyer_id, item_id, sku_key))
+            else:
+                cur.execute('''INSERT INTO delivery_sku_claims(cookie_id,buyer_id,item_id,sku_key,delivery_count,last_order_id)
+                    VALUES(?,?,?,?,?,?)''', (cookie_id, buyer_id, item_id, sku_key, 1, order_id))
+            self.conn.commit()
+            return {'allowed': True, 'configured': True, 'count': count + 1, 'max_deliveries': int(rule[0])}
+
+    def list_delivery_sku_blocks(self, cookie_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute('''SELECT buyer_id,item_id,sku_key,delivery_count,last_order_id,updated_at
+                FROM delivery_sku_claims WHERE cookie_id=? ORDER BY updated_at DESC LIMIT ?''', (cookie_id, limit)).fetchall()
+        return [dict(zip(('buyer_id','item_id','sku_key','delivery_count','last_order_id','updated_at'), row)) for row in rows]
 
     def increment_variant_binding_delivery_times(self, binding_id: int) -> bool:
         with self.lock:

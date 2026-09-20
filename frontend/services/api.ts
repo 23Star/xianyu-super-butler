@@ -1,11 +1,12 @@
 import { get, post, put, del } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
-  AdminStats, Card, SystemSettings, ApiResponse, OrderAnalytics,
+  AdminStats, Card, CardShipment, SystemSettings, ApiResponse, OrderAnalytics,
   Item, ItemDeliveryConfig, ItemDeliveryConfigSummary,
   ProductVariantBinding, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
   NotificationChannel, NotificationChannelType, RiskControlLog, SystemLog,
+  NotificationEventDefinition, NotificationPriorityDefinition,
   MessageFilter, MessageFilterType, AutoReplyLog
   , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
@@ -368,6 +369,10 @@ export const requireOrderFlower = async (orderId: string): Promise<any> => {
   return post(`/api/orders/${orderId}/require-flower`);
 };
 
+export const receiveOrderFlower = async (orderId: string): Promise<any> => {
+  return post(`/api/orders/${orderId}/receive-flower`);
+};
+
 // 买家互动开关状态。开关按账号存，accounts 是逐账号的映射；
 // 顶层两个布尔表示「是否有任意账号开启」，用于决定整块入口要不要出现。
 export interface BuyerInteractionFlags {
@@ -375,12 +380,14 @@ export interface BuyerInteractionFlags {
   auto_flower_enabled: boolean;
   /** 确认收货后自动给买家发一条致谢文本 */
   auto_thanks_enabled: boolean;
+  auto_receive_flower_enabled: boolean;
 }
 
 export const getSellerFeatureFlags = async (): Promise<{
   accounts?: Record<string, BuyerInteractionFlags>;
   auto_rate_enabled: boolean;
   auto_flower_enabled: boolean;
+  auto_receive_flower_enabled: boolean;
   auto_rate_template?: string;
 }> => {
   return get('/api/seller-features');
@@ -468,6 +475,25 @@ export const getCardDetails = async (cardId: string | number): Promise<any> => {
   return get(`/cards/${cardId}`);
 };
 
+/** 已发货的批量卡密记录，按时间倒序。 */
+export const getCardShipments = async (limit = 200): Promise<{ total: number; shipments: CardShipment[] }> => {
+  const res = await get<{ success: boolean; total: number; shipments: CardShipment[] }>(
+    '/cards/shipped', { limit }
+  );
+  return { total: res.total || 0, shipments: res.shipments || [] };
+};
+
+export const clearCardShipments = async (): Promise<ApiResponse & { deleted?: number }> => {
+  return del('/cards/shipped');
+};
+
+/** 上传图片，返回服务端相对路径（卡密发货文案插图等）。 */
+export const uploadImage = async (file: File): Promise<{ image_url: string; message?: string }> => {
+  const formData = new FormData();
+  formData.append('image', file);
+  return post('/upload-image', formData);
+};
+
 // Items
 export const getItems = async (): Promise<Item[]> => {
     const res = await get<any>('/items');
@@ -543,6 +569,50 @@ export const saveItemDeliveryConfig = async (
     config,
   );
 }
+
+export type DeliverySkuOption = {
+  key: string;
+  name: string;
+  platform_sku_id?: string;
+  source?: string;
+};
+
+export type DeliverySkuDiscovery = {
+  options: DeliverySkuOption[];
+  detection_status: string;
+  retry_after_seconds?: number;
+  warning?: string;
+};
+
+const normalizeDeliverySkuDiscovery = (data: Partial<DeliverySkuDiscovery>): DeliverySkuDiscovery => ({
+  options: data.options || [],
+  detection_status: data.detection_status || 'ok',
+  retry_after_seconds: data.retry_after_seconds,
+  warning: data.warning,
+});
+
+export const getDeliverySkuOptions = async (cookieId: string, itemId: string): Promise<DeliverySkuDiscovery> => {
+  const response = await get<Partial<DeliverySkuDiscovery>>(
+    `/api/anti-abuse/sku-options/${encodeURIComponent(itemId)}`,
+    { cookie_id: cookieId },
+  );
+  return normalizeDeliverySkuDiscovery(response);
+};
+
+/** 卖家接口返回 unauthorized 后由用户显式触发的买家接口兜底，只调一次、不自动重试。 */
+export const buyerTestDeliverySkuOptions = async (cookieId: string, itemId: string): Promise<DeliverySkuDiscovery> => {
+  const response = await get<Partial<DeliverySkuDiscovery>>(
+    `/api/anti-abuse/sku-options/${encodeURIComponent(itemId)}/buyer-test`,
+    { cookie_id: cookieId },
+  );
+  return normalizeDeliverySkuDiscovery(response);
+};
+
+export const saveDeliverySkuRules = async (cookieId: string, itemId: string, skus: Array<{
+  key: string; name: string; max_deliveries: number; block_message: string; enabled: boolean;
+}>): Promise<void> => {
+  await put(`/api/anti-abuse/sku-configs/${encodeURIComponent(itemId)}?cookie_id=${encodeURIComponent(cookieId)}`, { skus });
+};
 
 // Product Automation
 export const getProductMaterials = async (cookieId?: string): Promise<ProductMaterial[]> => {
@@ -890,6 +960,19 @@ export const deleteNotificationChannel = async (channelId: string): Promise<ApiR
 }
 
 // Message Notifications
+export const getNotificationEvents = async (): Promise<{
+  success: boolean;
+  events: NotificationEventDefinition[];
+  priorities: NotificationPriorityDefinition[];
+}> => {
+  const result = await get<{ events?: NotificationEventDefinition[]; priorities?: NotificationPriorityDefinition[] }>('/notification-events');
+  return {
+    success: true,
+    events: result?.events || [],
+    priorities: result?.priorities || [],
+  };
+}
+
 export const getMessageNotifications = async (): Promise<{ success: boolean; data: MessageNotification[] }> => {
   const result = await get<Record<string, any[]>>('/message-notifications');
   const notifications: MessageNotification[] = [];
@@ -902,6 +985,9 @@ export const getMessageNotifications = async (): Promise<{ success: boolean; dat
           channel_id: item.channel_id,
           channel_name: item.channel_name,
           channel_type: item.channel_type,
+          channel_enabled: item.channel_enabled !== false,
+          name: item.name ?? null,
+          event_types: item.event_types ?? null,
           enabled: item.enabled,
         });
       }
@@ -910,8 +996,28 @@ export const getMessageNotifications = async (): Promise<{ success: boolean; dat
   return { success: true, data: notifications };
 }
 
-export const setMessageNotification = async (cookieId: string, channelId: number, enabled: boolean): Promise<ApiResponse> => {
-  return post(`/message-notifications/${cookieId}`, { channel_id: channelId, enabled });
+export const setMessageNotification = async (
+  cookieId: string,
+  channelId: number,
+  enabled: boolean,
+  rule?: { name?: string; eventTypes?: string[] | null },
+): Promise<ApiResponse & { id?: number }> => {
+  return post(`/message-notifications/${cookieId}`, {
+    channel_id: channelId,
+    enabled,
+    ...(rule ? { name: rule.name ?? '', event_types: rule.eventTypes ?? [] } : {}),
+  });
+}
+
+export const updateMessageNotificationRule = async (
+  ruleId: string,
+  data: { name?: string; eventTypes?: string[]; enabled?: boolean },
+): Promise<ApiResponse> => {
+  const payload: Record<string, unknown> = {};
+  if (data.name !== undefined) payload.name = data.name;
+  if (data.eventTypes !== undefined) payload.event_types = data.eventTypes;
+  if (data.enabled !== undefined) payload.enabled = data.enabled;
+  return put(`/message-notifications/rule/${ruleId}`, payload);
 }
 
 export const deleteMessageNotification = async (notificationId: string): Promise<ApiResponse> => {
@@ -920,6 +1026,25 @@ export const deleteMessageNotification = async (notificationId: string): Promise
 
 export const deleteAccountNotifications = async (cookieId: string): Promise<ApiResponse> => {
   return del(`/message-notifications/account/${cookieId}`);
+}
+
+export interface NotificationTestResponse {
+  success: boolean;
+  message: string;
+  request_id: string;
+  channel: {
+    id: number;
+    name: string;
+    type: NotificationChannelType;
+  };
+  sent_at: string;
+  duration_ms?: number;
+}
+
+export const testMessageNotification = async (
+  ruleId: string | number,
+): Promise<NotificationTestResponse> => {
+  return post(`/message-notifications/rule/${ruleId}/test`);
 }
 
 export const getRiskControlLogs = async (params: {
@@ -1093,3 +1218,131 @@ export const clearDefaultReplyRecords = async (cookieId: string): Promise<ApiRes
 export const getAnnouncement = async (force = false): Promise<AnnouncementPayload> => {
   return get('/api/announcement', force ? { force: true } : undefined);
 };
+
+// 物流报价表解析（识别结果持久化，支持多份报价表）
+export interface LogisticsQuoteTier {
+  min_exclusive_kg?: number;
+  max_inclusive_kg?: number;
+  price_per_kg: number;
+  basis?: 'continued' | 'total';
+}
+
+export interface LogisticsQuoteFixedTier {
+  up_to_kg: number;
+  price: number;
+  up_to?: boolean;
+}
+
+export interface LogisticsQuoteCarrier {
+  name: string;
+  sheets: string[];
+  source: 'sheet_name' | 'carrier_column' | 'mixed';
+  carrier_column: string | null;
+  first_source_row: number | null;
+}
+
+export interface LogisticsQuoteParseRow {
+  id: string;
+  sheet: string;
+  source_row: number;
+  seller: string | null;
+  channel: string | null;
+  carrier: string | null;
+  carrier_source: string | null;
+  route: string | null;
+  eta: string | null;
+  origin_province: string | null;
+  origin_city: string | null;
+  origin: string | null;
+  destination_province: string | null;
+  destination_city: string | null;
+  destination: string | null;
+  first_weight_kg: number | null;
+  first_price: number | null;
+  continued_unit_kg: number | null;
+  continued_price: number | null;
+  continued_tiers: LogisticsQuoteTier[] | null;
+  fixed_tiers: LogisticsQuoteFixedTier[] | null;
+  rule_type: 'first_additional' | 'fixed_tiers' | 'fixed_tiers_overflow' | 'banded_additional' | 'minimum_then_per_kg' | null;
+  book_kind: 'express' | 'logistics' | null;
+  quote: number | null;
+  confidence: number;
+  review_state: 'valid' | 'review' | 'rejected';
+  issues: string[];
+  raw: Record<string, string>;
+}
+
+export interface LogisticsQuoteParseResponse {
+  success: boolean;
+  mode?: 'carrier_only' | 'rate_book_summary';
+  source: {
+    filename: string;
+    size: number;
+    sha256: string;
+    content_type: string | null;
+    file_type: 'xlsx' | 'xlsm' | 'xls' | 'csv';
+    parser_version: string;
+    status: 'parsed' | 'needs_review';
+  };
+  mapping: { matched: Record<string, string>; unmatched: string[] };
+  summary: { total: number; valid: number; review: number; rejected: number };
+  book_kind: 'express' | 'logistics' | null;
+  service_count: number;
+  route_count: number;
+  services: Array<{
+    name: string;
+    sheet_name: string;
+    row_count: number;
+    route_count: number;
+    rule_type: string;
+    book_kind: 'express' | 'logistics' | null;
+    mapping: Record<string, string>;
+  }>;
+  carriers: LogisticsQuoteCarrier[];
+  rows: LogisticsQuoteParseRow[];
+  sample_row: LogisticsQuoteParseRow | null;
+  warning_count: number;
+  warnings: string[];
+}
+
+export const parseQuoteSource = async (file: File): Promise<LogisticsQuoteParseResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return post('/api/logistics/quote-sources/parse', formData);
+};
+
+export interface LogisticsQuoteBook {
+  id: number;
+  filename: string;
+  file_type: string;
+  size_bytes: number;
+  sha256: string;
+  book_kind: 'express' | 'logistics' | null;
+  service_count: number;
+  route_count: number;
+  payload: Omit<LogisticsQuoteParseResponse, 'success'>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const listQuoteBooks = async (): Promise<{ success: boolean; books: LogisticsQuoteBook[] }> =>
+  get('/api/logistics/quote-books');
+
+export interface QuoteBookRouteSync {
+  id: number;
+  route_count: number;
+}
+
+export const createQuoteBook = async (file: File): Promise<{
+  success: boolean;
+  book: LogisticsQuoteBook;
+  route_import: QuoteBookRouteSync | null;
+  route_warning: string;
+}> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return post('/api/logistics/quote-books', formData);
+};
+
+export const deleteQuoteBook = async (bookId: number): Promise<{ success: boolean }> =>
+  del(`/api/logistics/quote-books/${bookId}`);

@@ -154,7 +154,11 @@ class FileLogCollector:
             logs_list = [log for log in logs_list if log['level'] == level_filter]
         
         if source_filter:
-            logs_list = [log for log in logs_list if source_filter.lower() in log['source'].lower()]
+            needle = source_filter.lower()
+            logs_list = [
+                log for log in logs_list
+                if needle in log['source'].lower() or needle in log['message'].lower()
+            ]
         
         # 返回最后N行
         return logs_list[-lines:] if len(logs_list) > lines else logs_list

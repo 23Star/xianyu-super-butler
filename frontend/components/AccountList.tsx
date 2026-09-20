@@ -73,15 +73,20 @@ const AccountList: React.FC = () => {
     showLoginPassword: false,
   });
 
-  // AI设置表单状态
+  // AI设置表单状态（字段必须齐全：PUT 是整行 INSERT OR REPLACE，
+  // 少一个字段保存时就会被后端默认值静默覆盖）
   const [aiSettings, setAiSettings] = useState<AIReplySettings>({
     ai_enabled: false,
     model_name: 'qwen-plus',
     api_key: '',
     base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    user_agent: '',
     max_discount_percent: 10,
     max_discount_amount: 100,
     max_bargain_rounds: 3,
+    context_enabled: true,
+    context_message_limit: 12,
+    context_expire_minutes: 120,
     custom_prompts: '',
   });
   const [saving, setSaving] = useState(false);
@@ -334,14 +339,20 @@ const AccountList: React.FC = () => {
     setSaving(true);
     try {
       const settings = await getAccountAISettings(account.id);
+      // 全量加载：PUT 是整行覆盖保存，漏掉的字段（user_agent、
+      // context_* 等）会被后端默认值静默重置
       setAiSettings({
         ai_enabled: settings.ai_enabled ?? false,
         model_name: settings.model_name || 'qwen-plus',
         api_key: settings.api_key || '',
         base_url: settings.base_url || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        user_agent: settings.user_agent ?? '',
         max_discount_percent: settings.max_discount_percent ?? 10,
         max_discount_amount: settings.max_discount_amount ?? 100,
         max_bargain_rounds: settings.max_bargain_rounds ?? 3,
+        context_enabled: settings.context_enabled ?? true,
+        context_message_limit: settings.context_message_limit ?? 12,
+        context_expire_minutes: settings.context_expire_minutes ?? 120,
         custom_prompts: settings.custom_prompts ?? '',
       });
     } catch (e) {

@@ -6,6 +6,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel
 import asyncio
+import time
 from loguru import logger
 
 from utils.captcha_remote_control import captcha_controller
@@ -41,9 +42,28 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     
     # 注册 WebSocket 连接
     captcha_controller.websocket_connections[session_id] = websocket
-    
+
     try:
         # 发送初始会话信息
+        # 后端 start_manual_captcha → open_manual_session 要先抢 browser_limit 槽位
+        # 才能打开浏览器截图建会话，前端 WebSocket 可能比会话创建先到。原实现在
+        # 会话不存在时立即发 error + close，前端静默重连但看不到任何反馈，
+        # 弹窗一直停在「正在服务器上打开验证页面」。这里改为轮询等待最多 30 秒，
+        # 给后端足够时间完成浏览器启动和截图。
+        if session_id not in captcha_controller.active_sessions:
+            wait_deadline = time.monotonic() + 30
+            while time.monotonic() < wait_deadline:
+                await asyncio.sleep(1)
+                if session_id in captcha_controller.active_sessions:
+                    break
+            else:
+                await websocket.send_json({
+                    'type': 'error',
+                    'message': '会话创建超时，可能是服务器繁忙或浏览器启动失败，请稍后重试'
+                })
+                await websocket.close()
+                return
+
         if session_id in captcha_controller.active_sessions:
             session_data = captcha_controller.active_sessions[session_id]
             await websocket.send_json({
