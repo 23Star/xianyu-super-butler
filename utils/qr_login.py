@@ -16,6 +16,9 @@ import qrcode
 import qrcode.constants
 from loguru import logger
 import hashlib
+import base64
+import os
+from io import BytesIO
 
 
 def generate_headers():
@@ -66,6 +69,9 @@ class QRLoginSession:
         self.verification_qr_code_url = None  # 验证URL的二维码，生成一次后复用
         self.verification_extended = False
         self.last_remote_status = None
+        # 服务端打开的验证页任务。人脸验证必须由持有该页面的浏览器完成后续登录，
+        # 手机只负责扫页面上的码、刷脸，登录态会落在这个浏览器里。
+        self.verification_task = None
 
     def extend_for_verification(self) -> None:
         """进入手机验证后延长会话寿命，只延一次。"""
@@ -333,6 +339,9 @@ class QRLoginManager:
                     # 检查会话是否还存在
                     if session_id not in self.sessions:
                         break
+                    if session.status == 'success':
+                        # 验证页浏览器已经拿到登录态
+                        break
 
                     # 轮询二维码状态
                     resp = await self._poll_qrcode_status(session)
@@ -380,10 +389,12 @@ class QRLoginManager:
                                 logger.warning(
                                     f"账号被风控，需要手机验证: {session_id}, URL: {iframe_url}"
                                 )
+                                self._ensure_verification_task(session)
                             elif iframe_url and iframe_url != session.verification_url:
                                 # 验证链路中途换 URL，跟上以免二维码失效
                                 session.verification_url = iframe_url
                                 session.verification_qr_code_url = None
+                                self._ensure_verification_task(session, restart=True)
                             await asyncio.sleep(1.5)
                             continue
 
@@ -409,6 +420,11 @@ class QRLoginManager:
                         continue
 
                     elif qrcode_status == "EXPIRED":
+                        if session.status == 'verification_required':
+                            # 手机确认后登录二维码本身就会变成 EXPIRED，这是正常的：
+                            # 后续登录由服务端验证页完成，这里只需等待，不能把会话判死。
+                            await asyncio.sleep(2)
+                            continue
                         # 二维码已过期
                         session.status = 'expired'
                         logger.info(f"二维码已过期: {session_id}")
@@ -451,6 +467,9 @@ class QRLoginManager:
             if session_id in self.sessions:
                 self.sessions[session_id].status = 'expired'
         finally:
+            latest = self.sessions.get(session_id)
+            if latest and latest.status != 'verification_required':
+                self._cancel_verification_task(latest)
             # 监控结束后自清。原先只有 check 接口会调 cleanup_expired_sessions()，
             # 用户扫完码直接关掉弹窗就没人再触发，会话连同整份登录 Cookie 会一直
             # 留在内存里。留一段窗口期让前端取走最终状态，再删。
@@ -484,9 +503,15 @@ class QRLoginManager:
         )
         # 如果需要验证，返回验证URL和对应二维码
         if session.status == 'verification_required' and session.verification_url:
-            result['verification_url'] = session.verification_url
-            result['verification_qr_code_url'] = self._verification_qr_code(session)
-            result['message'] = '账号被风控，请用手机完成验证，本页会自动继续'
+            # 不返回 verification_url（前端据此隐藏“在当前设备打开验证页”）：
+            # 验证页链接只能打开一次，服务端已经打开后，在别处再打开只会提示
+            # “身份校验流程已经结束”，还会让服务端这一侧的验证失效。
+            qr_code_url = self._verification_qr_code(session)
+            result['verification_qr_code_url'] = qr_code_url
+            if qr_code_url:
+                result['message'] = '请用手机闲鱼扫描上方二维码完成人脸验证，本页会自动继续'
+            else:
+                result['message'] = '账号需要人脸验证，验证二维码正在生成，请稍候几秒…'
 
         # 如果登录成功，返回Cookie信息
         if session.status == 'success' and session.cookies and session.unb:
@@ -500,24 +525,177 @@ class QRLoginManager:
 
         前端每秒都在轮询状态，每次重画一张 PNG 纯属浪费；URL 不变时直接复用。
         """
-        if session.verification_qr_code_url:
-            return session.verification_qr_code_url
-        if not session.verification_url:
-            return None
+        # 只返回服务端验证页上截下来的二维码；截到之前前端显示占位图标和外部验证入口。
+        # 不能把验证 URL 本身画成二维码：手机扫了会在手机浏览器里走完登录，服务端拿不到登录态。
+        return session.verification_qr_code_url
+
+    # ------------------------------------------------------------ 服务端验证页
+
+    def _ensure_verification_task(self, session: QRLoginSession, restart: bool = False):
+        task = session.verification_task
+        if task and not task.done():
+            if not restart:
+                return
+            task.cancel()
+        session.verification_task = asyncio.create_task(
+            self._run_verification_page(session.session_id)
+        )
+
+    def _cancel_verification_task(self, session: QRLoginSession):
+        task = session.verification_task
+        if task and not task.done():
+            task.cancel()
+        session.verification_task = None
+
+    @staticmethod
+    def _png_to_data_url(png_bytes: bytes, pad: int = 12) -> str:
+        """给截图补一圈白边（二维码需要静区）后转成 data URL。"""
+        try:
+            from PIL import Image, ImageOps
+            img = Image.open(BytesIO(png_bytes)).convert('RGB')
+            img = ImageOps.expand(img, border=pad, fill='white')
+            buf = BytesIO()
+            img.save(buf, format='PNG')
+            png_bytes = buf.getvalue()
+        except Exception:
+            pass
+        return 'data:image/png;base64,' + base64.b64encode(png_bytes).decode('ascii')
+
+    async def _capture_verification_qr(self, session: QRLoginSession, page) -> bool:
+        """截取验证页上的二维码（最大的近似正方形 img/canvas/svg）。
+
+        只有二维码已经渲染完成才更新给前端；截不到时不暴露整页截图，
+        只把整页截图写到 logs/ 供排查，前端继续显示占位和外部验证入口。
+        """
+        best = None
+        for frame in page.frames:
+            try:
+                handles = await frame.query_selector_all('canvas, img, svg')
+            except Exception:
+                continue
+            for handle in handles:
+                try:
+                    if not await handle.is_visible():
+                        continue
+                    # img 必须已经加载完成，否则截到的是空白方块
+                    loaded = await handle.evaluate(
+                        "el => el.tagName !== 'IMG' || (el.complete && el.naturalWidth > 0)"
+                    )
+                    if not loaded:
+                        continue
+                    box = await handle.bounding_box()
+                except Exception:
+                    continue
+                if not box:
+                    continue
+                w, h = box['width'], box['height']
+                if w < 80 or h < 80 or abs(w - h) / max(w, h) > 0.15:
+                    continue
+                if best is None or w * h > best[0]:
+                    best = (w * h, handle)
+
+        if best is not None:
+            try:
+                session.verification_qr_code_url = self._png_to_data_url(await best[1].screenshot())
+                return True
+            except Exception as e:
+                logger.debug(f"截取验证二维码失败: {session.session_id}, {e}")
 
         try:
-            from io import BytesIO
-            import base64
+            os.makedirs('logs', exist_ok=True)
+            debug_path = os.path.join('logs', f'qr_verify_{session.session_id}.png')
+            await page.screenshot(path=debug_path, full_page=True)
+            logger.warning(f"验证页上暂未找到二维码，整页截图: {debug_path}, URL: {page.url}")
+        except Exception:
+            pass
+        return False
 
-            buffer = BytesIO()
-            qrcode.make(session.verification_url).save(buffer, format='PNG')
-            session.verification_qr_code_url = (
-                'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+    async def _run_verification_page(self, session_id: str):
+        """在服务端浏览器里打开人脸验证页，并等待它完成登录。
+
+        passport 的 iv/remote/pc 验证页会显示一个供手机 App 扫描的二维码；手机刷脸通过后，
+        是这个页面继续完成登录并写入 unb 等 Cookie，所以页面必须一直开在服务端。
+        """
+        session = self.sessions.get(session_id)
+        if not session or not session.verification_url:
+            return
+
+        playwright = browser = None
+        try:
+            from playwright.async_api import async_playwright
+
+            logger.info(f"服务端打开扫码登录验证页: {session_id}")
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
+                # 有 Xvfb 时用有头模式，降低被识别为自动化的概率
+                headless=not os.getenv('DISPLAY'),
+                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--lang=zh-CN'],
             )
-            return session.verification_qr_code_url
+            context = await browser.new_context(
+                viewport={'width': 960, 'height': 900},
+                locale='zh-CN',
+                user_agent=self.headers['User-Agent'],
+            )
+            seed = [
+                {'name': k, 'value': str(v), 'url': self.host}
+                for k, v in session.cookies.items() if k and v is not None
+            ]
+            if seed:
+                await context.add_cookies(seed)
+
+            page = await context.new_page()
+            await page.goto(session.verification_url, wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(2500)
+
+            last_capture = 0.0
+            while True:
+                current = self.sessions.get(session_id)
+                if not current or current.status != 'verification_required':
+                    break
+
+                cookies = {c['name']: c['value'] for c in await context.cookies()}
+                if cookies.get('unb'):
+                    logger.info(f"验证页已完成登录，收集Cookie: {session_id}, URL: {page.url}")
+                    # 打开一次闲鱼 IM 页，让 .goofish.com 下的会话 Cookie 补齐
+                    try:
+                        probe = await context.new_page()
+                        await probe.goto('https://www.goofish.com/im', wait_until='domcontentloaded', timeout=30000)
+                        await probe.wait_for_timeout(3000)
+                        await probe.close()
+                    except Exception as probe_e:
+                        logger.warning(f"验证后打开 IM 页失败（不影响已拿到的Cookie）: {probe_e}")
+                    for c in await context.cookies():
+                        domain = c.get('domain', '')
+                        if 'goofish.com' in domain or 'mmstat.com' in domain or 'taobao.com' in domain:
+                            current.cookies[c['name']] = c['value']
+                    current.unb = current.cookies.get('unb')
+                    current.status = 'success'
+                    logger.info(
+                        f"扫码+人脸验证登录成功: {session_id}, UNB: {current.unb}, "
+                        f"Cookie字段数: {len(current.cookies)}"
+                    )
+                    break
+
+                if time.time() - last_capture > 4:
+                    await self._capture_verification_qr(current, page)
+                    last_capture = time.time()
+                await page.wait_for_timeout(1500)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.warning(f"生成验证二维码失败: {session.session_id}, {e}")
-            return None
+            logger.error(f"服务端验证页运行失败: {session_id}, {e}")
+        finally:
+            try:
+                if browser:
+                    await browser.close()
+            except Exception:
+                pass
+            try:
+                if playwright:
+                    await playwright.stop()
+            except Exception:
+                pass
+            logger.info(f"服务端验证页已关闭: {session_id}")
 
     def cleanup_expired_sessions(self):
         """清理过期会话"""
