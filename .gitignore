@@ -89,9 +89,9 @@ static/uploads/*
 config.local.yml
 global_config.local.yml
 
-# 测试文件
-test_*.py
-*_test.py
+# 测试文件（限定 tests/ 目录，避免误伤 *_test.py 命名的源码模块）
+tests/test_*.py
+tests/*_test.py
 keywords_sample.xlsx
 
 # 备份文件
