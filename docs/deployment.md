@@ -59,17 +59,20 @@ docker compose logs xianyu-app | grep -E "Xvfb|Patchright"
 
 重复部署失败通常不是前端问题，优先按以下顺序检查：
 
-1. **NAS / 低配设备不要本地构建**：CPU 被打满、内存耗尽、构建中途被杀，绝大多数是本机编译导致的。
+1. **不要部署到 Hugging Face Spaces 等共享托管平台**：项目内置反检测浏览器、验证码处理与
+   Telegram 组件，极易被共享平台判定为滥用导致账号被封；海外出口 IP 也会增加闲鱼风控概率。
+   推荐本地设备、自有 VPS 或国内服务器（详见 README「如何部署」开头的警告）。
+2. **NAS / 低配设备不要本地构建**：CPU 被打满、内存耗尽、构建中途被杀，绝大多数是本机编译导致的。
    改用 `docker compose -f docker-compose.nas.yml up -d` 拉取预构建镜像。
-2. **确认版本**：使用 Docker Engine 24+、Docker Compose v2；本地构建至少 4 GB 可用内存，仅拉取镜像 2 GB 即可。
-3. **确认 `.env`**：不填也能启动，会使用默认账号 admin / admin123。
-4. **确认端口**：`8080` 被占用时，在 `.env` 设置 `WEB_PORT=8081`，然后访问对应端口。
-5. **确认目录权限**：容器必须能够写入 `data`、`logs` 和 `backups`。
-6. **国内网络用 CN 配置**：`Dockerfile-cn` 已把 apt、pip、npm 和 Chromium 全部指向国内镜像；
+3. **确认版本**：使用 Docker Engine 24+、Docker Compose v2；本地构建至少 4 GB 可用内存，仅拉取镜像 2 GB 即可。
+4. **确认 `.env`**：不填也能启动，会使用默认账号 admin / admin123。
+5. **确认端口**：`8080` 被占用时，在 `.env` 设置 `WEB_PORT=8081`，然后访问对应端口。
+6. **确认目录权限**：容器必须能够写入 `data`、`logs` 和 `backups`。
+7. **国内网络用 CN 配置**：`Dockerfile-cn` 已把 apt、pip、npm 和 Chromium 全部指向国内镜像；
    用默认 `Dockerfile` 在国内构建，通常会卡在下载 Chromium 直到超时。
-7. **检查健康状态**：运行 `docker compose ps`，健康接口应返回 `healthy`。
-8. **查看真实错误**：运行 `docker compose logs --tail=200 xianyu-app`，不要只看浏览器"无法访问"。
-9. **清理失败构建缓存**：确认数据已备份后运行 `docker compose build --no-cache xianyu-app`，再重新启动。
+8. **检查健康状态**：运行 `docker compose ps`，健康接口应返回 `healthy`。
+9. **查看真实错误**：运行 `docker compose logs --tail=200 xianyu-app`，不要只看浏览器"无法访问"。
+10. **清理失败构建缓存**：确认数据已备份后运行 `docker compose build --no-cache xianyu-app`，再重新启动。
 
 常用诊断命令：
 
