@@ -124,13 +124,20 @@ class QrVerificationResumeTests(unittest.IsolatedAsyncioTestCase):
         first = manager.get_session_status("s2")
         second = manager.get_session_status("s2")
 
-        self.assertTrue(first["verification_qr_code_url"].startswith("data:image/png;base64,"))
-        self.assertEqual(first["verification_url"], session.verification_url)
-        # 前端每秒轮询，URL 没变就不该重复画图
+        # 二维码只能来自服务端验证页的截图（截到之前是 None，前端显示占位图标）；
+        # 不能把验证 URL 画成二维码，否则手机端走完登录服务端拿不到登录态。
+        # 原始验证 URL 也不再下发给前端。
+        self.assertIsNone(first["verification_qr_code_url"])
+        self.assertNotIn("verification_url", first)
         self.assertIs(
             first["verification_qr_code_url"],
             second["verification_qr_code_url"],
         )
+
+        # 截图任务填充后按会话缓存，前端轮询不重复生成
+        session.verification_qr_code_url = "data:image/png;base64,AAA"
+        cached = manager.get_session_status("s2")
+        self.assertEqual(cached["verification_qr_code_url"], "data:image/png;base64,AAA")
 
 
 if __name__ == "__main__":

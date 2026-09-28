@@ -102,7 +102,7 @@ class PerAccountFlagTests(unittest.TestCase):
         self.assertEqual(
             flags,
             {'auto_rate_enabled': True, 'auto_flower_enabled': True,
-             'auto_thanks_enabled': True},
+             'auto_thanks_enabled': True, 'auto_receive_flower_enabled': False},
         )
 
     def test_unknown_account_reads_as_off(self):
