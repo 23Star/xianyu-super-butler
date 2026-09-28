@@ -406,10 +406,10 @@ const Settings: React.FC = () => {
             <SettingToggle
               title="启用订单自动同步"
               description="关闭后只能在订单页手动点「拉取卖出订单」。"
-              checked={settings.order_sync_enabled !== false}
+              checked={settings.order_sync_enabled !== false && settings.order_sync_enabled !== 'false'}
               onChange={() => setSettings({
                 ...settings,
-                order_sync_enabled: settings.order_sync_enabled === false,
+                order_sync_enabled: settings.order_sync_enabled === false || settings.order_sync_enabled === 'false',
               })}
             />
             <div className="grid gap-4 p-4 sm:grid-cols-2">
@@ -440,10 +440,10 @@ const Settings: React.FC = () => {
             <SettingToggle
               title="启用自动擦亮"
               description="开启后按下方间隔自动擦亮全部商品。也可在商品页手动触发。"
-              checked={settings.auto_polish_enabled === true}
+              checked={settings.auto_polish_enabled === true || settings.auto_polish_enabled === 'true'}
               onChange={() => setSettings({
                 ...settings,
-                auto_polish_enabled: settings.auto_polish_enabled !== true,
+                auto_polish_enabled: !(settings.auto_polish_enabled === true || settings.auto_polish_enabled === 'true'),
               })}
             />
             <div className="grid gap-4 p-4 sm:grid-cols-2">
