@@ -108,8 +108,8 @@ def generate_mid() -> str:
 
 def generate_uuid() -> str:
     """生成uuid"""
-    timestamp = int(time.time() * 1000)
-    return f"-{timestamp}1"
+    import uuid
+    return str(uuid.uuid4())
 
 
 def generate_device_id(user_id: str) -> str:

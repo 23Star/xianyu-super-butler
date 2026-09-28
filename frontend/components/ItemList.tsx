@@ -44,6 +44,7 @@ import { confirmAction } from '../services/feedback';
 import DeliveryProtection from './DeliveryProtection';
 import GeneralDeliveryRules from './GeneralDeliveryRules';
 import {EmptyState, NoticeBanner, PageHeader, PageLoading, PageTabs} from './ui';
+import SkuRecognitionPanel from './SkuRecognitionPanel';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
 type ItemSection = 'products' | 'rules' | 'protection';
@@ -910,6 +911,14 @@ const ItemList: React.FC = () => {
                           <Settings2 className="h-4 w-4" />
                           {deliveryConfigured ? '编辑发货策略' : '配置自动发货'}
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => openDelivery(item)}
+                          disabled={busy}
+                          className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-cyan-300 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-700 hover:bg-cyan-100"
+                        >
+                          <Sparkles className="h-4 w-4" />识别 SKU
+                        </button>
                       </div>
 
                       {/* 商品能力列：三项里只有「多数量」可点，另两项是只读状态。
@@ -1131,6 +1140,8 @@ const ItemList: React.FC = () => {
                         : '所有订单使用同一个发货库存；如商品有套餐、周期或版本差异，请切换为多规格商品。'}
                     </p>
                   </div>
+
+                  <SkuRecognitionPanel cookieId={deliveryItem.cookie_id} itemId={deliveryItem.item_id} />
 
                   <div className="space-y-3">
                     {(deliveryForm.isMultiSpec

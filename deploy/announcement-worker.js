@@ -5,6 +5,7 @@
  *
  * 路由：
  *   GET  /announcement.json  公开，客户端定时拉取（无需鉴权）
+ *   OPTIONS /announcement.json  跨域预检（返回 204 + CORS 头）
  *   GET  /admin              管理界面，由 Cloudflare Access 保护
  *   GET  /api/config         读取当前配置（需 Access）
  *   PUT  /api/config         保存配置（需 Access）
@@ -237,8 +238,21 @@ export default {
 
     // ---- 公开接口：客户端拉取公告 ----
     if (path === '/announcement.json' || path === '/') {
+      // 浏览器跨域前的 OPTIONS 预检直接放行，避免被当成非法方法
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: securityHeaders({
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+            'Access-Control-Max-Age': '86400',
+          }),
+        });
+      }
       if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return json({ error: 'Method Not Allowed' }, 405);
+        return json({ error: 'Method Not Allowed' }, 405, {
+          Allow: 'GET, HEAD, OPTIONS',
+        });
       }
       const config = await readConfig(env);
       // 只吐客户端需要的字段，updated_at 之类内部信息不外泄
@@ -309,7 +323,9 @@ export default {
         return json({ ok: true, config }, 200, { 'Cache-Control': 'no-store' });
       }
 
-      return json({ error: 'Method Not Allowed' }, 405);
+      return json({ error: 'Method Not Allowed' }, 405, {
+        Allow: 'GET, PUT',
+      });
     }
 
     return json({ error: 'Not Found' }, 404);

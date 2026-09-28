@@ -43,6 +43,7 @@ class PerAccountFlagTests(unittest.TestCase):
         self.assertIn('auto_rate_enabled', cols)
         self.assertIn('auto_flower_enabled', cols)
         self.assertIn('auto_thanks_enabled', cols)
+        self.assertIn('auto_receive_flower_enabled', cols)
 
     def test_thanks_flag_is_independent(self):
         """收货致谢和另外两项互不影响。"""
@@ -93,17 +94,28 @@ class PerAccountFlagTests(unittest.TestCase):
         self.assertTrue(flags['auto_rate_enabled'], "只改求花却把评价也关了")
         self.assertFalse(flags['auto_flower_enabled'])
 
-    def test_all_three_can_be_set_at_once(self):
+    def test_all_four_can_be_set_at_once(self):
         self.db.update_buyer_interaction_settings(
             'accA', auto_rate_enabled=True, auto_flower_enabled=True,
-            auto_thanks_enabled=True
+            auto_thanks_enabled=True, auto_receive_flower_enabled=True
         )
         flags = self.db.get_buyer_interaction_settings('accA')
         self.assertEqual(
             flags,
             {'auto_rate_enabled': True, 'auto_flower_enabled': True,
-             'auto_thanks_enabled': True},
+             'auto_thanks_enabled': True, 'auto_receive_flower_enabled': True},
         )
+
+    def test_receive_flower_flag_is_independent(self):
+        """自动收花只由 receive 开关控制，不受求花开关影响。"""
+        self.db.update_buyer_interaction_settings('accA', auto_flower_enabled=True)
+        self.assertFalse(
+            self.db.get_buyer_interaction_settings('accA')['auto_receive_flower_enabled']
+        )
+        self.db.update_buyer_interaction_settings('accA', auto_receive_flower_enabled=True)
+        flags = self.db.get_buyer_interaction_settings('accA')
+        self.assertTrue(flags['auto_flower_enabled'])
+        self.assertTrue(flags['auto_receive_flower_enabled'])
 
     def test_unknown_account_reads_as_off(self):
         """读不到就按关闭处理 —— 不可撤销的动作不能靠猜。"""
