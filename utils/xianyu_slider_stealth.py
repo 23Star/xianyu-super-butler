@@ -4263,7 +4263,11 @@ class XianyuSliderStealth:
 
         用 user_data_dir 精确匹配，避免误杀用户自己开的浏览器或其他账号的实例。
         """
-        marker = f"browser_data{os.sep}slider_{self.pure_user_id}"
+        # 命令行里的 user-data-dir 可能用 / 或 \（Windows Chrome 两种都接受），
+        # 不能依赖 os.sep；词边界避免 slider_123 误杀 slider_1234 的目录。
+        marker_pattern = re.compile(
+            rf"browser_data[/\\]slider_{re.escape(self.pure_user_id)}(?!\w)"
+        )
         killed = 0
 
         try:
@@ -4275,7 +4279,7 @@ class XianyuSliderStealth:
             for proc in psutil.process_iter(['pid', 'cmdline']):
                 try:
                     cmdline = ' '.join(proc.info.get('cmdline') or [])
-                    if marker in cmdline:
+                    if marker_pattern.search(cmdline):
                         proc.kill()
                         killed += 1
                 except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):

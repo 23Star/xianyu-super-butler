@@ -355,8 +355,13 @@ def _handle_slider_verification(page, user_id: str, max_attempts: int = 5) -> bo
                                     logger.info(f"【{user_id}】刷新后URL: {real_page.url}")
                                     logger.info(f"【{user_id}】重新开始验证...")
                                     
-                                    # 递归调用自身重新验证（减少尝试次数避免无限循环）
-                                    return _handle_slider_verification(real_page, user_id, max_attempts=max(5, max_attempts - 2))
+                                    # 递归调用自身重新验证（递减尝试次数；
+                                    # 预算耗尽必须终止，否则风控不解除时会无限刷新重试）
+                                    remaining_attempts = max_attempts - 2
+                                    if remaining_attempts < 1:
+                                        logger.warning(f"【{user_id}】滑块重试预算耗尽，停止验证避免无限循环")
+                                        return False
+                                    return _handle_slider_verification(real_page, user_id, max_attempts=remaining_attempts)
                                     
                                 except Exception as refresh_e:
                                     logger.error(f"【{user_id}】刷新页面失败: {refresh_e}")
@@ -665,8 +670,13 @@ def _handle_slider_verification(page, user_id: str, max_attempts: int = 5) -> bo
             
             if slider_appeared:
                 logger.info(f"【{user_id}】滑块已出现，重新开始验证...")
-                # 递归调用自身，重新验证（使用较少的尝试次数避免无限循环）
-                return _handle_slider_verification(real_page, user_id, max_attempts=5)
+                # 递归调用自身，重新验证（递减尝试次数；预算耗尽必须终止，
+                # 硬编码 5 会让每一轮都满血复活，风控不解除时就是无限循环）
+                remaining_attempts = max_attempts - 2
+                if remaining_attempts < 1:
+                    logger.warning(f"【{user_id}】滑块重试预算耗尽，停止验证避免无限循环")
+                    return False
+                return _handle_slider_verification(real_page, user_id, max_attempts=remaining_attempts)
             else:
                 logger.warning(f"【{user_id}】⚠️ 刷新后未检测到滑块，检查是否已登录成功...")
                 
