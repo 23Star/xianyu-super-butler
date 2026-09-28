@@ -22,6 +22,7 @@ from loguru import logger
 
 from utils import risk_control
 from utils.xianyu_utils import generate_sign, trans_cookies
+from utils.user_agents import CHROME_UA
 
 
 # 卖家端接口在部分字段上与买家端行为不同，调用方需注意：
@@ -50,11 +51,7 @@ class XianyuSellerAPI:
     BASE_URL = "https://h5api.m.goofish.com/h5/{api}/{version}/"
     ORIGIN = "https://seller.goofish.com"
     SPM_CNT = "a21107h.42826273.0.0"
-    USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/138.0.0.0 Safari/537.36"
-    )
+    USER_AGENT = CHROME_UA
 
     # sold.get 的订单状态筛选，值来自 merchant.order.count 的 countInfoList
     QUERY_CODES = (

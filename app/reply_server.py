@@ -386,6 +386,7 @@ async def log_requests(request, call_next):
 
 # 提供前端静态文件
 import os
+from utils.user_agents import CHROME_UA
 static_dir = str(PROJECT_ROOT / 'static')
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
@@ -9271,10 +9272,7 @@ async def get_fresh_captcha_url(
     headers = {
         'accept': 'application/json',
         'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-        ),
+        'user-agent': CHROME_UA,
         'referer': 'https://www.goofish.com/',
         'origin': 'https://www.goofish.com',
         'cookie': cookies_str,

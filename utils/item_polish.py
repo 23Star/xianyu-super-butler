@@ -22,11 +22,9 @@ POLISH_API = "mtop.taobao.idle.item.polish"
 POLISH_URL = f"https://h5api.m.goofish.com/h5/{POLISH_API}/2.0/"
 APP_KEY = "34839810"
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/138.0.0.0 Safari/537.36"
-)
+from utils.user_agents import CHROME_UA
+
+USER_AGENT = CHROME_UA
 
 
 async def polish_item(

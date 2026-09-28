@@ -26,6 +26,7 @@ from collections import defaultdict
 from app.db_manager import db_manager
 from app.specification import combine_legacy_specification
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
+from utils.user_agents import CHROME_UA, SEC_CH_UA
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
@@ -1019,10 +1020,7 @@ class XianyuLive:
             'content-type': 'application/x-www-form-urlencoded',
             'origin': 'https://www.goofish.com',
             'referer': 'https://www.goofish.com/',
-            'user-agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
-            ),
+            'user-agent': CHROME_UA,
             'cookie': self.cookies_str.replace('\n', '').replace('\r', ''),
         }
 
@@ -1103,10 +1101,7 @@ class XianyuLive:
             'content-type': 'application/x-www-form-urlencoded',
             'origin': 'https://seller.goofish.com',
             'referer': 'https://seller.goofish.com/',
-            'user-agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36'
-            ),
+            'user-agent': CHROME_UA,
             'cookie': self.cookies_str.replace('\n', '').replace('\r', ''),
         }
 
@@ -2184,13 +2179,13 @@ class XianyuLive:
                 'content-type': 'application/x-www-form-urlencoded',
                 'pragma': 'no-cache',
                 'priority': 'u=1, i',
-                'sec-ch-ua': '"Not;A=Brand";v="99", "Google Chrome";v="139", "Chromium";v="139"',
+                'sec-ch-ua': SEC_CH_UA,
                 'sec-ch-ua-mobile': '?0',
                 'sec-ch-ua-platform': '"Windows"',
                 'sec-fetch-dest': 'empty',
                 'sec-fetch-mode': 'cors',
                 'sec-fetch-site': 'same-site',
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+                'user-agent': CHROME_UA,
                 'referer': 'https://www.goofish.com/',
                 'origin': 'https://www.goofish.com',
                 'cookie': self.cookies_str
@@ -3800,11 +3795,7 @@ class XianyuLive:
             browser = await browser_limit.launch_browser(playwright, launch_options, "账号资料抓取")
             context = await browser.new_context(
                 viewport={'width': 1440, 'height': 900},
-                user_agent=(
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/138.0.0.0 Safari/537.36'
-                ),
+                user_agent=CHROME_UA,
             )
 
             browser_cookies = []
@@ -3954,7 +3945,7 @@ class XianyuLive:
             # 创建浏览器上下文
             context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                user_agent=CHROME_UA
             )
 
             # 设置Cookie
@@ -4639,7 +4630,7 @@ class XianyuLive:
             
             # 不接受AVIF格式（PIL默认不支持），让CDN返回WEBP/JPEG等格式
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': CHROME_UA,
                 'Accept': 'image/jpeg,image/png,image/gif,image/webp,*/*;q=0.8',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
                 'Referer': 'https://www.goofish.com/',
@@ -8089,7 +8080,7 @@ class XianyuLive:
 
             # 创建浏览器上下文
             context_options = {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                'user_agent': CHROME_UA
             }
 
             # 使用标准窗口大小
@@ -8425,7 +8416,7 @@ class XianyuLive:
 
             # 创建浏览器上下文
             context_options = {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                'user_agent': CHROME_UA
             }
 
             # 使用标准窗口大小
@@ -8732,7 +8723,7 @@ class XianyuLive:
 
             # 创建浏览器上下文
             context_options = {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+                'user_agent': CHROME_UA
             }
 
             # 使用标准窗口大小
@@ -9052,7 +9043,7 @@ class XianyuLive:
             "Connection": "Upgrade",
             "Pragma": "no-cache",
             "Cache-Control": "no-cache",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            "User-Agent": CHROME_UA,
             "Origin": "https://www.goofish.com",
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9",

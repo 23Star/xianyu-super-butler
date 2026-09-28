@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 from utils import browser_limit
+from utils.user_agents import CHROME_UA
 
 LOGIN_URL = "https://www.goofish.com/"
 
@@ -109,11 +110,7 @@ async def _fetch_live_verification_url(cookie_id: str, cookies_str: str) -> Opti
         headers = {
             "accept": "application/json",
             "content-type": "application/x-www-form-urlencoded",
-            "user-agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/139.0.0.0 Safari/537.36"
-            ),
+            "user-agent": CHROME_UA,
             "referer": "https://www.goofish.com/",
             "origin": "https://www.goofish.com",
             "cookie": cookies_str,
@@ -195,11 +192,7 @@ async def open_manual_session(
         )
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/138.0.0.0 Safari/537.36"
-            ),
+            user_agent=CHROME_UA,
         )
 
         if cookies_str:

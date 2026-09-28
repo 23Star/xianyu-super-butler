@@ -21,6 +21,7 @@ from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
 from utils import browser_limit
+from utils.user_agents import CHROME_UA
 
 # 滑块优先用 Patchright —— Playwright 的反检测分支，修掉了 CDP 层面的自动化痕迹。
 # 实测同一份 Chromium：Playwright 下 navigator.webdriver 为 true（最基础也最致命的
@@ -3005,7 +3006,7 @@ class XianyuSliderStealth:
                 headless=not show_browser,
                 args=browser_args,
                 viewport={'width': 1980, 'height': 1024},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                user_agent=CHROME_UA,
                 locale='zh-CN',  # 设置浏览器区域为中文
                 accept_downloads=True,
                 ignore_https_errors=True,
