@@ -7704,13 +7704,17 @@ def get_user_orders(
         all_orders = []
         # 各状态的全量计数，在状态筛选前累加
         status_counts: Dict[str, int] = {}
-        # 先获取所有商品的 item_id 到 item_title 的映射
+        # 先获取所有商品的 item_id 到 item_title/item_image 的映射
         item_titles = {}
+        item_images = {}
         with db_manager.lock:
             cursor = db_manager.conn.cursor()
-            cursor.execute('SELECT item_id, item_title FROM item_info')
+            cursor.execute('SELECT item_id, item_title, item_image FROM item_info')
             for row in cursor.fetchall():
-                item_titles[row[0]] = row[1]
+                if row[1]:
+                    item_titles[row[0]] = row[1]
+                if row[2]:
+                    item_images.setdefault(row[0], row[2])
 
         for cid in user_cookies.keys():
             orders = db_manager.get_orders_by_cookie(cid, limit=1000)
@@ -7718,6 +7722,8 @@ def get_user_orders(
                 order['cookie_id'] = cid
                 # 添加 item_title 字段
                 order['item_title'] = item_titles.get(order.get('item_id'), '')
+                # 添加 item_image 字段（订单表不存图片，从商品信息带出）
+                order['item_image'] = item_images.get(order.get('item_id'), '')
                 # 状态计数在筛选之前统计，保证各标签数字始终是全量口径
                 order_state = get_order_status(order)
                 status_counts[order_state] = status_counts.get(order_state, 0) + 1

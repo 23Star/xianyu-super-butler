@@ -49,6 +49,19 @@ def _save_order(db_manager, cookie_id: str, parsed: Dict[str, Any]) -> bool:
         post_fee=parsed.get("post_fee") or None,
     )
 
+    # 订单同步拿到的商品标题回填 item_info，保证订单列表不依赖
+    # "商品详情已生成" 也能显示商品名（不覆盖商品同步写入的完整数据）
+    if saved:
+        item_title = parsed.get("item_title")
+        item_id = parsed.get("item_id")
+        if item_title and item_id:
+            try:
+                db_manager.upsert_item_title(cookie_id, str(item_id), str(item_title))
+            except Exception as exc:
+                logger.warning(f"回填商品标题失败 {item_id}: {exc}")
+
+    return saved
+
 
 async def fetch_order_detail_direct(
     cookie_id: str,

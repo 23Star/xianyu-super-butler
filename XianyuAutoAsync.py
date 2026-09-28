@@ -1585,6 +1585,8 @@ class XianyuLive:
             receiver_name = None
             receiver_phone = None
             receiver_address = None
+            real_buyer_id = None
+            real_item_title = None
             real_values = self._pending_order_real_values.pop(order_id, None)
             if real_values:
                 amount = real_values.get("amount") or None
@@ -1596,15 +1598,22 @@ class XianyuLive:
                 receiver_name = real_values.get("receiver_name") or None
                 receiver_phone = real_values.get("receiver_phone") or None
                 receiver_address = real_values.get("receiver_address") or None
+                real_buyer_id = real_values.get("buyer_id") or None
+                real_item_title = real_values.get("item_title") or None
 
             existing_order = db_manager.get_order_by_id(order_id)
             snapshot_item_id = item_id
-            snapshot_buyer_id = buyer_id
+            snapshot_buyer_id = real_buyer_id or buyer_id
             snapshot_quantity = str(buy_num) if buy_num else None
             snapshot_created_at = created_at
             if existing_order:
                 snapshot_item_id = item_id if not existing_order.get("item_id") else None
-                snapshot_buyer_id = buyer_id if not existing_order.get("buyer_id") else None
+                existing_buyer_id = (existing_order.get("buyer_id") or "").strip()
+                if real_buyer_id and (not existing_buyer_id or existing_buyer_id == "unknown_user"):
+                    # 卖家端真实数据可纠正快照兜底写入的 unknown_user
+                    snapshot_buyer_id = real_buyer_id
+                elif existing_buyer_id:
+                    snapshot_buyer_id = None
                 snapshot_created_at = created_at if not existing_order.get("created_at") else None
 
             saved = db_manager.insert_or_update_order(
@@ -1627,6 +1636,12 @@ class XianyuLive:
                 receiver_address=receiver_address,
             )
             if saved:
+                # 商品标题只从卖家端来，交易卡片里没有；回填 item_info 供订单列表展示
+                if item_id and real_item_title:
+                    try:
+                        db_manager.upsert_item_title(self.cookie_id, item_id, real_item_title)
+                    except Exception as title_err:
+                        logger.debug(f"【{self.cookie_id}】回填商品标题失败 {item_id}: {self._safe_str(title_err)}")
                 source = "卖家端接口" if real_values else "交易卡片"
                 logger.info(
                     f"【{self.cookie_id}】已保存订单快照（金额来源: {source}）: "

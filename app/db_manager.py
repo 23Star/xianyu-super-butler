@@ -5545,6 +5545,35 @@ class DBManager:
             self.conn.rollback()
             return False
 
+    def upsert_item_title(self, cookie_id: str, item_id: str, item_title: str) -> bool:
+        """订单链路只拿到商品标题时，回填 item_info 基础行。
+
+        不覆盖已有标题和详情，只保证订单列表能尽快显示商品名
+        （完整商品详情仍由商品同步任务负责补全）。
+        """
+        if not (cookie_id and item_id and item_title and item_title.strip()):
+            return False
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, created_at, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ''', (cookie_id, item_id, item_title))
+                if cursor.rowcount == 0:
+                    cursor.execute('''
+                    UPDATE item_info SET
+                        item_title = CASE WHEN (item_title IS NULL OR item_title = '') THEN ? ELSE item_title END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE cookie_id = ? AND item_id = ?
+                    ''', (item_title, cookie_id, item_id))
+                self.conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"保存商品标题失败: {e}")
+            self.conn.rollback()
+            return False
+
     def save_item_info(self, cookie_id: str, item_id: str, item_data = None) -> bool:
         """保存或更新商品信息
 
