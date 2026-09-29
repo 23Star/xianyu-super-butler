@@ -447,7 +447,7 @@ const ProductAutomation: React.FC = () => {
               icon={Archive}
             />
             <div className="overflow-x-auto">
-              <table className="data-table min-w-[980px] text-sm">
+              <table className="data-table responsive-data-table min-w-[980px] text-sm">
                 <thead>
                   <tr>
                     <th className="px-4 py-3">素材</th>
@@ -461,7 +461,7 @@ const ProductAutomation: React.FC = () => {
                 <tbody>
                   {visibleMaterials.map((material) => (
                     <tr key={material.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" data-label="素材">
                         <div className="flex items-center gap-3">
                           <div className="h-12 w-12 flex-none overflow-hidden rounded bg-gray-100">
                             {material.images[0] ? (
@@ -482,14 +482,14 @@ const ProductAutomation: React.FC = () => {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">{accountNames.get(material.cookie_id) || material.cookie_id}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-gray-600" data-label="账号">{accountNames.get(material.cookie_id) || material.cookie_id}</td>
+                      <td className="px-4 py-3" data-label="来源 / 发布 ID">
                         <div className="font-mono text-xs text-gray-700">{material.source_item_id}</div>
                         <div className="mt-1 font-mono text-xs text-gray-400">
                           {material.published_item_id || '尚未回写'}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" data-label="状态">
                         <span className={`rounded px-2 py-1 text-xs font-bold ${
                           material.publish_status === 'published'
                             ? 'bg-green-50 text-green-700'
@@ -498,10 +498,10 @@ const ProductAutomation: React.FC = () => {
                           {material.publish_status === 'published' ? '已发布' : '草稿'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-600">
+                      <td className="px-4 py-3 text-xs text-gray-600" data-label="发货绑定">
                         {material.auto_card_id ? `卡券 #${material.auto_card_id}` : '未绑定'}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" data-label="操作">
                         <div className="flex justify-end gap-1">
                           {material.source_url && (
                             <a
@@ -922,7 +922,7 @@ const ProductAutomation: React.FC = () => {
               actions={<span className="text-xs text-gray-500">最近 {runs.length} 条</span>}
             />
             <div className="overflow-x-auto">
-              <table className="data-table min-w-[820px] text-sm">
+              <table className="data-table responsive-data-table min-w-[820px] text-sm">
                 <thead>
                   <tr>
                     <th className="px-4 py-3">任务</th>
@@ -935,13 +935,13 @@ const ProductAutomation: React.FC = () => {
                 <tbody>
                   {runs.map((run) => (
                     <tr key={run.id}>
-                      <td className="px-4 py-3 font-bold text-gray-800">{taskNames[run.task_type] || run.task_type}</td>
-                      <td className="px-4 py-3 text-xs font-mono text-gray-500">{run.execution_mode}</td>
-                      <td className="px-4 py-3 text-gray-600">
+                      <td className="px-4 py-3 font-bold text-gray-800" data-label="任务">{taskNames[run.task_type] || run.task_type}</td>
+                      <td className="px-4 py-3 text-xs font-mono text-gray-500" data-label="模式">{run.execution_mode}</td>
+                      <td className="px-4 py-3 text-gray-600" data-label="检查 / 命中 / 变更 / 失败">
                         {run.checked_count} / {run.matched_count} / {run.changed_count} / {run.failed_count}
                       </td>
-                      <td className="max-w-md px-4 py-3 text-gray-600">{run.summary || run.error_message || '-'}</td>
-                      <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">{formatDate(run.created_at)}</td>
+                      <td className="max-w-md px-4 py-3 text-gray-600" data-label="结果">{run.summary || run.error_message || '-'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500" data-label="时间">{formatDate(run.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>

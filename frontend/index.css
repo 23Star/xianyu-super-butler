@@ -1218,18 +1218,26 @@ aside nav:hover::-webkit-scrollbar-thumb {
     justify-content: center;
   }
 
+  /* 手机上统计卡压成小卡排 2 列 —— 单列会把总览的 6 张卡拉成一竖长条 */
   .metric-grid {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
-  /* 手机上紧凑卡保持 2 列，不跟着退成单列 —— 它们只有一个数字，
-     单列会白白拉长页面 */
   .metric-grid--compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .metric-card {
+    padding: 12px 14px;
+  }
+
+  .metric-card__label {
+    font-size: 11px;
+  }
+
   .metric-card__value {
-    font-size: 22px;
+    font-size: 18px;
   }
 
   .metric-grid--compact .metric-card__value {

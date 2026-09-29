@@ -1,8 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Info, Megaphone, RefreshCw, Download, ExternalLink, CheckCircle2, Globe, Github, Mail } from 'lucide-react';
+import { Info, Megaphone, RefreshCw, Download, ExternalLink, CheckCircle2, Globe, Github, Mail, Users } from 'lucide-react';
 import { getAnnouncement } from '../services/api';
 import { AnnouncementPayload } from '../types';
 import { EmptyState, PageHeader } from './ui';
+
+// 与 README「交流与反馈」保持同一个群；mqqapi 协议在装有 QQ 的设备上
+// 点击会直接唤起加群卡片，未安装 QQ 时靠群号文字手动搜索兜底。
+const QQ_GROUP_NUMBER = '704866149';
+const QQ_GROUP_LINK = `mqqapi://card/show_pslcard?src_type=internal&version=1&uin=${QQ_GROUP_NUMBER}&card_type=group&source=qrcode`;
 
 const levelStyles: Record<string, string> = {
   info: 'border-blue-200 bg-blue-50 text-blue-800',
@@ -114,7 +119,7 @@ const About: React.FC = () => {
           </p>
         )}
 
-        <div className="mt-4 grid gap-3 border-t border-gray-100 pt-4 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 border-t border-gray-100 pt-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="flex min-w-0 flex-col gap-1.5">
             <span className="text-xs font-semibold text-gray-500">官网</span>
             <a
@@ -127,6 +132,20 @@ const About: React.FC = () => {
               <span className="truncate">xy.corleom.com</span>
               <ExternalLink className="h-3 w-3 shrink-0" />
             </a>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <span className="text-xs font-semibold text-gray-500">QQ 交流群</span>
+            <a
+              href={QQ_GROUP_LINK}
+              className="inline-flex min-w-0 items-center gap-1.5 text-xs font-bold text-[#8c7900] hover:underline"
+            >
+              <Users className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">点击加入 QQ 群 3</span>
+            </a>
+            <span className="text-[11px] text-gray-400">
+              群号 {QQ_GROUP_NUMBER}，未唤起 QQ 时可手动搜索加群
+            </span>
           </div>
 
           <div className="flex min-w-0 flex-col gap-1.5">

@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -19,24 +20,10 @@ def _strip_domain(value: Any) -> str:
     return str(value or "").split("@", 1)[0]
 
 
-# 闲鱼的会话接口不返回买家头像（avatar / avatarUrl / senderAvatar 都是空），
-# 会话列表里就会是一片灰色占位。用 DiceBear 按用户 ID 生成确定性头像补上：
-# 同一个买家每次都是同一张图，便于在列表里区分。
-DICEBEAR_STYLE = "thumbs"
-DICEBEAR_ENDPOINT = f"https://api.dicebear.com/9.x/{DICEBEAR_STYLE}/svg"
-
-
-def make_avatar_url(seed: Any) -> str:
-    """按 seed 生成确定性的占位头像地址，seed 为空时返回空串。
-
-    走的是第三方服务，图片由浏览器直接请求；网络不通时前端会回落到首字母占位。
-    """
-    from urllib.parse import quote
-
-    key = str(seed or "").strip()
-    if not key:
-        return ""
-    return f"{DICEBEAR_ENDPOINT}?seed={quote(key, safe='')}"
+# 闲鱼的会话接口不返回买家头像（avatar / avatarUrl / senderAvatar 都是空）。
+# 曾经用 DiceBear 按用户 ID 生成占位头像，但其官方 API 在国内基本连不通，
+# 浏览器反复加载失败后全部回落成同一个灰块。现在不再生成外部地址，
+# 占位头像由前端按用户 ID 本地哈希出颜色 + 首字母，零网络依赖。
 
 
 def _load_content(raw: Any) -> Optional[Dict[str, Any]]:
@@ -145,7 +132,7 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
                 extension.get("avatar")
                 or extension.get("avatarUrl")
                 or last_extension.get("senderAvatar")
-                or make_avatar_url(other_id)
+                or ""
             ),
             "itemId": str(extension.get("itemId") or ""),
             "itemTitle": str(extension.get("itemTitle") or ""),
@@ -161,6 +148,23 @@ def parse_conversation(raw: Dict[str, Any], my_id: str) -> Optional[Dict[str, An
         }
     except (TypeError, ValueError):
         return None
+
+
+# 订单状态提醒（[卖家已发货]、[我已拍下，待付款] 等）在协议里同样是 contentType=1
+# 纯文本，与真人聊天无法按发送方区分，只能按词面启发式归类：含订单动作字眼
+# 的事件句、平台通用占位词按系统消息渲染居中卡片；[流泪] 这类表情短词和未知
+# 方括号文本仍走普通气泡——新文案漏判只是回到气泡样式，误伤表情才是笑话
+_ORDER_EVENT_HINTS = (
+    "已", "记得", "请", "交易", "付款", "发货", "收货", "评价", "退款", "取消", "关闭", "成功",
+)
+_SYSTEM_PLACEHOLDERS = {"卡片消息", "系统消息", "语音消息", "图片", "视频", "位置", "链接"}
+
+
+def _is_order_placeholder(text: str) -> bool:
+    if not re.fullmatch(r"\[[^\[\]]{1,16}\]", text):
+        return False
+    inner = text[1:-1]
+    return inner in _SYSTEM_PLACEHOLDERS or any(hint in inner for hint in _ORDER_EVENT_HINTS)
 
 
 def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]:
@@ -181,6 +185,8 @@ def parse_message(model: Dict[str, Any], my_id: str) -> Optional[Dict[str, Any]]
             text = str(custom.get("summary") or custom.get("degrade") or "[系统消息]")
         if not message_type:
             message_type = "image" if images else "text"
+        if message_type == "text" and _is_order_placeholder(text):
+            message_type = "system"
 
         return {
             "messageId": str(message.get("messageId") or ""),

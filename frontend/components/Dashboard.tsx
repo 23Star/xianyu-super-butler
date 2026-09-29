@@ -727,7 +727,7 @@ const Dashboard: React.FC = () => {
                 暂无订单数据
               </div>
             ) : (
-              <table className="data-table min-w-[760px]">
+              <table className="data-table responsive-data-table min-w-[760px]">
                 <thead>
                   <tr>
                     <th>订单信息</th>
@@ -746,7 +746,7 @@ const Dashboard: React.FC = () => {
                     )
                     .map((order) => (
                       <tr key={order.order_id}>
-                        <td>
+                        <td data-label="订单信息">
                           <div className="flex items-center gap-3">
                             <div className="h-11 w-11 flex-shrink-0 overflow-hidden rounded-md border border-gray-100 bg-gray-100">
                               <PackageCheck className="w-full h-full text-gray-400 p-2" />
@@ -760,19 +760,19 @@ const Dashboard: React.FC = () => {
                             </div>
                           </div>
                         </td>
-                        <td>
+                        <td data-label="买家信息">
                           <div className="text-sm font-bold text-gray-800">{order.buyer_id}</div>
                           {order.created_at && (
                             <div className="text-xs text-gray-400 mt-1">{order.created_at}</div>
                           )}
                         </td>
-                        <td className="text-sm font-extrabold text-gray-900 font-feature-settings-tnum">
+                        <td className="text-sm font-extrabold text-gray-900 font-feature-settings-tnum" data-label="金额">
                           ¥{order.amount || '0.00'}
                         </td>
-                        <td>
+                        <td data-label="状态">
                           <StatusBadge status={order.status || order.order_status || 'unknown'} />
                         </td>
-                        <td className="text-right">
+                        <td className="text-right" data-label="操作">
                           <a
                             href={`https://www.goofish.com/order-detail?orderId=${order.order_id}&role=seller`}
                             target="_blank"

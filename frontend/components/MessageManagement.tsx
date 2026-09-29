@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  BellRing,
   Image,
   Inbox,
   Loader2,
@@ -26,6 +27,7 @@ import {
   MessageFilterType,
   QuickPhrase,
 } from '../types';
+import { renderRichText } from '../lib/emojiMap';
 import {
   batchCreateMessageFilters,
   batchDeleteMessageFilters,
@@ -150,6 +152,21 @@ const formatDateTime = (value?: string) => {
 
 const accountName = (account?: ChatAccount) =>
   account?.displayName || account?.accountId || '未选择账号';
+
+// 买家占位头像的色板：与站点主题协调。按用户 ID 哈希取色，
+// 同一买家在会话列表和聊天气泡里、每次刷新都是同一颜色。
+const AVATAR_PALETTE = [
+  '#8c7900', '#0f704b', '#2a5f92', '#945800',
+  '#6b5a8a', '#b45309', '#3f7a5c', '#7c4d5e',
+];
+
+const avatarColorFor = (seed: string) => {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+};
 
 const filterTypeLabel: Record<MessageFilterType, string> = {
   skip_reply: '跳过自动回复',
@@ -504,15 +521,18 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     }
   };
 
-  const renderAvatar = (url: string | undefined, label: string, className: string) => {
+  const renderAvatar = (url: string | undefined, label: string, className: string, seed?: string) => {
     const normalized = normalizeImageUrl(url);
     const placeholder = (
-      <div className={`${className} flex items-center justify-center bg-[#3a3427] text-sm font-bold text-white`}>
+      <div
+        className={`${className} flex items-center justify-center text-sm font-bold text-white`}
+        style={{ backgroundColor: avatarColorFor(String(seed || label || '').trim()) }}
+      >
         {label.trim().slice(0, 1) || <UserRound className="h-4 w-4" />}
       </div>
     );
-    // 买家头像由 DiceBear 生成，属于外部服务；加载不出来时回落到首字母，
-    // 而不是让列表挂一排破图。
+    // 平台真给了头像（alicdn）就直连；加载失败时回落到本地彩色首字母，
+    // 不再依赖 DiceBear 之类的外部生成服务——国内连不通只会得到一片灰块。
     return normalized && !failedAvatars.has(normalized) ? (
       <img
         src={normalized}
@@ -620,7 +640,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   selected ? 'bg-[var(--surface-strong)]' : 'hover:bg-[var(--surface-hover)]'
                 }`}
               >
-                {renderAvatar(conversation.otherUserAvatar, title, 'h-12 w-12 rounded-full')}
+                {renderAvatar(conversation.otherUserAvatar, title, 'h-12 w-12 rounded-full', conversation.otherUserId)}
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="truncate text-sm font-bold text-[var(--text)]">{title}</p>
@@ -631,7 +651,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     )}
                   </div>
                   <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
-                    {conversation.lastMessageSummary || '暂无消息'}
+                    {conversation.lastMessageSummary ? renderRichText(conversation.lastMessageSummary) : '暂无消息'}
                   </p>
                   <p className="mt-1 truncate text-[10px] text-[var(--text-soft)]">
                     {conversation.itemTitle || (conversation.itemId ? `商品 ${conversation.itemId}` : '普通会话')}
@@ -731,6 +751,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     const senderLabel = message.isSelf
                       ? accountName(activeAccount)
                       : activeConversation.otherUserName || activeConversation.otherUserId;
+                    // 系统消息（订单状态提醒、语音占位等）没有真实发送方，
+                    // 按聊天气泡渲染会假装成买家发言，居中卡片更贴近原生 App
+                    const isSystem = message.type === 'system';
                     return (
                       <div key={message.messageId || `${message.time}-${index}`}>
                         {showTime && (
@@ -738,33 +761,44 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                             {formatTimestamp(message.time)}
                           </p>
                         )}
-                        <div className={`flex items-start gap-2.5 ${message.isSelf ? 'justify-end' : ''}`}>
-                          {!message.isSelf && renderAvatar(
-                            activeConversation.otherUserAvatar,
-                            senderLabel,
-                            'h-9 w-9 shrink-0 rounded-full'
-                          )}
-                          <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
-                            message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
-                          }`}>
-                            {message.images.map((url) => (
-                              <img
-                                key={url}
-                                src={normalizeImageUrl(url)}
-                                alt="聊天图片"
-                                className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
-                              />
-                            ))}
-                            {message.text && (
-                              <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                        {isSystem ? (
+                          <div className="flex justify-center">
+                            <div className="inline-flex max-w-[86%] items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2 text-xs leading-5 text-[var(--text-muted)] shadow-sm">
+                              <BellRing className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-soft)]" />
+                              <span className="whitespace-pre-wrap break-words">{message.text}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`flex items-start gap-2.5 ${message.isSelf ? 'justify-end' : ''}`}>
+                            {!message.isSelf && renderAvatar(
+                              activeConversation.otherUserAvatar,
+                              senderLabel,
+                              'h-9 w-9 shrink-0 rounded-full',
+                              activeConversation.otherUserId
+                            )}
+                            <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
+                              message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
+                            }`}>
+                              {message.images.map((url) => (
+                                <img
+                                  key={url}
+                                  src={normalizeImageUrl(url)}
+                                  alt="聊天图片"
+                                  className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
+                                />
+                              ))}
+                              {message.text && (
+                                <p className="whitespace-pre-wrap break-words">{renderRichText(message.text)}</p>
+                              )}
+                            </div>
+                            {message.isSelf && renderAvatar(
+                              activeAccount?.avatarUrl,
+                              senderLabel,
+                              'h-9 w-9 shrink-0 rounded-full',
+                              activeAccount?.accountId
                             )}
                           </div>
-                          {message.isSelf && renderAvatar(
-                            activeAccount?.avatarUrl,
-                            senderLabel,
-                            'h-9 w-9 shrink-0 rounded-full'
-                          )}
-                        </div>
+                        )}
                       </div>
                     );
                   })}
