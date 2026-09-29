@@ -25,6 +25,8 @@ export interface LoginResponse {
   user_id?: number;
   username?: string;
   is_admin?: boolean;
+  /** true 表示连续登录失败已达阈值，下一次登录必须携带图形验证码 */
+  captcha_required?: boolean;
 }
 
 // Accounts
@@ -499,6 +501,18 @@ export interface AdminStats {
   total_cards: number;
   total_keywords: number;
   total_orders: number;
+}
+
+// 用户管理（管理员专用）。内置 admin 是唯一管理员，其余注册用户均为普通用户。
+export interface AdminUser {
+  id: number;
+  username: string;
+  email: string;
+  is_active?: boolean;
+  cookie_count?: number;
+  card_count?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface OrderAnalytics {

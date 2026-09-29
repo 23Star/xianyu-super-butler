@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Database,
+  ExternalLink,
   Eye,
   EyeOff,
   KeyRound,
@@ -15,12 +16,15 @@ import {
   Zap,
 } from 'lucide-react';
 
+import { validatePassword } from '../lib/authValidation';
+
 import {
   changePassword,
   createQuickPhrase,
   deleteQuickPhrase,
   getQuickPhrases,
   getSystemSettings,
+  sendTestEmail,
   updateQuickPhrase,
   updateSystemSettings,
 } from '../services/api';
@@ -124,6 +128,9 @@ const Settings: React.FC = () => {
 
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSmtpPassword, setShowSmtpPassword] = useState(false);
+  // 测试发信：收件地址 + 发送中状态
+  const [emailTestTo, setEmailTestTo] = useState('');
+  const [emailTesting, setEmailTesting] = useState(false);
 
   // 修改登录密码。与页面顶部的「保存设置」互不影响：这里改的是当前账号的凭据，
   // 走的是独立接口，成功后立刻生效。
@@ -137,8 +144,10 @@ const Settings: React.FC = () => {
       notify('请填写当前密码和新密码');
       return;
     }
-    if (next.length < 6) {
-      notify('新密码至少 6 位');
+    // 与后端同一套规则/文案（lib/authValidation.ts）
+    const [pwOk, pwReason] = validatePassword(next);
+    if (!pwOk) {
+      notify(pwReason);
       return;
     }
     if (next !== confirm) {
@@ -186,6 +195,32 @@ const Settings: React.FC = () => {
       notify(`保存失败：${(error as Error).message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // 用表单当前填写的 SMTP 配置直接发一封测试邮件，不用先保存
+  const handleTestEmail = async () => {
+    if (!settings) return;
+    const to = emailTestTo.trim();
+    if (!to) {
+      notify('请先填写接收测试邮件的邮箱');
+      return;
+    }
+    setEmailTesting(true);
+    try {
+      const res = await sendTestEmail({
+        to,
+        smtp_server: settings.smtp_server || '',
+        smtp_port: Number(settings.smtp_port) || 0,
+        smtp_user: settings.smtp_user || '',
+        smtp_password: settings.smtp_password || '',
+        smtp_from: settings.smtp_from || '',
+      });
+      notify(res.message || (res.success ? '测试邮件已发送' : '发送失败'), res.success ? 'success' : 'error');
+    } catch (error) {
+      notify(`测试发信失败：${(error as Error).message}`, 'error');
+    } finally {
+      setEmailTesting(false);
     }
   };
 
@@ -270,8 +305,8 @@ const Settings: React.FC = () => {
               })}
             />
             <SettingToggle
-              title="登录滑动验证码"
-              description="账号密码登录前要求完成滑动验证。"
+              title="登录防爆破验证码"
+              description="连续登录失败达阈值后强制图形验证码，防止密码被暴力尝试。"
               checked={toBool(settings.login_captcha_enabled, true)}
               onChange={() => setSettings({
                 ...settings,
@@ -613,6 +648,18 @@ const Settings: React.FC = () => {
               <span className="mt-1 block text-xs text-gray-500">
                 填写兼容 OpenAI 协议的服务根地址，无需补全 `/chat/completions`。
               </span>
+              <span className="mt-1 flex items-center gap-1 text-xs text-gray-500">
+                AI 不够用？
+                <a
+                  href="https://corleom.com/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 font-semibold text-[var(--brand-text)] hover:underline"
+                >
+                  跳转到我的中转站
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </span>
             </label>
 
             <label>
@@ -746,6 +793,31 @@ const Settings: React.FC = () => {
                 className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
               />
             </label>
+          </div>
+
+          <div className="border-t border-gray-100 p-4">
+            <span className="field-label">测试发信</span>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="email"
+                value={emailTestTo}
+                onChange={(event) => setEmailTestTo(event.target.value)}
+                placeholder="接收测试邮件的邮箱"
+                className="ios-input w-full rounded-md px-3 py-2.5 text-sm sm:max-w-xs"
+              />
+              <button
+                type="button"
+                disabled={emailTesting}
+                onClick={() => void handleTestEmail()}
+                className="ios-btn-secondary flex items-center justify-center gap-2 whitespace-nowrap rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+              >
+                {emailTesting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                {emailTesting ? '发送中' : '发送测试邮件'}
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-gray-500">
+              使用上方表单当前填写的配置直接发送，无需先保存；验证通过后注册验证码和系统通知都能正常发出。
+            </p>
           </div>
         </section>
       )}

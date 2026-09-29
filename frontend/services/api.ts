@@ -1,7 +1,7 @@
-import { get, post, put, del } from '../lib/request';
+import { get, post, put, del, patch } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
-  AdminStats, Card, CardShipment, SystemSettings, ApiResponse, OrderAnalytics,
+  AdminStats, AdminUser, Card, CardShipment, SystemSettings, ApiResponse, OrderAnalytics,
   Item, ItemDeliveryConfig, ItemDeliveryConfigSummary,
   ProductVariantBinding, AIReplySettings, ShippingRule, ReplyRule, DefaultReply,
   DeliveryBlockRule, PersonalBlacklistEntry, MessageNotification,
@@ -15,7 +15,15 @@ import {
 } from '../types';
 
 // Auth
-export const login = async (data: { username?: string; password?: string; email?: string; verification_code?: string }): Promise<LoginResponse> => {
+export const login = async (data: {
+  username?: string;
+  password?: string;
+  email?: string;
+  verification_code?: string;
+  /** 连续登录失败被要求图形验证码时必填 */
+  captcha_session_id?: string;
+  captcha_code?: string;
+}): Promise<LoginResponse> => {
   return post('/login', data);
 };
 
@@ -38,9 +46,23 @@ export const register = async (data: {
   return post('/register', data);
 };
 
-/** 发送邮箱验证码。type 区分注册和登录场景。 */
-export const sendVerificationCode = async (email: string, type: 'register' | 'login' = 'register'): Promise<ApiResponse> => {
-  return post('/send-verification-code', { email, type });
+/** 发送邮箱验证码。type 区分注册和登录场景；发送前须先通过图形验证码。 */
+export const sendVerificationCode = async (
+  email: string,
+  type: 'register' | 'login' = 'register',
+  captcha?: { session_id: string; code: string },
+): Promise<ApiResponse> => {
+  return post('/send-verification-code', { email, type, ...captcha });
+};
+
+/** 拉取图形验证码图片。sessionId 由前端生成，验证时原样带回。 */
+export const generateCaptcha = async (sessionId: string): Promise<{
+  success: boolean;
+  captcha_image: string;
+  session_id: string;
+  message?: string;
+}> => {
+  return post('/generate-captcha', { session_id: sessionId });
 };
 
 export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?: number; username?: string; is_admin?: boolean }> => {
@@ -425,6 +447,30 @@ export const rateOrders = async (
 // Stats
 export const getAdminStats = async (): Promise<AdminStats> => {
   return get('/admin/stats');
+};
+
+// User Management（管理员专用）
+export const getAdminUsers = async (): Promise<AdminUser[]> => {
+  const res = await get<{ users: AdminUser[] }>('/admin/users');
+  return res.users || [];
+};
+
+/** 启用/禁用用户。禁用会同时踢掉该用户的全部在线会话。 */
+export const setAdminUserStatus = async (
+  userId: number,
+  isActive: boolean,
+): Promise<ApiResponse & { revoked_tokens?: number }> => {
+  return patch(`/admin/users/${userId}/status`, { is_active: isActive });
+};
+
+/** 重置用户密码。重置后该用户的所有会话会被强制下线。 */
+export const resetAdminUserPassword = async (userId: number, newPassword: string): Promise<ApiResponse> => {
+  return put(`/admin/users/${userId}/password`, { new_password: newPassword });
+};
+
+/** 删除用户及其全部业务数据（账号、卡密、规则等），不可恢复。 */
+export const deleteAdminUser = async (userId: number): Promise<ApiResponse> => {
+  return del(`/admin/users/${userId}`);
 };
 
 export const getOrderAnalytics = async (daysOrParams: number | {start_date: string; end_date: string} = 7): Promise<OrderAnalytics> => {
@@ -874,6 +920,19 @@ export const updateSystemSettings = async (settings: Partial<SystemSettings>): P
     });
     await Promise.all(promises);
     return { success: true, message: 'Settings saved' };
+};
+
+export interface EmailTestPayload {
+    to: string;
+    smtp_server: string;
+    smtp_port: number;
+    smtp_user: string;
+    smtp_password: string;
+    smtp_from: string;
+}
+
+export const sendTestEmail = async (payload: EmailTestPayload): Promise<{ success: boolean; message: string }> => {
+    return post('/system-settings/email-test', payload);
 };
 
 export const getAccountAISettings = async (cookieId: string): Promise<AIReplySettings> => {

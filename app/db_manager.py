@@ -1,7 +1,6 @@
 import sqlite3
 import os
 import threading
-import hashlib
 import time
 import json
 import random
@@ -11,6 +10,7 @@ import base64
 from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Dict, Optional, Any
 from loguru import logger
+from app.password_hasher import hash_password, is_bcrypt_hash, verify_password
 from app.specification import (
     DEFAULT_SPEC_KEY,
     canonicalize_specification,
@@ -98,6 +98,7 @@ class DBManager:
                 code TEXT NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
                 used BOOLEAN DEFAULT FALSE,
+                failed_attempts INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
@@ -109,6 +110,7 @@ class DBManager:
                 session_id TEXT NOT NULL,
                 code TEXT NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
+                failed_attempts INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
@@ -968,6 +970,7 @@ class DBManager:
             ('registration_enabled', 'true', '是否开启用户注册'),
             ('show_default_login_info', 'true', '是否显示默认登录信息'),
             ('login_captcha_enabled', 'true', '登录滑动验证码开关'),
+            ('email_verification_enabled', 'true', '注册时是否要求邮箱验证码'),
             ('smtp_server', '', 'SMTP服务器地址'),
             ('smtp_port', '587', 'SMTP端口'),
             ('smtp_user', '', 'SMTP登录用户名（发件邮箱）'),
@@ -1269,7 +1272,7 @@ class DBManager:
                 # 此前这里写死 admin123，而 docker-compose 又强制要求填 ADMIN_PASSWORD，
                 # 结果是部署方以为自己设了强密码，实际登录的还是默认密码。
                 initial_password = (os.getenv('ADMIN_PASSWORD') or '').strip() or 'admin123'
-                default_password_hash = hashlib.sha256(initial_password.encode()).hexdigest()
+                default_password_hash = hash_password(initial_password)
                 cursor.execute('''
                 INSERT INTO users (username, email, password_hash) VALUES
                 ('admin', 'admin@localhost', ?)
@@ -1381,6 +1384,24 @@ class DBManager:
                 else:
                     # type列存在，更新NULL值
                     self._execute_sql(cursor, "UPDATE email_verifications SET type = 'register' WHERE type IS NULL")
+
+                # 为email_verifications表添加failed_attempts字段（验证码错误次数上限）
+                try:
+                    self._execute_sql(cursor, "SELECT failed_attempts FROM email_verifications LIMIT 1")
+                except sqlite3.OperationalError:
+                    self._execute_sql(cursor, "ALTER TABLE email_verifications ADD COLUMN failed_attempts INTEGER DEFAULT 0")
+                    self._execute_sql(cursor, "UPDATE email_verifications SET failed_attempts = 0 WHERE failed_attempts IS NULL")
+                else:
+                    self._execute_sql(cursor, "UPDATE email_verifications SET failed_attempts = 0 WHERE failed_attempts IS NULL")
+
+                # 为captcha_codes表添加failed_attempts字段（图形码错误次数上限）
+                try:
+                    self._execute_sql(cursor, "SELECT failed_attempts FROM captcha_codes LIMIT 1")
+                except sqlite3.OperationalError:
+                    self._execute_sql(cursor, "ALTER TABLE captcha_codes ADD COLUMN failed_attempts INTEGER DEFAULT 0")
+                    self._execute_sql(cursor, "UPDATE captcha_codes SET failed_attempts = 0 WHERE failed_attempts IS NULL")
+                else:
+                    self._execute_sql(cursor, "UPDATE captcha_codes SET failed_attempts = 0 WHERE failed_attempts IS NULL")
 
                 # 为cards表添加多规格字段（如果不存在）
                 try:
@@ -4030,7 +4051,7 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                password_hash = hashlib.sha256(password.encode()).hexdigest()
+                password_hash = hash_password(password)
 
                 cursor.execute('''
                 INSERT INTO users (username, email, password_hash)
@@ -4102,20 +4123,47 @@ class DBManager:
                 return None
 
     def verify_user_password(self, username: str, password: str) -> bool:
-        """验证用户密码"""
+        """验证用户密码。
+
+        兼容两类哈希：bcrypt（新）与遗留无盐 SHA-256（旧）。
+        遗留哈希验证通过后透明升级为 bcrypt —— SHA-256 无法在不知道
+        明文的情况下转换，只能借登录时机重哈希；升级失败不影响本次登录。
+        """
         user = self.get_user_by_username(username)
         if not user:
             return False
 
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        return user['password_hash'] == password_hash and user['is_active']
+        if not verify_password(password, user['password_hash']):
+            return False
+        if not user['is_active']:
+            return False
+
+        self._upgrade_password_hash(username, password, user['password_hash'])
+        return True
+
+    def _upgrade_password_hash(self, username: str, password: str, stored_hash: str) -> None:
+        """把遗留 SHA-256 哈希升级为 bcrypt（登录成功时调用）。"""
+        if is_bcrypt_hash(stored_hash):
+            return
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE username = ?
+                ''', (hash_password(password), username))
+                self.conn.commit()
+            logger.info(f"用户密码哈希已透明升级为 bcrypt: {username}")
+        except Exception as e:
+            # 升级失败不阻塞登录，保留旧哈希下次再试
+            logger.warning(f"密码哈希升级失败（不影响本次登录）: {username} - {e}")
 
     def update_user_password(self, username: str, new_password: str) -> bool:
         """更新用户密码"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                password_hash = hash_password(new_password)
 
                 cursor.execute('''
                 UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
@@ -4229,39 +4277,70 @@ class DBManager:
                 return False
 
     def verify_captcha(self, session_id: str, user_input: str) -> bool:
-        """验证图形验证码"""
+        """验证图形验证码（两段式 + 错误次数上限）。
+
+        先取该 session 最新一条活码再比对，错误累计 failed_attempts，
+        达 5 次直接销毁 —— 否则 4 位码 65536 种组合可被在线穷举。
+        """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 current_time = time.time()
 
-                # 查找有效的验证码
                 cursor.execute('''
-                SELECT id FROM captcha_codes
-                WHERE session_id = ? AND code = ? AND expires_at > ?
+                SELECT id, code, failed_attempts FROM captcha_codes
+                WHERE session_id = ? AND expires_at > ?
                 ORDER BY created_at DESC LIMIT 1
-                ''', (session_id, user_input.upper(), current_time))
+                ''', (session_id, current_time))
 
                 row = cursor.fetchone()
-                if row:
-                    # 删除已使用的验证码
-                    cursor.execute('DELETE FROM captcha_codes WHERE id = ?', (row[0],))
+                if not row:
+                    logger.warning(f"图形验证码验证失败（无有效记录）: {session_id}")
+                    return False
+
+                captcha_id, expected_code, failed_attempts = row
+                if failed_attempts is not None and failed_attempts >= 5:
+                    cursor.execute('DELETE FROM captcha_codes WHERE id = ?', (captcha_id,))
+                    self.conn.commit()
+                    logger.warning(f"图形验证码错误次数超限已销毁: {session_id}")
+                    return False
+
+                if expected_code == (user_input or '').strip().upper():
+                    # 验证成功即删除（一次性）
+                    cursor.execute('DELETE FROM captcha_codes WHERE id = ?', (captcha_id,))
                     self.conn.commit()
                     logger.debug(f"图形验证码验证成功: {session_id}")
                     return True
+
+                # 错误累计，达 5 次销毁
+                new_attempts = (failed_attempts or 0) + 1
+                if new_attempts >= 5:
+                    cursor.execute('DELETE FROM captcha_codes WHERE id = ?', (captcha_id,))
                 else:
-                    logger.warning(f"图形验证码验证失败: {session_id} - {user_input}")
-                    return False
+                    cursor.execute(
+                        'UPDATE captcha_codes SET failed_attempts = ? WHERE id = ?',
+                        (new_attempts, captcha_id))
+                self.conn.commit()
+                logger.warning(
+                    f"图形验证码验证失败: {session_id}（第 {new_attempts} 次错误）")
+                return False
             except Exception as e:
                 logger.error(f"验证图形验证码失败: {e}")
                 return False
 
     def save_verification_code(self, email: str, code: str, code_type: str = 'register', expires_minutes: int = 10) -> bool:
-        """保存邮箱验证码"""
+        """保存邮箱验证码（重发时作废旧活码）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 expires_at = time.time() + (expires_minutes * 60)
+
+                # 作废同邮箱同类型的旧活码：任一时刻只有一个活码，
+                # 配合错误次数上限，避免旧码成为额外的爆破入口
+                cursor.execute('''
+                UPDATE email_verifications SET used = TRUE
+                WHERE email = ? AND type = ? AND used = FALSE AND expires_at > ?
+                ''', (email, code_type, time.time()))
 
                 cursor.execute('''
                 INSERT INTO email_verifications (email, code, type, expires_at)
@@ -4277,31 +4356,57 @@ class DBManager:
                 return False
 
     def verify_email_code(self, email: str, code: str, code_type: str = 'register') -> bool:
-        """验证邮箱验证码"""
+        """验证邮箱验证码（两段式 + 错误次数上限）。
+
+        先取该邮箱最新一条活码再比对；错误累计 failed_attempts，
+        达 5 次直接作废，防止 6 位数字码被在线穷举。
+        """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 current_time = time.time()
 
-                # 查找有效的验证码
                 cursor.execute('''
-                SELECT id FROM email_verifications
-                WHERE email = ? AND code = ? AND type = ? AND expires_at > ? AND used = FALSE
+                SELECT id, code, failed_attempts FROM email_verifications
+                WHERE email = ? AND type = ? AND expires_at > ? AND used = FALSE
                 ORDER BY created_at DESC LIMIT 1
-                ''', (email, code, code_type, current_time))
+                ''', (email, code_type, current_time))
 
                 row = cursor.fetchone()
-                if row:
-                    # 标记验证码为已使用
-                    cursor.execute('''
-                    UPDATE email_verifications SET used = TRUE WHERE id = ?
-                    ''', (row[0],))
+                if not row:
+                    logger.warning(f"验证码验证失败（无有效记录）: {email} ({code_type})")
+                    return False
+
+                code_id, expected_code, failed_attempts = row
+                if failed_attempts is not None and failed_attempts >= 5:
+                    cursor.execute(
+                        'UPDATE email_verifications SET used = TRUE WHERE id = ?',
+                        (code_id,))
+                    self.conn.commit()
+                    logger.warning(f"验证码错误次数超限已作废: {email} ({code_type})")
+                    return False
+
+                if expected_code == (code or '').strip():
+                    cursor.execute(
+                        'UPDATE email_verifications SET used = TRUE WHERE id = ?',
+                        (code_id,))
                     self.conn.commit()
                     logger.info(f"验证码验证成功: {email} ({code_type})")
                     return True
+
+                new_attempts = (failed_attempts or 0) + 1
+                if new_attempts >= 5:
+                    cursor.execute(
+                        'UPDATE email_verifications SET used = TRUE WHERE id = ?',
+                        (code_id,))
                 else:
-                    logger.warning(f"验证码验证失败: {email} - {code} ({code_type})")
-                    return False
+                    cursor.execute(
+                        'UPDATE email_verifications SET failed_attempts = ? WHERE id = ?',
+                        (new_attempts, code_id,))
+                self.conn.commit()
+                logger.warning(
+                    f"验证码验证失败: {email} ({code_type})（第 {new_attempts} 次错误）")
+                return False
             except Exception as e:
                 logger.error(f"验证邮箱验证码失败: {e}")
                 return False
@@ -4369,8 +4474,9 @@ class DBManager:
 
     async def _send_email_via_smtp(self, email: str, subject: str, text_content: str,
                                  smtp_server: str, smtp_port: int, smtp_user: str,
-                                 smtp_password: str, smtp_from: str, smtp_use_tls: bool, smtp_use_ssl: bool) -> bool:
-        """使用SMTP方式发送邮件"""
+                                 smtp_password: str, smtp_from: str, smtp_use_tls: bool, smtp_use_ssl: bool,
+                                 raise_errors: bool = False) -> bool:
+        """使用SMTP方式发送邮件；raise_errors=True 时不吞异常，供调用方翻译成用户可读的原因"""
         try:
             import smtplib
             from email.mime.text import MIMEText
@@ -4383,10 +4489,11 @@ class DBManager:
 
             msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
 
+            # 不设超时的 SMTP 连接可能无限挂起，连带拖住发码请求
             if smtp_use_ssl:
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
             else:
-                server = smtplib.SMTP(smtp_server, smtp_port)
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
 
             server.ehlo()
             if smtp_use_tls and not smtp_use_ssl:
@@ -4401,9 +4508,37 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"SMTP发送验证码邮件失败: {e}")
+            if raise_errors:
+                raise
             # 自己的 SMTP 发不出去时，同样不改用站外接口代发：
             # 那会把收件人邮箱交给第三方，且部署方无从察觉。
             return False
+
+    async def send_test_email(self, email_to: str, smtp_server: str, smtp_port: int,
+                              smtp_user: str, smtp_password: str, smtp_from: str,
+                              smtp_use_tls: bool, smtp_use_ssl: bool) -> tuple:
+        """发送一封测试邮件，返回 (是否成功, 面向用户的中文原因)。"""
+        import smtplib
+        subject = "闲鱼超级管家 - SMTP 测试邮件"
+        text_content = (
+            "这是一封测试邮件。\n\n"
+            "收到本邮件，说明「系统设置 → 邮件服务」中的 SMTP 配置可以正常发信，\n"
+            "注册验证码与系统通知邮件都将通过该配置发出。\n\n"
+            f"收件地址：{email_to}\n"
+            "---\n此邮件由系统自动发送，请勿直接回复"
+        )
+        try:
+            ok = await self._send_email_via_smtp(email_to, subject, text_content,
+                                                 smtp_server, smtp_port, smtp_user,
+                                                 smtp_password, smtp_from, smtp_use_tls,
+                                                 smtp_use_ssl, raise_errors=True)
+            return ok, f"测试邮件已发送至 {email_to}，请查收（记得看一眼垃圾箱）"
+        except smtplib.SMTPAuthenticationError:
+            return False, "SMTP 认证失败：请核对发件邮箱与密码/授权码（QQ 邮箱等须用授权码，不是登录密码）"
+        except (TimeoutError, ConnectionError, OSError):
+            return False, f"无法连接 {smtp_server}:{smtp_port}：请核对服务器地址和端口是否正确、端口是否被防火墙拦截"
+        except smtplib.SMTPException as exc:
+            return False, f"SMTP 服务器返回错误：{exc}"
 
     @staticmethod
     def _serialize_delivery_template_images(images):
@@ -6884,7 +7019,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT id, username, email, created_at, updated_at
+                SELECT id, username, email, is_active, created_at, updated_at
                 FROM users
                 ORDER BY created_at DESC
                 ''')
@@ -6895,14 +7030,36 @@ class DBManager:
                         'id': row[0],
                         'username': row[1],
                         'email': row[2],
-                        'created_at': row[3],
-                        'updated_at': row[4]
+                        'is_active': bool(row[3]),
+                        'created_at': row[4],
+                        'updated_at': row[5]
                     })
 
                 return users
             except Exception as e:
                 logger.error(f"获取所有用户失败: {e}")
                 return []
+
+    def set_user_active(self, user_id: int, is_active: bool) -> bool:
+        """启用/禁用用户。禁用后该用户无法登录（verify_user_password 会拦截）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE users SET is_active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''', (1 if is_active else 0, user_id))
+
+                if cursor.rowcount > 0:
+                    self.conn.commit()
+                    logger.info(f"用户 {user_id} 状态已更新为: {'启用' if is_active else '禁用'}")
+                    return True
+                logger.warning(f"用户 {user_id} 不存在，状态更新失败")
+                return False
+            except Exception as e:
+                logger.error(f"更新用户状态失败: {e}")
+                self.conn.rollback()
+                return False
 
     def get_user_by_id(self, user_id: int):
         """根据ID获取用户信息"""
@@ -7352,6 +7509,20 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有订单列表失败: {e}")
                 return []
+
+    def count_orders_by_user(self, user_id: int) -> int:
+        """统计某用户名下账号的订单总数（orders 经 cookie_id 关联到用户）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT COUNT(*) FROM orders
+                WHERE cookie_id IN (SELECT id FROM cookies WHERE user_id = ?)
+                ''', (user_id,))
+                return cursor.fetchone()[0] or 0
+            except Exception as e:
+                logger.error(f"统计用户 {user_id} 订单数失败: {e}")
+                return 0
 
     def delete_table_record(self, table_name: str, record_id: str):
         """删除指定表的指定记录"""

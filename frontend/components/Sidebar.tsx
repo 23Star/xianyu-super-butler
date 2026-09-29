@@ -11,6 +11,7 @@ import {
   Settings,
   ShoppingBag,
   Star,
+  UserCog,
   Users,
   Workflow,
   X,
@@ -24,9 +25,14 @@ interface SidebarProps {
   onLogout: () => void;
   mobileOpen: boolean;
   onMobileClose: () => void;
+  isAdmin?: boolean;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mobileOpen, onMobileClose }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mobileOpen, onMobileClose, isAdmin = false }) => {
+  // 系统级页面只对管理员开放：普通用户看不到入口，后端接口也会拒绝其访问。
+  // 「通知与日志」保留：通知渠道按用户隔离（页面内系统日志已单独按权限隐藏）。
+  const adminOnly = (item: { id: string }) => isAdmin || !['settings', 'users'].includes(item.id);
+
   const menuGroups = [
     {
       label: '经营概览',
@@ -61,10 +67,11 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
     {
       label: '系统',
       items: [
+        { id: 'users', icon: UserCog, label: '用户管理' },
         { id: 'notifications', icon: BellRing, label: '通知与日志' },
         { id: 'settings', icon: Settings, label: '系统设置' },
         { id: 'about', icon: Info, label: '关于' },
-      ],
+      ].filter(adminOnly),
     },
   ];
 

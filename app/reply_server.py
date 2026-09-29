@@ -74,6 +74,14 @@ DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
 
+# 认证防刷（进程内状态，重启清零，与 SESSION_TOKENS 同一取舍）
+from app.services.auth_protection import email_code_send_limiter, login_failure_tracker
+from app.auth_validators import (
+    validate_email,
+    validate_password,
+    validate_username,
+)
+
 # HTTP Bearer认证
 security = HTTPBearer(auto_error=False)
 
@@ -148,6 +156,9 @@ class LoginRequest(BaseModel):
     password: Optional[str] = None
     email: Optional[str] = None
     verification_code: Optional[str] = None
+    # 连续登录失败达到阈值后，后端强制要求图形验证码（防爆破）
+    captcha_session_id: Optional[str] = None
+    captcha_code: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -157,6 +168,8 @@ class LoginResponse(BaseModel):
     user_id: Optional[int] = None
     username: Optional[str] = None
     is_admin: Optional[bool] = None
+    # True 表示下一次登录必须携带图形验证码
+    captcha_required: Optional[bool] = False
 
 
 class ChangePasswordRequest(BaseModel):
@@ -181,6 +194,9 @@ class SendCodeRequest(BaseModel):
     email: str
     session_id: Optional[str] = None
     type: Optional[str] = 'register'  # 'register' 或 'login'
+    # 发邮箱码前必须先通过图形验证码（防刷发件资源）
+    captcha_session_id: Optional[str] = None
+    captcha_code: Optional[str] = None
 
 
 class SendCodeResponse(BaseModel):
@@ -528,6 +544,23 @@ async def register_route():
 
 
 # 登录接口
+def _login_captcha_required(fail_key: str) -> bool:
+    """登录防爆破：开关开启（默认）且连续失败达阈值时，要求先过图形验证码。"""
+    from app.db_manager import db_manager
+    enabled = db_manager.get_system_setting('login_captcha_enabled')
+    if str(enabled or 'true').strip().lower() in ('0', 'false', 'no'):
+        return False
+    return login_failure_tracker.requires_captcha(fail_key)
+
+
+def _verify_login_captcha(request: LoginRequest) -> bool:
+    """校验登录请求携带的图形验证码；错误同样累计图形码失败次数。"""
+    from app.db_manager import db_manager
+    if not request.captcha_session_id or not request.captcha_code:
+        return False
+    return db_manager.verify_captcha(request.captcha_session_id, request.captcha_code)
+
+
 @app.post('/login')
 async def login(request: LoginRequest):
     from app.db_manager import db_manager
@@ -537,10 +570,21 @@ async def login(request: LoginRequest):
         # 用户名/密码登录
         logger.info(f"【{request.username}】尝试用户名登录")
 
+        # 防爆破：连续失败达阈值后必须先过图形验证码
+        fail_key = (request.username or '').strip().lower()
+        if _login_captcha_required(fail_key) and not _verify_login_captcha(request):
+            logger.warning(f"【{request.username}】登录被拦：需先完成图形验证")
+            return LoginResponse(
+                success=False,
+                message="登录失败次数过多，请先完成图形验证",
+                captcha_required=True
+            )
+
         # 统一使用用户表验证（包括admin用户）
         if db_manager.verify_user_password(request.username, request.password):
             user = db_manager.get_user_by_username(request.username)
             if user:
+                login_failure_tracker.reset(fail_key)
                 # 生成token
                 token = generate_token()
                 SESSION_TOKENS[token] = {
@@ -565,18 +609,31 @@ async def login(request: LoginRequest):
                     is_admin=(user['username'] == ADMIN_USERNAME)
                 )
 
+        login_failure_tracker.record_failure(fail_key)
         logger.warning(f"【{request.username}】登录失败：用户名或密码错误")
         return LoginResponse(
             success=False,
-            message="用户名或密码错误"
+            message="用户名或密码错误",
+            captcha_required=_login_captcha_required(fail_key)
         )
 
     elif request.email and request.password:
         # 邮箱/密码登录
         logger.info(f"【{request.email}】尝试邮箱密码登录")
 
+        # 防爆破：连续失败达阈值后必须先过图形验证码
+        fail_key = (request.email or '').strip().lower()
+        if _login_captcha_required(fail_key) and not _verify_login_captcha(request):
+            logger.warning(f"【{request.email}】登录被拦：需先完成图形验证")
+            return LoginResponse(
+                success=False,
+                message="登录失败次数过多，请先完成图形验证",
+                captcha_required=True
+            )
+
         user = db_manager.get_user_by_email(request.email)
         if user and db_manager.verify_user_password(user['username'], request.password):
+            login_failure_tracker.reset(fail_key)
             # 生成token
             token = generate_token()
             SESSION_TOKENS[token] = {
@@ -597,10 +654,12 @@ async def login(request: LoginRequest):
                 is_admin=(user['username'] == ADMIN_USERNAME)
             )
 
+        login_failure_tracker.record_failure(fail_key)
         logger.warning(f"【{request.email}】邮箱登录失败：邮箱或密码错误")
         return LoginResponse(
             success=False,
-            message="邮箱或密码错误"
+            message="邮箱或密码错误",
+            captcha_required=_login_captcha_required(fail_key)
         )
 
     elif request.email and request.verification_code:
@@ -678,6 +737,11 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
     from app.db_manager import db_manager
 
     try:
+        # 新密码强度校验（旧密码不校验格式，只验证正确性）
+        valid, reason = validate_password(request.new_password)
+        if not valid:
+            return {"success": False, "message": reason}
+
         # 验证当前密码（使用用户表验证）
         if not db_manager.verify_user_password('admin', request.current_password):
             return {"success": False, "message": "当前密码错误"}
@@ -707,6 +771,11 @@ async def change_user_password(request: ChangePasswordRequest, current_user: Dic
         
         if not username:
             return {"success": False, "message": "无法获取用户信息"}
+
+        # 新密码强度校验（旧密码不校验格式，只验证正确性）
+        valid, reason = validate_password(request.new_password)
+        if not valid:
+            return {"success": False, "message": reason}
 
         # 验证当前密码
         if not db_manager.verify_user_password(username, request.current_password):
@@ -996,26 +1065,42 @@ async def geetest_validate(request: GeetestValidateRequest):
         )
 
 
-# 发送验证码接口（需要先验证图形验证码）
+# 发送验证码接口（需先通过图形验证码，且带发送频率限制）
 @app.post('/send-verification-code')
 async def send_verification_code(request: SendCodeRequest):
     from app.db_manager import db_manager
 
     try:
-        # 检查是否已验证图形验证码
-        # 通过检查数据库中是否存在已验证的图形验证码记录
-        with db_manager.lock:
-            cursor = db_manager.conn.cursor()
-            current_time = time.time()
+        # 1. 邮箱格式校验
+        valid, reason = validate_email(request.email)
+        if not valid:
+            return SendCodeResponse(success=False, message=reason)
 
-            # 查找最近5分钟内该session_id的验证记录
-            # 由于验证成功后验证码会被删除，我们需要另一种方式来跟踪验证状态
-            # 这里我们检查该session_id是否在最近验证过（通过检查是否有已删除的记录）
+        # 2. 强制图形验证码：一次请求内"先验后发"，
+        #    避免两段式留下"验完不发"的绕过窗口。
+        #    图形码错在冷却配额之前被拦下，不消耗邮箱发送次数
+        if not request.captcha_session_id or not request.captcha_code:
+            return SendCodeResponse(
+                success=False,
+                message="请先输入图形验证码"
+            )
+        if not db_manager.verify_captcha(request.captcha_session_id, request.captcha_code):
+            return SendCodeResponse(
+                success=False,
+                message="图形验证码错误或已过期"
+            )
 
-            # 为了简化，我们要求前端在验证图形验证码成功后立即发送邮件验证码
-            # 或者我们可以在验证成功后设置一个临时标记
+        # 3. 发送频率限制：同邮箱 60s 冷却 + 每日上限
+        wait_seconds = email_code_send_limiter.acquire(request.email)
+        if wait_seconds is not None:
+            return SendCodeResponse(
+                success=False,
+                message=f"发送过于频繁，请 {wait_seconds // 60} 分钟后再试"
+                if wait_seconds >= 60 else
+                f"发送过于频繁，请 {wait_seconds} 秒后再试"
+            )
 
-        # 根据验证码类型进行不同的检查
+        # 4. 根据验证码类型进行不同的检查
         if request.type == 'register':
             # 注册验证码：检查邮箱是否已注册
             existing_user = db_manager.get_user_by_email(request.email)
@@ -1033,17 +1118,17 @@ async def send_verification_code(request: SendCodeRequest):
                     message="该邮箱未注册"
                 )
 
-        # 生成验证码
+        # 5. 生成验证码
         code = db_manager.generate_verification_code()
 
-        # 保存验证码到数据库
+        # 6. 保存验证码到数据库（重发时自动作废旧活码）
         if not db_manager.save_verification_code(request.email, code, request.type):
             return SendCodeResponse(
                 success=False,
                 message="验证码保存失败，请稍后重试"
             )
 
-        # 发送验证码邮件
+        # 7. 发送验证码邮件
         if await db_manager.send_verification_email(request.email, code):
             return SendCodeResponse(
                 success=True,
@@ -1079,6 +1164,17 @@ async def register(request: RegisterRequest):
 
     try:
         logger.info(f"【{request.username}】尝试注册，邮箱: {request.email}")
+
+        # 格式与强度校验放在验码之前：格式错误不消耗验证码的错误次数配额
+        for field, validator in (
+            (request.username, validate_username),
+            (request.email, validate_email),
+            (request.password, validate_password),
+        ):
+            valid, reason = validator(field)
+            if not valid:
+                logger.warning(f"【{request.username}】注册失败: {reason}")
+                return RegisterResponse(success=False, message=reason)
 
         # 邮箱验证码是否必填由管理员在系统设置里控制。
         # 没配 SMTP 的部署发不出验证码，强制校验会让注册完全不可用；
@@ -1712,6 +1808,16 @@ def validate_notification_rule(
 class SystemSettingIn(BaseModel):
     value: str
     description: Optional[str] = None
+
+
+class EmailTestIn(BaseModel):
+    """测试发信：SMTP 连接参数来自设置页表单当前值，测试前无需保存"""
+    to: str
+    smtp_server: str = ''
+    smtp_port: int = 0
+    smtp_user: str = ''
+    smtp_password: str = ''
+    smtp_from: str = ''
 
 
 class SystemSettingCreateIn(BaseModel):
@@ -3852,14 +3958,26 @@ def get_public_system_settings():
 
 
 @app.get('/system-settings')
-def get_system_settings(_: Dict[str, Any] = Depends(require_admin)):
-    """获取系统设置（排除敏感信息）"""
+def get_system_settings(current_user: Dict[str, Any] = Depends(require_auth)):
+    """获取系统设置。管理员拿全量（排除敏感信息），普通用户只拿业务白名单。
+
+    普通用户的常驻页面（如买家互动）会读业务模板配置，但 SMTP、注册开关等
+    系统级设置不属于他们，也不应让其感知键名。
+    """
     from app.db_manager import db_manager
+    # 普通用户可见的业务设置白名单（买家互动模板等）
+    USER_VISIBLE_KEYS = {
+        'auto_rate_template', 'auto_thanks_template',
+        'auto_rate_enabled', 'auto_flower_enabled', 'auto_receive_flower_enabled',
+        'buyer_interaction_interval',
+    }
     try:
         settings = db_manager.get_all_system_settings()
         # 移除敏感信息
         if 'admin_password_hash' in settings:
             del settings['admin_password_hash']
+        if current_user['username'] != ADMIN_USERNAME:
+            settings = {k: v for k, v in settings.items() if k in USER_VISIBLE_KEYS}
         return settings
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -3884,6 +4002,31 @@ def update_system_setting(key: str, setting_data: SystemSettingIn,
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/system-settings/email-test')
+async def send_email_test(data: EmailTestIn, _: Dict[str, Any] = Depends(require_admin)):
+    """用设置页表单当前的 SMTP 配置发一封测试邮件，验证邮件服务可用性。"""
+    import re
+    from app.db_manager import db_manager
+    to = data.to.strip()
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', to):
+        return {'success': False, 'message': '请输入正确的收件邮箱地址'}
+    if not (data.smtp_server.strip() and data.smtp_port and data.smtp_user.strip() and data.smtp_password.strip()):
+        return {'success': False, 'message': '请先完整填写 SMTP 服务器、端口、发件邮箱和授权码'}
+    # TLS/SSL 开关不在表单里，沿用库中已保存的值（默认 TLS 开、SSL 关）
+    smtp_use_tls = (db_manager.get_system_setting('smtp_use_tls') or 'true').lower() == 'true'
+    smtp_use_ssl = (db_manager.get_system_setting('smtp_use_ssl') or 'false').lower() == 'true'
+    smtp_from = data.smtp_from.strip() or data.smtp_user.strip()
+    try:
+        ok, message = await db_manager.send_test_email(
+            to, data.smtp_server.strip(), int(data.smtp_port),
+            data.smtp_user.strip(), data.smtp_password.strip(),
+            smtp_from, smtp_use_tls, smtp_use_ssl)
+        return {'success': ok, 'message': message}
+    except Exception as e:
+        logger.error(f"测试发信异常: {e}")
+        return {'success': False, 'message': f'测试发信异常：{e}'}
 
 
 # ------------------------- 注册设置接口 -------------------------
@@ -6708,6 +6851,79 @@ def get_user_setting(key: str, current_user: Dict[str, Any] = Depends(get_curren
 
 # ------------------------- 管理员专用接口 -------------------------
 
+class UserStatusIn(BaseModel):
+    is_active: bool
+
+
+class PasswordResetIn(BaseModel):
+    new_password: str
+
+
+def _revoke_user_tokens(user_id: int) -> int:
+    """吊销某用户的全部在线会话。禁用账号、重置密码后立即生效，防止旧 token 继续操作。"""
+    revoked = [token for token, data in SESSION_TOKENS.items() if data.get('user_id') == user_id]
+    for token in revoked:
+        SESSION_TOKENS.pop(token, None)
+    return len(revoked)
+
+
+@app.patch('/admin/users/{user_id}/status')
+def set_user_status(user_id: int, data: UserStatusIn, admin_user: Dict[str, Any] = Depends(require_admin)):
+    """启用/禁用用户（管理员专用）"""
+    from app.db_manager import db_manager
+    try:
+        target = db_manager.get_user_by_id(user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        # 内置管理员是系统最后一个管理入口，禁用它等于把后台锁死
+        if target['username'] == ADMIN_USERNAME:
+            raise HTTPException(status_code=400, detail="内置管理员不可禁用")
+
+        if not db_manager.set_user_active(user_id, data.is_active):
+            raise HTTPException(status_code=400, detail="状态更新失败")
+
+        # 禁用后踢掉在线会话；启用时也顺手清理（正常不会有残留）
+        revoked = _revoke_user_tokens(user_id)
+
+        action = '启用' if data.is_active else '禁用'
+        log_with_user('info', f"{action}用户 {target['username']}，吊销 {revoked} 个会话", admin_user)
+        return {"message": f"用户 {target['username']} 已{action}", "revoked_tokens": revoked}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"更新用户状态异常: {str(e)}", admin_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/admin/users/{user_id}/password')
+def reset_user_password(user_id: int, data: PasswordResetIn, admin_user: Dict[str, Any] = Depends(require_admin)):
+    """重置用户密码（管理员专用）"""
+    from app.db_manager import db_manager
+    try:
+        target = db_manager.get_user_by_id(user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        # 管理员自己的密码含当前会话身份校验，统一走「系统设置」的修改密码
+        if target['username'] == ADMIN_USERNAME:
+            raise HTTPException(status_code=400, detail="内置管理员的密码请在系统设置中修改")
+
+        valid, reason = validate_password(data.new_password)
+        if not valid:
+            raise HTTPException(status_code=400, detail=reason)
+
+        if not db_manager.update_user_password(target['username'], data.new_password):
+            raise HTTPException(status_code=400, detail="密码重置失败")
+
+        _revoke_user_tokens(user_id)
+        log_with_user('info', f"重置用户 {target['username']} 的密码", admin_user)
+        return {"message": f"用户 {target['username']} 的密码已重置，其所有会话已强制下线"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"重置用户密码异常: {str(e)}", admin_user)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get('/admin/users')
 def get_all_users(admin_user: Dict[str, Any] = Depends(require_admin)):
     """获取所有用户信息（管理员专用）"""
@@ -6752,12 +6968,17 @@ def delete_user(user_id: int, admin_user: Dict[str, Any] = Depends(require_admin
         if not user_to_delete:
             raise HTTPException(status_code=404, detail="用户不存在")
 
+        # 内置管理员是权限体系的根，删除后无人能进管理端
+        if user_to_delete['username'] == ADMIN_USERNAME:
+            raise HTTPException(status_code=400, detail="内置管理员不可删除")
+
         log_with_user('info', f"准备删除用户: {user_to_delete['username']} (ID: {user_id})", admin_user)
 
         # 删除用户及其相关数据
         success = db_manager.delete_user_and_data(user_id)
 
         if success:
+            _revoke_user_tokens(user_id)
             log_with_user('info', f"用户删除成功: {user_to_delete['username']} (ID: {user_id})", admin_user)
             return {"message": f"用户 {user_to_delete['username']} 删除成功"}
         else:
@@ -7005,20 +7226,20 @@ def export_log_file(file: str, admin_user: Dict[str, Any] = Depends(require_admi
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get('/admin/stats')
-def get_system_stats(admin_user: Dict[str, Any] = Depends(require_admin)):
-    """获取系统统计信息（管理员专用）"""
+def get_system_stats(current_user: Dict[str, Any] = Depends(require_auth)):
+    """统计信息：管理员看全系统，普通用户只看自己名下的（总览页对两类用户都开放）"""
     from app.db_manager import db_manager
     try:
-        log_with_user('info', "查询系统统计信息", admin_user)
+        is_admin = current_user['username'] == ADMIN_USERNAME
+        log_with_user('info', "查询统计信息", current_user)
 
-        # 用户统计
-        all_users = db_manager.get_all_users()
-        total_users = len(all_users)
+        # 普通用户：total_users 不展示也无权限含义，给 0 占位保持字段结构一致
+        total_users = len(db_manager.get_all_users()) if is_admin else 0
 
-        # Cookie统计
-        all_cookies = db_manager.get_all_cookies()
+        # Cookie统计（按归属过滤）
+        all_cookies = db_manager.get_all_cookies(None if is_admin else current_user['user_id'])
         total_cookies = len(all_cookies)
-        
+
         # 活跃账号统计（启用状态的账号）
         active_cookies = 0
         for cookie_id in all_cookies.keys():
@@ -7026,21 +7247,24 @@ def get_system_stats(admin_user: Dict[str, Any] = Depends(require_admin)):
             if status:
                 active_cookies += 1
 
-        # 卡券统计
-        all_cards = db_manager.get_all_cards()
+        # 卡券统计（按归属过滤）
+        all_cards = db_manager.get_all_cards(None if is_admin else current_user['user_id'])
         total_cards = len(all_cards) if all_cards else 0
 
-        # 关键词统计
-        all_keywords = db_manager.get_all_keywords()
+        # 关键词统计（按归属过滤）
+        all_keywords = db_manager.get_all_keywords(None if is_admin else current_user['user_id'])
         total_keywords = sum(len(kw_list) for kw_list in all_keywords.values())
 
-        # 订单统计
-        total_orders = 0
-        try:
-            orders = db_manager.get_all_orders()
-            total_orders = len(orders) if orders else 0
-        except:
-            pass
+        # 订单统计（管理员全量，普通用户按名下账号统计）
+        if is_admin:
+            total_orders = 0
+            try:
+                orders = db_manager.get_all_orders()
+                total_orders = len(orders) if orders else 0
+            except:
+                pass
+        else:
+            total_orders = db_manager.count_orders_by_user(current_user['user_id'])
 
         stats = {
             "total_users": total_users,
@@ -7051,11 +7275,11 @@ def get_system_stats(admin_user: Dict[str, Any] = Depends(require_admin)):
             "total_orders": total_orders
         }
 
-        log_with_user('info', f"系统统计信息查询完成: {stats}", admin_user)
+        log_with_user('info', f"统计信息查询完成: {stats}", current_user)
         return stats
 
     except Exception as e:
-        log_with_user('error', f"获取系统统计信息失败: {str(e)}", admin_user)
+        log_with_user('error', f"获取系统统计信息失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ------------------------- BI报表分析接口 -------------------------
