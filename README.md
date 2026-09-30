@@ -8,7 +8,7 @@
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
 
-**一个人，把几十个闲鱼账号做成一门自动运转的生意。**
+**一个人把多个闲鱼账号做成一门自动运转的生意，让你的创意自动'变现'**
 
 多账号统一托管，买家下单自动发卡密、自动确认收货、自动评价、自动求小红花、收货后自动致谢。
 关键词和 AI 双层自动回复接住每一句咨询，商品与订单自动同步，滑块与人机验证自动处理。
