@@ -1,6 +1,9 @@
 # 闲鱼智控（闲鱼超级管家）
 
 面向闲鱼卖家的账号、商品、订单、消息、自动回复与自动发货一体化管理系统。
+## 推荐使用云端版（GPT6自动过滑块+人工巡检）
+云端saas版本：https://xy.corleom.com/
+**本项目征集PR、功能更新，任何一个提交PR的作者会在未来获得顶配模型token奖励**
 
 [![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
 [![Version](https://img.shields.io/badge/Version-3.1.0-52c41a)](https://github.com/23Star/xianyu-super-butler/releases)
