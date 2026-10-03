@@ -12,6 +12,7 @@ import {
   Send,
   Settings2,
   Smile,
+  X,
   Zap,
   Trash2,
   UserRound,
@@ -39,6 +40,7 @@ import {
   getItems,
   getMessageFilters,
   getQuickPhrases,
+  sendChatImage,
   sendChatMessage,
   useQuickPhrase,
   toggleMessageFilter,
@@ -55,6 +57,13 @@ const CONVERSATION_POLL_MS = 10000;
 const MESSAGE_POLL_MS = 10000;
 const READ_WATERMARKS_STORAGE_KEY = 'xianyu-message-read-watermarks-v2';
 const MAX_READ_WATERMARKS = 500;
+// 一次最多带几张图：闲鱼 App 一次也就能发十来张，太多张既没场景又容易把
+// 上传队列拖到超时。单个文件大小上限与后端 CHAT_IMAGE_MAX_BYTES 对齐。
+const MAX_CHAT_IMAGES = 9;
+const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// 待发送图片：文件本体 + 用于预览的 objectURL（removePendingImage 里 revoke 掉）
+type PendingImage = { file: File; url: string };
 
 type ReadWatermark = {
   lastMessageTime: number;
@@ -198,11 +207,22 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
+  // 待发送图片：选文件或粘贴进来先预览，点发送时逐张发出去
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // 隐藏的 file input：图片按钮只是它的点击代理
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const searchInputTouchedRef = useRef(false);
   const activeCidRef = useRef('');
   const readWatermarksRef = useRef<ReadWatermarks>(loadReadWatermarks());
+  // 预览 URL 的释放要按最新 state 来，所以留一份 ref 快照给卸载清理用
+  const pendingImagesRef = useRef<PendingImage[]>(pendingImages);
+  pendingImagesRef.current = pendingImages;
+  useEffect(() => () => {
+    // 卸载时释放 objectURL，别把整个会话攒下的图片都攥在内存里
+    pendingImagesRef.current.forEach((item) => URL.revokeObjectURL(item.url));
+  }, []);
 
   const [filters, setFilters] = useState<MessageFilter[]>([]);
   const [filtersLoading, setFiltersLoading] = useState(true);
@@ -452,19 +472,81 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
+  // 选文件 / 粘贴进来的图片统一走这里：类型和大小不合适的当场提示并跳过，
+  // 不往「已选」里塞，免得发送时才报错打乱节奏。
+  const addPendingImages = (files: File[]) => {
+    const accepted: PendingImage[] = [];
+    for (const file of files) {
+      const label = file.name || '未命名文件';
+      if (!file.type.startsWith('image/')) {
+        notify(`${label} 不是图片，已跳过`, 'warning');
+        continue;
+      }
+      if (file.size > MAX_CHAT_IMAGE_BYTES) {
+        notify(`${label} 超过 10MB，已跳过`, 'warning');
+        continue;
+      }
+      if (pendingImages.length + accepted.length >= MAX_CHAT_IMAGES) {
+        notify(`一次最多发送 ${MAX_CHAT_IMAGES} 张图片`, 'warning');
+        break;
+      }
+      accepted.push({ file, url: URL.createObjectURL(file) });
+    }
+    if (accepted.length > 0) {
+      setPendingImages((current) => [...current, ...accepted]);
+    }
+  };
+
+  const removePendingImage = (index: number) => {
+    setPendingImages((current) => {
+      const target = current[index];
+      if (target) URL.revokeObjectURL(target.url);
+      return current.filter((_, position) => position !== index);
+    });
+  };
+
   const sendMessage = async () => {
     const text = draft.trim();
-    if (!text || !activeConversation || !activeAccountId || sending) return;
+    if ((!text && pendingImages.length === 0) || !activeConversation || !activeAccountId || sending) return;
     setSending(true);
+    // 发送期间锁住这一批图片：发送中途再往里加会让「已发几张」的账算乱
+    const queued = pendingImages;
+    let sentImages = 0;
+    let failure = '';
     try {
-      await sendChatMessage(activeAccountId, {
-        cid: activeConversation.cid,
-        to_user_id: activeConversation.otherUserId,
-        text,
-      });
+      if (text) {
+        await sendChatMessage(activeAccountId, {
+          cid: activeConversation.cid,
+          to_user_id: activeConversation.otherUserId,
+          text,
+        });
+      }
+      // 图片跟在文字后面逐张发：一次发一批既容易超时，失败了也说不清是哪张
+      while (sentImages < queued.length) {
+        try {
+          await sendChatImage(activeAccountId, {
+            cid: activeConversation.cid,
+            to_user_id: activeConversation.otherUserId,
+            file: queued[sentImages].file,
+          });
+        } catch (error) {
+          const label = queued[sentImages].file.name || `第 ${sentImages + 1} 张`;
+          failure = `${label}：${(error as Error).message}`;
+          break;
+        }
+        sentImages += 1;
+      }
+      // 成功的图片连同文字一起清掉；失败的与未发的留在输入框，方便重发
+      const consumed = queued.slice(0, sentImages);
+      consumed.forEach((item) => URL.revokeObjectURL(item.url));
+      setPendingImages(queued.slice(sentImages));
       setDraft('');
       await Promise.all([loadMessages(true), loadConversations(true)]);
-      notify('消息已发送', 'success');
+      if (failure) {
+        notify(`文字已发送、图片已发 ${sentImages} 张，失败：${failure}`, 'error');
+      } else {
+        notify('消息已发送', 'success');
+      }
     } catch (error) {
       notify(`发送失败：${(error as Error).message}`, 'error');
     } finally {
@@ -815,9 +897,28 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="表情（暂未开放）" className="hover:text-[var(--text)]">
                   <Smile className="h-5 w-5" />
                 </button>
-                <button type="button" title="图片（暂未开放）" className="hover:text-[var(--text)]">
+                <button
+                  type="button"
+                  title="发送图片"
+                  aria-label="发送图片"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={!activeAccount?.connected}
+                  className="hover:text-[var(--text)] disabled:cursor-not-allowed disabled:text-[var(--text-soft)]"
+                >
                   <Image className="h-5 w-5" />
                 </button>
+                {/* 用户选中同一个文件再发一次时不会触发 change，手动清掉 value */}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    addPendingImages(Array.from(event.target.files || []));
+                    event.target.value = '';
+                  }}
+                />
                 <div className="relative">
                   <button
                     type="button"
@@ -854,10 +955,53 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   )}
                 </div>
               </div>
+              {pendingImages.length > 0 && (
+                <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--surface-strong)] p-2">
+                  <div className="flex flex-wrap gap-2">
+                    {pendingImages.map((item, index) => (
+                      <div
+                        key={item.url}
+                        className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]"
+                      >
+                        <img
+                          src={item.url}
+                          alt={item.file.name || '待发送图片'}
+                          className="h-full w-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          title="移除这张图片"
+                          aria-label={`移除${item.file.name || '图片'}`}
+                          onClick={() => removePendingImage(index)}
+                          className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white hover:bg-black/80"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-4 text-[var(--text-soft)]">
+                    {pendingImages.length} 张图片待发送，会跟在文字后面逐张发出
+                  </p>
+                </div>
+              )}
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onPaste={(event) => {
+                    // 只拦图片：剪贴板里没有图片文件时原样放行，纯文本粘贴不受影响
+                    const clipboardFiles = event.clipboardData?.files;
+                    if (!clipboardFiles || clipboardFiles.length === 0) return;
+                    const imageFiles: File[] = [];
+                    for (let index = 0; index < clipboardFiles.length; index += 1) {
+                      const file = clipboardFiles[index];
+                      if (file && file.type.startsWith('image/')) imageFiles.push(file);
+                    }
+                    if (imageFiles.length === 0) return;
+                    event.preventDefault();
+                    addPendingImages(imageFiles);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault();
@@ -865,14 +1009,22 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     }
                   }}
                   rows={2}
-                  placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
+                  placeholder={
+                    activeAccount?.connected
+                      ? '输入消息，可直接粘贴图片'
+                      : '账号离线，暂时无法发送'
+                  }
                   disabled={!activeAccount?.connected}
                   className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
                 />
                 <button
                   type="button"
                   onClick={() => void sendMessage()}
-                  disabled={!draft.trim() || sending || !activeAccount?.connected}
+                  disabled={
+                    (!draft.trim() && pendingImages.length === 0)
+                    || sending
+                    || !activeAccount?.connected
+                  }
                   className="flex h-9 shrink-0 items-center gap-2 rounded-md bg-[var(--brand)] px-4 text-sm font-bold text-[var(--brand-ink)] hover:bg-[var(--brand-hover)] disabled:cursor-not-allowed disabled:bg-[var(--surface-strong)] disabled:text-[var(--text-soft)] sm:px-5"
                 >
                   {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
