@@ -51,6 +51,11 @@
   --brand-ink: #2a2416;        /* 黄底之上的文字色 */
   --brand-soft: #fff9c9;
   --brand-text: #806d00;
+  /* 选中态配色。默认 ::selection 用品牌黄，但品牌黄同时也是「自己发出的聊天气泡」
+     底色，黄选黄会看不出选中范围——气泡内单独换成橙色（见文件末尾
+     .chat-self-bubble ::selection）。 */
+  --selection-bg: #fb923c;
+  --selection-ink: var(--brand-ink);
   --focus-ring: #806d00;
   --unread-badge: #dc2626;
 
@@ -1035,6 +1040,13 @@ aside nav:hover::-webkit-scrollbar-thumb {
 ::selection {
   background: var(--brand);
   color: #000;
+}
+
+/* 自己发出的聊天气泡底色就是品牌黄，全局 ::selection 再给黄色会黄黄一片、
+   看不出选中了哪些字。气泡内选中态改用橙色（--selection-bg）。 */
+.chat-self-bubble ::selection {
+  background: var(--selection-bg);
+  color: var(--selection-ink);
 }
 
 .text-brand {
