@@ -859,7 +859,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                               activeConversation.otherUserId
                             )}
                             <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
-                              message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
+                              message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)] chat-self-bubble' : 'bg-[var(--surface-strong)] text-[var(--text)]'
                             }`}>
                               {message.images.map((url) => (
                                 <img
