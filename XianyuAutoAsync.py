@@ -6848,6 +6848,106 @@ class XianyuLive:
             raise RuntimeError(str(reason))
         return response
 
+    async def send_im_image(self, cid, toid, image_path, width=None, height=None):
+        """发送图片消息（管家对话框人工发图走这条）。
+
+        与 send_image_msg 的区别：走 _send_im_request 等服务端回执，发送失败会
+        抛异常，调用方（后台接口）能把失败如实告诉用户，而不是 fire-and-forget
+        之后无从判断发没发出去。
+
+        image_path 两种取值：
+        - 已经是闲鱼 CDN 的 http(s) 地址 → 直接发送；
+        - 本地文件路径 → 先经 ImageUploader 上传到闲鱼 CDN 再发送。
+        """
+        cid = str(cid or "").strip()
+        toid = str(toid or "").strip()
+        image_path = str(image_path or "").strip()
+        if not cid or not toid:
+            raise ValueError("会话ID和接收者ID不能为空")
+        if not image_path:
+            raise ValueError("图片地址不能为空")
+
+        if self._is_cdn_url(image_path):
+            image_url = image_path
+            logger.info(f"【{self.cookie_id}】使用已有的CDN图片链接: {image_url}")
+        else:
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"图片文件不存在: {image_path}")
+            logger.info(f"【{self.cookie_id}】准备上传本地图片到闲鱼CDN: {image_path}")
+
+            from utils.image_uploader import ImageUploader
+
+            async with ImageUploader(self.cookies_str) as uploader:
+                image_url = await uploader.upload_image(image_path)
+            if not image_url:
+                # 上传失败多数是 Cookie 失效，提示口径与 send_image_msg 保持一致
+                logger.error(f"【{self.cookie_id}】图片上传失败: {image_path}（Cookie可能已失效）")
+                raise RuntimeError(f"图片上传失败（Cookie可能已失效）: {image_path}")
+
+            from utils.image_utils import image_manager
+
+            try:
+                actual_width, actual_height = image_manager.get_image_size(image_path)
+                if actual_width and actual_height:
+                    width, height = actual_width, actual_height
+            except Exception as e:
+                logger.warning(f"【{self.cookie_id}】获取图片尺寸失败，使用默认尺寸: {e}")
+
+        width = int(width or 800)
+        height = int(height or 600)
+
+        image_content = {
+            "contentType": 2,
+            "image": {
+                "pics": [
+                    {
+                        "height": height,
+                        "type": 0,
+                        "url": image_url,
+                        "width": width,
+                    }
+                ]
+            },
+        }
+        content_base64 = str(base64.b64encode(
+            json.dumps(image_content, ensure_ascii=False).encode("utf-8")
+        ), "utf-8")
+
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        full_toid = toid if "@goofish" in toid else f"{toid}@goofish"
+        response = await self._send_im_request(
+            "/r/MessageSend/sendByReceiverScope",
+            [
+                {
+                    "uuid": generate_uuid(),
+                    "cid": full_cid,
+                    "conversationType": 1,
+                    "content": {
+                        "contentType": 101,
+                        "custom": {"type": 1, "data": content_base64},
+                    },
+                    "redPointPolicy": 0,
+                    "extension": {"extJson": "{}"},
+                    "ctx": {"appVersion": "1.0", "platform": "web"},
+                    "mtags": {},
+                    "msgReadStatusSetting": 1,
+                },
+                {
+                    "actualReceivers": [
+                        full_toid,
+                        f"{self.myid}@goofish",
+                    ],
+                },
+            ],
+        )
+        body = response.get("body", {}) if isinstance(response, dict) else {}
+        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
+            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+            raise RuntimeError(str(reason))
+        logger.info(f"【{self.cookie_id}】图片消息发送成功: {image_url}")
+        return response
+
+
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
         token_refresh_attempted = False
