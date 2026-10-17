@@ -1240,6 +1240,18 @@ export const sendChatMessage = async (
   return post(`/chat/send/${encodeURIComponent(cookieId)}`, data);
 };
 
+/** 发送聊天图片。文件走 multipart 直传，后端先上传闲鱼 CDN 再发 contentType=2 图片消息。 */
+export const sendChatImage = async (
+  cookieId: string,
+  data: { cid: string; to_user_id: string; file: File }
+): Promise<{ success: boolean; message: string; data?: { messageId?: string } }> => {
+  const formData = new FormData();
+  formData.append('cid', data.cid);
+  formData.append('to_user_id', data.to_user_id);
+  formData.append('image', data.file);
+  return post(`/chat/send-image/${encodeURIComponent(cookieId)}`, formData);
+};
+
 // Default Reply
 export const getDefaultReplies = async (): Promise<Record<string, DefaultReply>> => {
   return get('/default-replies');

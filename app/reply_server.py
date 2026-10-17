@@ -10,6 +10,7 @@ import time
 import json
 import os
 import re
+import tempfile
 import pandas as pd
 import io
 import asyncio
@@ -1559,6 +1560,71 @@ async def send_chat_message(
     logger.info(
         f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼消息，"
         f"会话={request.cid}, 对方={request.to_user_id}, 长度={len(request.text)}"
+    )
+    return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
+
+
+
+
+# 聊天图片大小上限。闲鱼 CDN 上传侧本身有压缩，这里只挡明显异常的大文件，
+# 与前端选择文件时的提示保持一致。
+CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+
+
+@app.post("/chat/send-image/{cookie_id}")
+async def send_chat_image(
+    cookie_id: str,
+    cid: str = Form(...),
+    to_user_id: str = Form(...),
+    image: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """管家对话框人工发图：multipart 一步到位。
+
+    文件只落临时文件、经 ImageUploader 上传闲鱼 CDN 后立即删除——刻意不落
+    static/uploads：聊天图片是账号与买家之间的私有内容，落到公网可访问目录
+    等于把买家对话公开。
+    """
+    _get_owned_chat_account(cookie_id, current_user)
+
+    cid = (cid or "").strip()
+    to_user_id = (to_user_id or "").strip()
+    if not cid or not to_user_id:
+        raise HTTPException(status_code=400, detail="会话ID和接收者ID不能为空")
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="请上传图片文件")
+
+    image_data = await image.read()
+    if not image_data:
+        raise HTTPException(status_code=400, detail="图片文件内容为空")
+    if len(image_data) > CHAT_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="图片大小不能超过 10MB")
+
+    suffix = os.path.splitext(image.filename or "")[1].lower()
+    if not suffix.startswith(".") or len(suffix) > 10:
+        suffix = ".png"
+    fd, temp_path = tempfile.mkstemp(prefix="chat-image-", suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(image_data)
+        response = await _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.send_im_image(cid, to_user_id, temp_path),
+        )
+    finally:
+        # 临时文件的生命周期就这一次上传：成功失败都要清掉，别在 temp 里攒垃圾
+        try:
+            os.remove(temp_path)
+        except OSError as e:
+            logger.warning(f"【{cookie_id}】聊天图片临时文件删除失败: {temp_path} ({e})")
+
+    body = response.get("body", {}) if isinstance(response, dict) else {}
+    message_id = ""
+    if isinstance(body, dict):
+        message_id = str(body.get("messageId") or body.get("msgId") or "")
+    logger.info(
+        f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送闲鱼图片，"
+        f"会话={cid}, 对方={to_user_id}, 文件={image.filename}, 大小={len(image_data)}字节"
     )
     return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
 
