@@ -177,6 +177,11 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class UpdateProfileRequest(BaseModel):
+    new_username: str
+    current_password: str
+
+
 class RegisterRequest(BaseModel):
     username: str
     email: str
@@ -793,6 +798,43 @@ async def change_user_password(request: ChangePasswordRequest, current_user: Dic
     except Exception as e:
         logger.error(f"修改用户密码异常: {e}")
         return {"success": False, "message": "系统错误"}
+
+
+@app.put('/profile')
+async def update_profile(request: UpdateProfileRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    from app.db_manager import db_manager
+
+    username = current_user.get('username')
+    user_id = current_user.get('user_id')
+    new_username = request.new_username.strip()
+
+    if not username or user_id is None:
+        return {"success": False, "message": "无法获取用户信息"}
+    if username == ADMIN_USERNAME:
+        return {"success": False, "message": "管理员用户名是系统身份，不能修改"}
+
+    valid, reason = validate_username(new_username)
+    if not valid:
+        return {"success": False, "message": reason}
+    if new_username == username:
+        return {"success": False, "message": "新用户名与当前相同"}
+
+    # 先验密码再查重：密码错误不该泄露目标用户名是否可用
+    if not db_manager.verify_user_password(username, request.current_password):
+        return {"success": False, "message": "当前密码错误"}
+    if db_manager.get_user_by_username(new_username):
+        return {"success": False, "message": "该用户名已被占用"}
+
+    if not db_manager.update_username(username, new_username):
+        return {"success": False, "message": "用户名修改失败"}
+
+    # 同步内存 token 里的用户名，旧 token 继续有效（避免改完名立即被踢重新登录）
+    for token_data in SESSION_TOKENS.values():
+        if token_data.get('user_id') == user_id:
+            token_data['username'] = new_username
+
+    logger.info(f"【{username}#{user_id}】用户名修改为 {new_username}")
+    return {"success": True, "message": "用户名修改成功", "username": new_username}
 
 
 # 检查是否使用默认密码
@@ -9533,6 +9575,11 @@ async def get_fresh_captcha_url(
     url = data.get('url') or ''
     if url and ('punish' in url or 'action=captcha' in url):
         log_with_user('info', f'账号 {cookie_id} 已取得新的验证链接', current_user)
+        # 用户马上要去浏览器手动过滑块：提前解除熔断，让心跳恢复令牌探测。
+        # 否则滑块验证通过了，服务端仍按冷却期拒绝一切请求，账号卡片上的
+        # 「滑块验证 · N 分钟」要干等冷却自然到期才消失 —— 看起来就像验证白做了。
+        from utils import risk_control
+        risk_control.registry.get(cookie_id).reset()
         return {
             'success': True,
             'need_verify': True,

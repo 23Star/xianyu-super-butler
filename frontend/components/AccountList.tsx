@@ -58,6 +58,9 @@ const AccountList: React.FC = () => {
   const [captchaStage, setCaptchaStage] = useState<'starting' | 'ready' | 'done' | 'failed'>('starting');
   const [captchaMessage, setCaptchaMessage] = useState('');
   const captchaWsRef = useRef<WebSocket | null>(null);
+  // 「在我的浏览器打开验证页」之后的快轮询句柄：用户手动过滑块期间 10s 一拍，
+  // 账号恢复时立刻反映到界面，而不是等默认 30s 轮询
+  const captchaWatchRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const captchaImgRef = useRef<HTMLImageElement>(null);
   const [failedAvatars, setFailedAvatars] = useState<Set<string>>(new Set());
 
@@ -146,6 +149,7 @@ const AccountList: React.FC = () => {
       clearInterval(timer);
       qrSessionRef.current = '';
       if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+      if (captchaWatchRef.current) clearInterval(captchaWatchRef.current);
     };
   }, []);
 
@@ -172,7 +176,31 @@ const AccountList: React.FC = () => {
       }
       if (result.verification_url) {
         window.open(result.verification_url, '_blank', 'noopener,noreferrer');
-        notify('已打开验证页，请用鼠标拖动滑块完成验证', 'info');
+        notify('已打开验证页；滑块通过后页面可能跳转到淘宝，属正常现象，直接关闭即可', 'info');
+        // 后端取链接时已解除熔断，心跳正在恢复令牌。这里临时加密轮询（10s × 3 分钟），
+        // 验证生效后账号状态立刻刷新 —— 用户不用猜「验证到底成没成」
+        if (captchaWatchRef.current) clearInterval(captchaWatchRef.current);
+        let ticks = 18;
+        captchaWatchRef.current = setInterval(async () => {
+          ticks -= 1;
+          try {
+            const status = await getRiskControlStatus();
+            const stillBlocked = (status.accounts || []).some(
+              item => item.blocked || (item.verification_type && item.verification_type !== 'none')
+            );
+            if (!stillBlocked) {
+              if (captchaWatchRef.current) clearInterval(captchaWatchRef.current);
+              captchaWatchRef.current = null;
+              notify('验证已生效，账号恢复运行', 'success');
+              loadAccounts({ silent: true });
+            } else if (ticks <= 0 && captchaWatchRef.current) {
+              clearInterval(captchaWatchRef.current);
+              captchaWatchRef.current = null;
+            }
+          } catch {
+            // 单次轮询失败忽略，等下一拍或默认 30s 轮询兜底
+          }
+        }, 10000);
       }
     } catch (error) {
       notify(error instanceof Error ? error.message : '获取验证链接失败', 'error');

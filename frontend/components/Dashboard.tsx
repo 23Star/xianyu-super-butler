@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AdminStats, OrderAnalytics, Order, OrderStatus, Item } from '../types';
 import { getAdminStats, getOrderAnalytics, getValidOrders, getItems } from '../services/api';
+import { notify } from '../services/feedback';
 import {TrendingUp, Users, ShoppingCart, AlertCircle, DollarSign, Activity, Package, BarChart3, PackageCheck, ExternalLink, RefreshCw} from 'lucide-react';
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
 import { EmptyState, PageHeader, PageLoading, PageTabs, SectionHeader } from './ui';
@@ -52,6 +53,8 @@ type TimeRange = 'today' | 'yesterday' | '3days' | '7days' | '30days' | 'custom'
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [analytics, setAnalytics] = useState<OrderAnalytics | null>(null);
+  // analytics 是否已成功加载过：切换时间范围失败时，靠它区分「整页错误」还是「保留旧图提示」
+  const analyticsRef = useRef(false);
   const [timeRange, setTimeRange] = useState<TimeRange>('7days');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
@@ -189,6 +192,7 @@ const Dashboard: React.FC = () => {
     ]);
     setAnalytics(currentAnalytics);
     setPreviousAnalytics(previousPeriodAnalytics);
+    analyticsRef.current = true;
   };
 
   // 获取上一个时间段的参数
@@ -261,10 +265,11 @@ const Dashboard: React.FC = () => {
     return `${sign}${percent.toFixed(1)}%`;
   };
 
+  // 统计与商品列表：只在进页/手动刷新时加载，切时间范围不重拉
   useEffect(() => {
     let cancelled = false;
 
-    const loadDashboard = async () => {
+    const loadBase = async () => {
       setDashboardLoading(true);
       setDashboardError(null);
 
@@ -272,7 +277,6 @@ const Dashboard: React.FC = () => {
         const [statsData, itemData] = await Promise.all([
           getAdminStats(),
           getItems(),
-          loadAnalytics(timeRange),
         ]);
 
         if (cancelled) return;
@@ -294,7 +298,32 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    void loadDashboard();
+    void loadBase();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  // 订单分析：随时间范围切换重拉；期间保留旧图，不再整页转圈
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRange = async () => {
+      try {
+        await loadAnalytics(timeRange);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('加载订单分析失败:', error);
+        // 首次加载失败没有旧数据可显示，走整页错误；切换失败则保留旧图并提示
+        if (!analyticsRef.current) {
+          setDashboardError(error instanceof Error ? error.message : '订单分析加载失败');
+        } else {
+          notify('订单分析刷新失败，仍显示上一时间范围的数据', 'error');
+        }
+      }
+    };
+
+    void loadRange();
     return () => {
       cancelled = true;
     };
@@ -334,11 +363,12 @@ const Dashboard: React.FC = () => {
     return { startDate, endDate };
   };
 
-  if (dashboardLoading) {
+  // 首次加载：基础数据或订单分析任一未就绪都显示整页 loading；切换时间范围时 analytics 保留旧值，不进这里
+  if (dashboardLoading || !stats || !analytics) {
     return <PageLoading label="正在汇总经营数据" />;
   }
 
-  if (dashboardError || !stats || !analytics) {
+  if (dashboardError) {
     return (
       <div className="p-4 sm:p-8">
         <div className="section-panel mx-auto max-w-xl border-red-200 bg-red-50 p-5">

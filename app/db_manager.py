@@ -4158,6 +4158,22 @@ class DBManager:
             # 升级失败不阻塞登录，保留旧哈希下次再试
             logger.warning(f"密码哈希升级失败（不影响本次登录）: {username} - {e}")
 
+    def update_username(self, old_username: str, new_username: str) -> bool:
+        """修改用户登录名（users.username 有 UNIQUE 约束，调用前应先查重）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?', (new_username, old_username))
+                self.conn.commit()
+                if cursor.rowcount == 0:
+                    logger.warning(f"修改用户名失败: 未找到用户 {old_username}")
+                    return False
+                logger.info(f"用户名修改成功: {old_username} -> {new_username}")
+                return True
+            except Exception as e:
+                logger.error(f"修改用户名异常: {e}")
+                return False
+
     def update_user_password(self, username: str, new_password: str) -> bool:
         """更新用户密码"""
         with self.lock:

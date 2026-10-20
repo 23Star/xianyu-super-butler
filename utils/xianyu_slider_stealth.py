@@ -577,6 +577,22 @@ class XianyuSliderStealth:
             logger.info(f"【{self.pure_user_id}】创建新页面...")
             existing = self.context.pages
             self.page = existing[0] if existing else self.context.new_page()
+
+            # 页面级 CDP 指纹覆盖（Ydisks 方案）：context 级 user_agent 只改
+            # UA 字符串，navigator.userAgentData 的高熵值仍会泄漏无头特征。
+            # CDP session 必须保持附着（存到实例属性防回收），detach 后会还原。
+            try:
+                from utils.slider_ydisks import apply_page_fingerprint_override
+                self._fingerprint_cdp = apply_page_fingerprint_override(
+                    self.context, self.page)
+                if self._fingerprint_cdp:
+                    logger.info(
+                        f"【{self.pure_user_id}】页面级指纹覆盖已生效"
+                        f"（UA/Client Hints/navigator.userAgentData 三处一致）"
+                    )
+            except Exception as fp_err:
+                self._fingerprint_cdp = None
+                logger.debug(f"【{self.pure_user_id}】指纹覆盖未应用（不影响验证）: {fp_err}")
             
             # 验证页面已创建
             if not self.page:
@@ -857,6 +873,19 @@ class XianyuSliderStealth:
                 )
                 return None
 
+            # 第三道关卡（Ydisks 严格判定）：x5sec 必须是拖动前快照之外的
+            # 全新值。旧值重复说明页面只是带着挑战态 cookie 跳转，平台并未
+            # 真正签发通行凭证，写回账号只会让 token 刷新继续失败。
+            pre_values = getattr(self, '_pre_drag_x5sec_values', None)
+            if pre_values:
+                current_x5sec = (filtered_cookies.get('x5sec') or '').strip()
+                if current_x5sec in pre_values:
+                    logger.error(
+                        f"【{self.pure_user_id}】❌ x5sec 仍是拖动前的旧值，"
+                        f"服务端未签发新通行凭证，判定为未通过"
+                    )
+                    return None
+
             logger.info(
                 f"【{self.pure_user_id}】返回过滤后的x5相关cookie: "
                 f"{list(filtered_cookies.keys())}"
@@ -1057,19 +1086,37 @@ class XianyuSliderStealth:
         )
         return trajectory
     
-    def generate_human_trajectory(self, distance: float):
-        """生成人类化滑动轨迹 - 最小急动度运动模型"""
-        try:
-            logger.info(f"【{self.pure_user_id}】📐 使用拟人运动模型生成轨迹")
-            trajectory = self._generate_physics_trajectory(distance)
+    def generate_human_trajectory(self, distance: float, vertical_span: float = 0.0):
+        """生成人类化滑动轨迹 - Ydisks 生产验证方案（快节奏三段锚点 + 连续事件流）
 
-            logger.debug(f"【{self.pure_user_id}】拟人模式：超调后回拉修正")
+        移植自 Ydisks-Xianyu-Helper 的行为契约：8-12 个三段式锚点
+        （加速/匀速/减速）、4-20px 受控微超调、无回拉无停顿、
+        Y 轴完整正弦、连续微移动间隔 ≤15ms、总时长 550-1050ms。
+        旧的最小急动度方案（2.5-4 秒 + 40-85% 甩出回弹）保留在
+        _generate_physics_trajectory 供对照回退。
+        """
+        try:
+            from utils.slider_ydisks import build_ydisks_trajectory
+            logger.info(f"【{self.pure_user_id}】📐 使用 Ydisks 快节奏轨迹模型")
+            trajectory, target_duration, planned_delay = build_ydisks_trajectory(
+                distance, vertical_span)
+            self.last_trajectory_params = {
+                "model": "ydisks_continuous",
+                "target_duration": target_duration,
+                "planned_delay": planned_delay,
+            }
+            logger.info(
+                f"【{self.pure_user_id}】Ydisks 模式：{len(trajectory)}个连续事件，"
+                f"目标{target_duration:.2f}秒，锚点预算{planned_delay:.2f}秒"
+            )
+
+            logger.debug(f"【{self.pure_user_id}】Ydisks 模式：微超调后直接释放，无回拉")
 
             # 保存轨迹数据（字段需与 _save_success_record 对齐，否则学习态取不到值）
             last_params = self.last_trajectory_params or {}
             self.current_trajectory_data = {
                 "distance": distance,
-                "model": "physics_human",
+                "model": last_params.get("model", "ydisks_continuous"),
                 "total_steps": len(trajectory),
                 "trajectory_points": trajectory.copy(),
                 "base_delay": last_params.get("base_delay", 0),
@@ -1146,6 +1193,18 @@ class XianyuSliderStealth:
                 logger.warning(f"【{self.pure_user_id}】悬停滑块失败: {e}")
             
             # 第三阶段：按下鼠标
+            # 按下前快照当前所有非空 x5sec 值 —— 严格成功判定要求验证后出现
+            # 「快照之外的全新 x5sec」，旧值重复不算通过（Ydisks 方案第三道关卡）。
+            try:
+                from utils.slider_ydisks import x5sec_value_set
+                self._pre_drag_x5sec_values = x5sec_value_set(self.context.cookies())
+                logger.debug(
+                    f"【{self.pure_user_id}】拖动前 x5sec 快照: "
+                    f"{len(self._pre_drag_x5sec_values)}个值"
+                )
+            except Exception as exc:
+                self._pre_drag_x5sec_values = None
+                logger.debug(f"【{self.pure_user_id}】x5sec 快照失败（跳过严格判定）: {exc}")
             try:
                 self.page.mouse.move(start_x, start_y)
                 time.sleep(random.uniform(0.05, 0.15))
@@ -1218,16 +1277,34 @@ class XianyuSliderStealth:
                     logger.warning(f"【{self.pure_user_id}】🎨 刮刮乐模式：在目标位置停顿{pause_duration:.2f}秒观察...")
                     time.sleep(pause_duration)
 
-                # 释放前停顿：人手到位后会先确认再松开，立即释放是脚本特征
-                time.sleep(random.uniform(0.12, 0.28))
+                # 释放前停顿（Ydisks 值：到位后几乎立即松手，快节奏一口气拖完）
+                time.sleep(random.uniform(0.02, 0.05))
                 mark_at = mark("松手前停顿", mark_at)
                 self.page.mouse.up()
                 mark_at = mark("松手", mark_at)
-                time.sleep(random.uniform(0.05, 0.12))
+                time.sleep(random.uniform(0.01, 0.03))
 
-                # 注意：此处不再补发合成 click 事件。
-                # dispatchEvent 造出的事件 isTrusted 为 false，是风控的直接判定依据，
-                # 而 mouse.up() 本身已由 CDP 产生可信的原生事件序列。
+                # Ydisks 方案：松手后在滑块元素上补发一次合成 click。
+                # 此前曾因 isTrusted=false 担心被风控识别而移除，但 Ydisks 在
+                # 生产环境长期保留此步骤未出现问题 —— nc 前端需要这个确认事件，
+                # 缺失时部分场次即使拖动成功也不下发新 x5sec。
+                try:
+                    slider_button.evaluate(
+                        """(slider, point) => {
+                            const event = new MouseEvent('click', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                clientX: point.x,
+                                clientY: point.y,
+                                button: 0,
+                            });
+                            slider.dispatchEvent(event);
+                        }""",
+                        {"x": current_x, "y": current_y},
+                    )
+                except Exception as exc:
+                    logger.debug(f"【{self.pure_user_id}】补发确认 click 失败（不影响验证）: {exc}")
 
                 elapsed_time = time.time() - start_time
                 logger.info(
@@ -2204,7 +2281,21 @@ class XianyuSliderStealth:
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info(f"【{self.pure_user_id}】开始处理滑块验证... (第{attempt}/{max_retries}次尝试)")
-                
+
+                # 页面四分类（Ydisks 方案）：直接错误页（无可见滑块 + 正文含
+                # "验证失败/系统繁忙/请稍后重试"等标记）是失败终态，重试只会
+                # 加重风控，立即终止整个流程。
+                try:
+                    from utils.slider_ydisks import page_is_direct_error
+                    if page_is_direct_error(self.page):
+                        logger.error(
+                            f"【{self.pure_user_id}】❌ 验证页为直接错误页"
+                            f"（无可用滑块），终止重试以避免加重风控"
+                        )
+                        return False
+                except Exception as classify_err:
+                    logger.debug(f"【{self.pure_user_id}】页面分类检查失败（跳过）: {classify_err}")
+
                 # 如果不是第一次尝试，短暂等待后重试
                 if attempt > 1:
                     retry_delay = random.uniform(0.5, 1.0)  # 减少等待时间
@@ -2231,8 +2322,10 @@ class XianyuSliderStealth:
                     logger.error(f"【{self.pure_user_id}】滑动距离计算失败")
                     continue
                 
-                # 3. 生成人类化轨迹
-                trajectory = self.generate_human_trajectory(slide_distance)
+                # 3. 生成人类化轨迹（Ydisks 方案：Y 轴峰峰值取滑轨高度的一半）
+                from utils.slider_ydisks import get_vertical_span
+                vertical_span = get_vertical_span(slider_button, slider_track)
+                trajectory = self.generate_human_trajectory(slide_distance, vertical_span)
                 if not trajectory:
                     logger.error(f"【{self.pure_user_id}】轨迹生成失败")
                     continue
@@ -2279,8 +2372,30 @@ class XianyuSliderStealth:
                     # 🔑 如果不是最后一次尝试，重置滑块后继续
                     if attempt < max_retries:
                         reset_ok = False
-                        # 优先点重试按钮，这是最轻量的重置方式
-                        if retry_element is not None:
+
+                        # Ydisks 恢复状态机：已拖动后绝不 reload（reload 会丢弃
+                        # 平台重新生成的滑块状态并加重风控）。点失败按钮并确认
+                        # 滑块回到轨道起点 ±3px —— 元素重新出现不等于控件可用。
+                        try:
+                            from utils.slider_ydisks import recover_after_failed_drag
+                            recovered, _, _ = recover_after_failed_drag(self.page)
+                            if recovered:
+                                logger.success(
+                                    f"【{self.pure_user_id}】✅ 失败按钮已点击且滑块已归位，直接再拖"
+                                )
+                                time.sleep(random.uniform(1.0, 2.0))
+                                reset_ok = True
+                            else:
+                                logger.info(
+                                    f"【{self.pure_user_id}】未找到失败按钮或滑块未归位"
+                                )
+                        except Exception as recover_err:
+                            logger.debug(
+                                f"【{self.pure_user_id}】Ydisks 恢复流程异常: {recover_err}"
+                            )
+
+                        # 旧路径兜底：已知重试按钮时点它（过渡期保留）
+                        if not reset_ok and retry_element is not None:
                             logger.info(f"【{self.pure_user_id}】检测到重试按钮，点击重置滑块...")
                             if self.click_retry_button(retry_element):
                                 logger.success(f"【{self.pure_user_id}】✅ 已点击重试按钮，滑块已重置")
@@ -2289,10 +2404,8 @@ class XianyuSliderStealth:
                             else:
                                 logger.warning(f"【{self.pure_user_id}】点击重试按钮失败")
 
-                        # 没有重试按钮（或点击无效）时重新加载惩罚页。
-                        # 验证失败后 nc 控件会停在失败态：轨道消失、按钮不可拖，
-                        # 此时直接重试等于在坏掉的控件上空拖 —— 实测第3次成功率 0%。
-                        # 重新导航能拿到一个全新的滑块，让重试真正有意义。
+                        # 最后手段（Ydisks 规范禁止，作为过渡期兜底保留）：
+                        # 两条恢复路径都失败时重新加载惩罚页拿全新滑块。
                         if not reset_ok and self._current_url:
                             try:
                                 logger.info(f"【{self.pure_user_id}】控件已失效，重新加载验证页...")

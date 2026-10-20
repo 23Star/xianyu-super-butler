@@ -202,6 +202,8 @@ class XianyuLive:
     # 类级别的密码登录时间记录，用于防止重复登录
     _last_password_login_time = {}  # {cookie_id: timestamp}
     _password_login_cooldown = 60  # 密码登录冷却时间：60秒
+    _password_login_fail_threshold = 3  # 连续失败达到此次数后进入人工重登终态
+    _relogin_cooldown_seconds = 30 * 60  # 进入人工重登终态后的冷却时间：30分钟
     
     def _safe_str(self, e):
         """安全地将异常转换为字符串"""
@@ -234,6 +236,126 @@ class XianyuLive:
                 logger.success(state_msg)
             else:
                 logger.info(state_msg)
+
+    def _is_relogin_terminal(self) -> bool:
+        """判断账号是否已经进入需要人工重新登录的终态。"""
+        return bool(getattr(self, "needs_relogin", False))
+
+    def _relogin_cooldown_remaining(self) -> float:
+        """返回人工重新登录终态的剩余冷却秒数。"""
+        return max(
+            0.0,
+            float(getattr(self, "relogin_terminal_until", 0.0) or 0.0)
+            - time.time(),
+        )
+
+    def _mark_relogin_required(self, reason: str, terminal: bool = True) -> bool:
+        """标记账号需要人工重新登录，并阻止自动重试风暴。
+
+        Returns:
+            bool: 本次是否第一次进入该终态。
+        """
+        was_marked = self._is_relogin_terminal()
+        self.needs_relogin = True
+        self.relogin_reason = reason or "闲鱼登录态已失效，请重新扫码登录"
+        if terminal:
+            cooldown_until = time.time() + self._relogin_cooldown_seconds
+            self.relogin_terminal_until = max(
+                float(getattr(self, "relogin_terminal_until", 0.0) or 0.0),
+                cooldown_until,
+            )
+        self.last_token_refresh_status = "relogin_required"
+        self._set_connection_state(
+            ConnectionState.FAILED,
+            self.relogin_reason,
+        )
+        if not was_marked:
+            logger.error(
+                f"【{self.cookie_id}】已进入人工重新登录终态："
+                f"{self.relogin_reason}；冷却 {self._relogin_cooldown_seconds // 60:.0f} 分钟"
+            )
+        return not was_marked
+
+    def _clear_relogin_required(self) -> None:
+        """清除人工重新登录终态，允许连接和后台任务恢复。"""
+        was_marked = self._is_relogin_terminal()
+        self.needs_relogin = False
+        self.relogin_reason = ''
+        self.relogin_terminal_until = 0.0
+        self.password_login_failures = 0
+        self._relogin_notification_sent = False
+        self.connection_failures = 0
+        if was_marked:
+            logger.info(f"【{self.cookie_id}】人工登录已完成，清除重新登录终态")
+
+    def _record_password_login_failure(self, reason: str) -> bool:
+        """记录一次自动密码登录失败，达到阈值后进入人工重登终态。"""
+        self.password_login_failures += 1
+        logger.warning(
+            f"【{self.cookie_id}】自动密码登录失败 "
+            f"({self.password_login_failures}/{self._password_login_fail_threshold})：{reason}"
+        )
+        if self.password_login_failures >= self._password_login_fail_threshold:
+            return self._mark_relogin_required(
+                f"自动密码登录连续失败 {self.password_login_failures} 次，"
+                "请重新扫码登录",
+                terminal=True,
+            )
+        return False
+
+    async def _notify_relogin_required(self) -> None:
+        """只发送一次人工重新登录通知，避免重连循环刷屏。"""
+        if getattr(self, "_relogin_notification_sent", False):
+            return
+        self._relogin_notification_sent = True
+        try:
+            await self.send_token_refresh_notification(
+                self.relogin_reason or "闲鱼登录态已失效，请重新扫码登录",
+                "relogin_required",
+            )
+        except Exception as notify_error:
+            logger.warning(
+                f"【{self.cookie_id}】发送重新登录通知失败："
+                f"{self._safe_str(notify_error)}"
+            )
+
+    async def _hold_relogin_terminal(self) -> None:
+        """停在人工重登状态，等待扫码/人工验证成功后恢复。"""
+        if not self._is_relogin_terminal():
+            return
+
+        self._set_connection_state(
+            ConnectionState.FAILED,
+            self.relogin_reason or "等待人工重新登录",
+        )
+        if self.ws:
+            try:
+                if not getattr(self.ws, "closed", False):
+                    await asyncio.wait_for(self.ws.close(), timeout=2.0)
+            except Exception:
+                pass
+            finally:
+                self.ws = None
+
+        # 终态期间不保留心跳、Token/Cookie 刷新及业务同步任务。
+        await self._cancel_background_tasks()
+        last_log_time = 0.0
+        while self._is_relogin_terminal():
+            now = time.time()
+            if now - last_log_time >= 60:
+                remaining = self._relogin_cooldown_remaining()
+                logger.warning(
+                    f"【{self.cookie_id}】等待人工重新登录，"
+                    f"冷却剩余 {remaining:.0f} 秒；请扫码或完成人工验证后恢复"
+                )
+                last_log_time = now
+            await self._interruptible_sleep(5)
+
+        self.connection_failures = 0
+        self._set_connection_state(
+            ConnectionState.DISCONNECTED,
+            "人工登录完成，准备恢复连接",
+        )
 
     async def _interruptible_sleep(self, duration: float):
         """可中断的sleep，将长时间sleep拆分成多个短时间sleep，以便及时响应取消信号

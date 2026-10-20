@@ -37,6 +37,11 @@ export const getPublicSettings = async (): Promise<{
   return get('/system-settings/public');
 };
 
+/** 自助修改登录名（admin 是系统身份，后端会拒绝）。改密码用下方 changePassword。 */
+export const updateUsername = async (newUsername: string, currentPassword: string): Promise<ApiResponse & { username?: string }> => {
+  return put('/profile', { new_username: newUsername, current_password: currentPassword });
+};
+
 export const register = async (data: {
   username: string;
   email: string;
@@ -52,7 +57,14 @@ export const sendVerificationCode = async (
   type: 'register' | 'login' = 'register',
   captcha?: { session_id: string; code: string },
 ): Promise<ApiResponse> => {
-  return post('/send-verification-code', { email, type, ...captcha });
+  // 后端 SendCodeRequest 只认 captcha_session_id/captcha_code；直接展开 captcha 会发成
+  // session_id/code，被 Pydantic 丢弃后注册永远卡在「请先输入图形验证码」
+  return post('/send-verification-code', {
+    email,
+    type,
+    captcha_session_id: captcha?.session_id,
+    captcha_code: captcha?.code,
+  });
 };
 
 /** 拉取图形验证码图片。sessionId 由前端生成，验证时原样带回。 */

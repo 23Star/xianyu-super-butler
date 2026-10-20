@@ -22,7 +22,7 @@ import { EmptyState, PageHeader, SectionHeader } from './ui';
 
 const formatDateTime = (value?: string) => {
   if (!value) return '-';
-  const date = new Date(value.includes('T') ? value : value.replace(' ', 'T'));
+  const date = new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString('zh-CN', {

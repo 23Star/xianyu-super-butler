@@ -196,6 +196,7 @@ const App: React.FC = () => {
                 return;
               }
               setIsAdmin(Boolean(result.is_admin));
+              setUsername(result.username || '');
               setIsLoggedIn(true);
             })
             .catch(() => localStorage.removeItem('auth_token'))
@@ -237,6 +238,7 @@ const App: React.FC = () => {
           if (res.success && res.token) {
               localStorage.setItem('auth_token', res.token);
               setIsAdmin(Boolean(res.is_admin));
+              setUsername(res.username || username);
               setIsLoggedIn(true);
           } else {
               setLoginError(res.message || '账号或密码错误');
@@ -540,6 +542,8 @@ const App: React.FC = () => {
         mobileOpen={mobileMenuOpen}
         onMobileClose={() => setMobileMenuOpen(false)}
         isAdmin={isAdmin}
+        username={isLoggedIn ? username : ''}
+        onUsernameChange={setUsername}
         onLogout={() => {
             localStorage.removeItem('auth_token');
             setIsAdmin(false);
