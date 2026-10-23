@@ -103,7 +103,21 @@ class AIReplyEngine:
         return is_custom_model and is_dashscope_url
 
     def _is_gemini_api(self, settings: dict) -> bool:
-        """判断是否为Gemini API (通过模型名称)"""
+        """判断是否走 Gemini 原生协议（以 base_url 为准，模型名仅作兜底）
+
+        旧实现只看模型名里有没有 "gemini"：配了 OpenAI 兼容中转的用户只要填了
+        gemini 系模型名，就会被切到 Google 官方原生接口，拿中转站的 key 去请求
+        generativelanguage.googleapis.com，必然报错（issue #99）。
+
+        判定规则：
+        - base_url 指向 generativelanguage.googleapis.com → Gemini 原生；
+        - base_url 非空但指向其他域（含内置默认中转地址）→ OpenAI 兼容；
+        - base_url 为空 → 回退旧的模型名判定，避免破坏未填接口地址、
+          直连 Google 官方 API 的存量配置。
+        """
+        base_url = (settings.get('base_url') or '').strip().lower()
+        if base_url:
+            return 'generativelanguage.googleapis.com' in base_url
         model_name = settings.get('model_name', '').lower()
         return 'gemini' in model_name
 

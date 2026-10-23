@@ -220,6 +220,102 @@ class AIReplyEngineTests(unittest.TestCase):
         self.assertTrue(result["api_key_configured"])
 
 
+class GeminiProtocolRoutingTests(unittest.TestCase):
+    """回归 issue #99：协议判定以 base_url 为准，不再按模型名猜测。
+
+    旧实现只看模型名是否含 "gemini"。用户配了 OpenAI 兼容中转（base_url 指向
+    中转站）却填了 gemini 系模型名时，会被切到 Google 官方原生接口，拿中转站
+    的 key 请求 generativelanguage.googleapis.com，测试回复必然报错。
+    """
+
+    def setUp(self):
+        self.engine = AIReplyEngine()
+
+    def test_relay_base_url_with_gemini_model_uses_openai_protocol(self):
+        """issue #99 的原始场景：gemini 模型名 + 中转地址必须走 OpenAI 兼容。"""
+        settings = {
+            "model_name": "gemini-2.0-flash",
+            "api_key": "relay-key",
+            "base_url": "https://relay.example.com/v1",
+        }
+        self.assertFalse(self.engine._is_gemini_api(settings))
+
+    def test_default_relay_base_url_is_treated_as_openai_protocol(self):
+        """内置默认地址（作者中转站）也是 OpenAI 兼容，不能因模型名误判。"""
+        settings = {
+            "model_name": "gemini-2.5-pro",
+            "api_key": "relay-key",
+            "base_url": "https://ai.corleom.com/v1",
+        }
+        self.assertFalse(self.engine._is_gemini_api(settings))
+
+    def test_google_base_url_uses_gemini_native_protocol(self):
+        """base_url 指向 Google 官方域 → 走 Gemini 原生协议。"""
+        settings = {
+            "model_name": "gemini-2.0-flash",
+            "api_key": "google-key",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        }
+        self.assertTrue(self.engine._is_gemini_api(settings))
+
+    def test_empty_base_url_falls_back_to_model_name(self):
+        """base_url 为空时保留旧的模型名判定，直连 Google 的存量配置不受影响。"""
+        self.assertTrue(self.engine._is_gemini_api({
+            "model_name": "gemini-2.0-flash",
+            "api_key": "k",
+            "base_url": "",
+        }))
+        self.assertFalse(self.engine._is_gemini_api({
+            "model_name": "gpt-4o-mini",
+            "api_key": "k",
+            "base_url": "",
+        }))
+
+    def test_dispatch_routes_relay_gemini_to_openai_client(self):
+        """端到端路由：中转地址 + gemini 模型名必须走 OpenAI 兼容调用。"""
+        settings = {
+            "model_name": "gemini-2.0-flash",
+            "api_key": "relay-key",
+            "base_url": "https://relay.example.com/v1",
+        }
+        with (
+            patch.object(self.engine, "_is_dashscope_api", return_value=False),
+            patch.object(
+                self.engine, "_create_openai_client", return_value=Mock(),
+            ) as create_client,
+            patch.object(
+                self.engine, "_call_openai_api", return_value="有货哦",
+            ) as call_openai,
+            patch.object(self.engine, "_call_gemini_api") as call_gemini,
+        ):
+            reply = self.engine._dispatch_api_call(settings, [], "account-1", 2000)
+
+        self.assertEqual(reply, "有货哦")
+        call_gemini.assert_not_called()
+        call_openai.assert_called_once()
+        create_client.assert_called_once_with("account-1")
+
+    def test_dispatch_routes_google_base_url_to_gemini_native(self):
+        """端到端路由：Google 官方地址走 Gemini 原生调用。"""
+        settings = {
+            "model_name": "gemini-2.0-flash",
+            "api_key": "google-key",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        }
+        with (
+            patch.object(self.engine, "_is_dashscope_api", return_value=False),
+            patch.object(
+                self.engine, "_call_gemini_api", return_value="有货哦",
+            ) as call_gemini,
+            patch.object(self.engine, "_create_openai_client") as create_client,
+        ):
+            reply = self.engine._dispatch_api_call(settings, [], "account-1", 2000)
+
+        self.assertEqual(reply, "有货哦")
+        call_gemini.assert_called_once()
+        create_client.assert_not_called()
+
+
 class AIReplyAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_wrapper_runs_sync_generation_off_event_loop(self):
         def slow_reply(*_args):
