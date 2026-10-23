@@ -4495,12 +4495,26 @@ class DBManager:
         """使用SMTP方式发送邮件；raise_errors=True 时不吞异常，供调用方翻译成用户可读的原因"""
         try:
             import smtplib
+            from email.header import Header
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
+            from email.utils import formataddr, parseaddr
 
             msg = MIMEMultipart()
             msg['Subject'] = subject
-            msg['From'] = smtp_from
+            # 「发件人显示名」可能是纯显示名、“显示名 <地址>”或纯地址三种写法。
+            # 注意 parseaddr 对纯文本（如纯中文显示名）会把整串误当“地址”返回，
+            # 因此解析结果必须含 @ 才视为合法地址，否则当作纯显示名处理，
+            # From 地址回退到发件邮箱 smtp_user
+            display_name, from_addr = parseaddr(smtp_from)
+            if not from_addr or '@' not in from_addr:
+                display_name, from_addr = smtp_from, smtp_user
+            # 中文等非 ASCII 显示名必须先按 RFC 2047 编码再拼入 From 头：
+            # 裸拼非 ASCII 会被序列化成不含地址的编码词（或把地址整个裹进编码词），
+            # QQ 邮箱等校验严格的收件方会以 550 拒收（issue #92）
+            if display_name and not display_name.isascii():
+                display_name = str(Header(display_name, 'utf-8'))
+            msg['From'] = formataddr((display_name, from_addr))
             msg['To'] = email
 
             msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
@@ -4551,10 +4565,34 @@ class DBManager:
             return ok, f"测试邮件已发送至 {email_to}，请查收（记得看一眼垃圾箱）"
         except smtplib.SMTPAuthenticationError:
             return False, "SMTP 认证失败：请核对发件邮箱与密码/授权码（QQ 邮箱等须用授权码，不是登录密码）"
+        except smtplib.SMTPException as exc:
+            # 注意顺序：smtplib.SMTPException 同时是 OSError 的子类，必须放在
+            # OSError 分支之前，否则 550 等“服务器已应答并拒信”会被误报成
+            # “无法连接”（issue #92）。这里回显 SMTP 状态码与服务器原始错误文本，
+            # 让用户能区分“服务端拒收”与“本地连不上”
+            return False, f"SMTP 服务器返回错误：{self._smtp_error_detail(exc)}"
         except (TimeoutError, ConnectionError, OSError):
             return False, f"无法连接 {smtp_server}:{smtp_port}：请核对服务器地址和端口是否正确、端口是否被防火墙拦截"
-        except smtplib.SMTPException as exc:
-            return False, f"SMTP 服务器返回错误：{exc}"
+
+    @staticmethod
+    def _smtp_error_detail(exc: Exception) -> str:
+        """提取 SMTP 状态码与服务器原始错误文本（如 550 xxx）；取不到时退化为 str(exc)。"""
+        # 收件人全部被拒时，smtplib 把各收件人的 (状态码, 错误文本) 存在 recipients 字典里
+        recipients = getattr(exc, 'recipients', None)
+        if recipients:
+            parts = []
+            for addr, (code, err) in recipients.items():
+                if isinstance(err, bytes):
+                    err = err.decode('utf-8', 'replace').strip()
+                parts.append(f"{addr}: {code} {err}")
+            return '; '.join(parts)
+        code = getattr(exc, 'smtp_code', None)
+        err = getattr(exc, 'smtp_error', None)
+        if isinstance(err, bytes):
+            err = err.decode('utf-8', 'replace').strip()
+        if code is not None and err:
+            return f"{code} {err}"
+        return str(exc)
 
     @staticmethod
     def _serialize_delivery_template_images(images):

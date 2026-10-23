@@ -66,9 +66,15 @@ class NotificationProviderRejected(NotificationSendError):
     code = "notification_provider_rejected"
     category = "provider_rejected"
 
-    def __init__(self, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int | None = None,
+        *,
+        message: str | None = None,
+    ) -> None:
+        # message 用于非 HTTP 场景（如 SMTP 状态码拒绝）传入准确文案
         suffix = f"（HTTP {status_code}）" if status_code else ""
-        super().__init__(f"第三方通知服务拒绝了请求{suffix}", status_code=status_code)
+        super().__init__(message or f"第三方通知服务拒绝了请求{suffix}", status_code=status_code)
 
 
 class NotificationNetworkError(NotificationSendError):
@@ -100,6 +106,26 @@ def _safe_url(url: Any) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise NotificationChannelConfigError("通知渠道地址必须使用 HTTP 或 HTTPS")
     return value
+
+
+def _smtp_error_detail(exc: Exception) -> str:
+    """提取 SMTP 状态码与服务器原始错误文本（如 550 xxx）；取不到时退化为 str(exc)。"""
+    # 收件人全部被拒时，smtplib 把各收件人的 (状态码, 错误文本) 存在 recipients 字典里
+    recipients = getattr(exc, "recipients", None)
+    if recipients:
+        parts = []
+        for addr, (code, err) in recipients.items():
+            if isinstance(err, bytes):
+                err = err.decode("utf-8", "replace").strip()
+            parts.append(f"{addr}: {code} {err}")
+        return "; ".join(parts)
+    code = getattr(exc, "smtp_code", None)
+    err = getattr(exc, "smtp_error", None)
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace").strip()
+    if code is not None and err:
+        return f"{code} {err}"
+    return str(exc)
 
 
 def _with_query(url: str, values: Mapping[str, Any]) -> str:
@@ -310,6 +336,15 @@ class NotificationSender:
             raise NotificationSendTimeout() from exc
         except smtplib.SMTPAuthenticationError as exc:
             raise NotificationProviderRejected() from exc
+        except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused) as exc:
+            # SMTP 服务器已应答但拒绝（典型如 550 拒信、收件人被拒）属于服务端
+            # 拒绝而非网络故障；沿用 OSError 兜底会被归成网络错误，误导用户去查
+            # 网络/防火墙（issue #92 同类问题）。必须放在 OSError 分支之前：
+            # smtplib.SMTPException 同时是 OSError 的子类
+            raise NotificationProviderRejected(
+                getattr(exc, "smtp_code", None),
+                message=f"SMTP 服务器拒绝了邮件（{_smtp_error_detail(exc)}）",
+            ) from exc
         except (smtplib.SMTPException, OSError) as exc:
             raise NotificationNetworkError() from exc
         return NotificationSendReceipt("email", None)
