@@ -685,16 +685,16 @@ const Settings: React.FC = () => {
 
             <label>
               <span className="field-label">默认模型</span>
-              <select
+              <input
+                type="text"
                 value={settings.ai_model || 'qwen-plus'}
                 onChange={(event) => setSettings({ ...settings, ai_model: event.target.value })}
-                className="ios-input w-full rounded-md px-3 py-2.5"
-              >
-                <option value="qwen-plus">通义千问 Plus</option>
-                <option value="qwen-turbo">通义千问 Turbo</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                <option value="gpt-4">GPT-4</option>
-              </select>
+                className="ios-input w-full rounded-md px-3 py-2.5 text-sm"
+                placeholder="qwen-plus"
+              />
+              <span className="mt-1 block text-xs text-gray-500">
+                填写服务商提供的模型名称，支持自定义模型。
+              </span>
             </label>
 
             <label className="lg:col-span-2">
