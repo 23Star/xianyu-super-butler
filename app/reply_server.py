@@ -4036,6 +4036,14 @@ def list_auto_reply_logs(
 
 # ------------------------- 系统设置接口 -------------------------
 
+# 普通用户可见的业务设置白名单（买家互动模板、兜底间隔等）。
+# GET/PUT 共用这一份：读得到的键也要写得了，否则买家互动页保存设置会 403。
+USER_VISIBLE_SETTINGS_KEYS = {
+    'auto_rate_template', 'auto_thanks_template',
+    'auto_rate_enabled', 'auto_flower_enabled', 'auto_receive_flower_enabled',
+    'buyer_interaction_interval',
+}
+
 @app.get('/system-settings/public')
 def get_public_system_settings():
     """获取公开的系统设置（无需认证）"""
@@ -4073,19 +4081,13 @@ def get_system_settings(current_user: Dict[str, Any] = Depends(require_auth)):
     系统级设置不属于他们，也不应让其感知键名。
     """
     from app.db_manager import db_manager
-    # 普通用户可见的业务设置白名单（买家互动模板等）
-    USER_VISIBLE_KEYS = {
-        'auto_rate_template', 'auto_thanks_template',
-        'auto_rate_enabled', 'auto_flower_enabled', 'auto_receive_flower_enabled',
-        'buyer_interaction_interval',
-    }
     try:
         settings = db_manager.get_all_system_settings()
         # 移除敏感信息
         if 'admin_password_hash' in settings:
             del settings['admin_password_hash']
         if current_user['username'] != ADMIN_USERNAME:
-            settings = {k: v for k, v in settings.items() if k in USER_VISIBLE_KEYS}
+            settings = {k: v for k, v in settings.items() if k in USER_VISIBLE_SETTINGS_KEYS}
         return settings
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4093,13 +4095,21 @@ def get_system_settings(current_user: Dict[str, Any] = Depends(require_auth)):
 
 @app.put('/system-settings/{key}')
 def update_system_setting(key: str, setting_data: SystemSettingIn,
-                          _: Dict[str, Any] = Depends(require_admin)):
-    """更新系统设置"""
+                          current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新系统设置。
+
+    买家互动页的模板和兜底间隔走这里保存，普通用户也要能写；
+    与 GET 一致，只放行业务白名单内的键，系统级键仍要求管理员。
+    """
     from app.db_manager import db_manager
     try:
         # 禁止直接修改密码哈希
         if key == 'admin_password_hash':
             raise HTTPException(status_code=400, detail='请使用密码修改接口')
+
+        # 普通用户只能改业务白名单内的键，与 GET 的可见范围保持一致
+        if current_user['username'] != ADMIN_USERNAME and key not in USER_VISIBLE_SETTINGS_KEYS:
+            raise HTTPException(status_code=403, detail='需要管理员权限')
 
         success = db_manager.set_system_setting(key, setting_data.value, setting_data.description)
         if success:
