@@ -341,6 +341,7 @@ class ProductVariantDeliveryTests(unittest.TestCase):
         self.assertIsNone(consumed)
         cursor.execute("SELECT data_content FROM cards WHERE id = ?", (card_id,))
         self.assertEqual("CODE-1\nCODE-2", cursor.fetchone()[0])
+        self.assertEqual(0, self.manager.get_card_shipments(user_id=1)["total"])
 
     def test_batch_inventory_consumes_exact_quantity_in_one_update(self):
         cursor = self.manager.conn.cursor()
@@ -358,6 +359,68 @@ class ProductVariantDeliveryTests(unittest.TestCase):
         self.assertEqual(["CODE-1", "CODE-2"], consumed)
         cursor.execute("SELECT data_content FROM cards WHERE id = ?", (card_id,))
         self.assertEqual("CODE-3", cursor.fetchone()[0])
+
+    def test_batch_consumption_records_shipments_with_order_context(self):
+        cursor = self.manager.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO cards (name, type, data_content, enabled, user_id)
+            VALUES ('batch', 'data', 'CODE-1\nCODE-2\nCODE-3', 1, 1)
+            """
+        )
+        card_id = cursor.lastrowid
+        self.manager.conn.commit()
+
+        consumed = self.manager.consume_batch_data_batch(
+            card_id,
+            2,
+            order_id="ORDER-1",
+            item_id="item-1",
+            buyer_id="buyer-1",
+            cookie_id="seller-1",
+        )
+
+        self.assertEqual(["CODE-1", "CODE-2"], consumed)
+        result = self.manager.get_card_shipments(user_id=1)
+        self.assertEqual(2, result["total"])
+        # 最新的记录排在最前
+        self.assertEqual(["CODE-2", "CODE-1"], [item["content"] for item in result["shipments"]])
+        newest = result["shipments"][0]
+        self.assertEqual(card_id, newest["card_id"])
+        self.assertEqual("batch", newest["card_name"])
+        self.assertEqual("ORDER-1", newest["order_id"])
+        self.assertEqual("item-1", newest["item_id"])
+        self.assertEqual("buyer-1", newest["buyer_id"])
+        self.assertEqual("seller-1", newest["cookie_id"])
+
+    def test_card_shipments_are_scoped_by_user_and_clearable(self):
+        cursor = self.manager.conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO cards (name, type, data_content, enabled, user_id)
+            VALUES ('batch-a', 'data', 'A-1', 1, 1)
+            """
+        )
+        card_a = cursor.lastrowid
+        cursor.execute(
+            """
+            INSERT INTO cards (name, type, data_content, enabled, user_id)
+            VALUES ('batch-b', 'data', 'B-1', 1, 2)
+            """
+        )
+        card_b = cursor.lastrowid
+        self.manager.conn.commit()
+
+        self.manager.consume_batch_data(card_a)
+        self.manager.consume_batch_data(card_b)
+
+        self.assertEqual(1, self.manager.get_card_shipments(user_id=1)["total"])
+        self.assertEqual("A-1", self.manager.get_card_shipments(user_id=1)["shipments"][0]["content"])
+        self.assertEqual(1, self.manager.get_card_shipments(user_id=2)["total"])
+
+        self.assertEqual(1, self.manager.clear_card_shipments(user_id=1))
+        self.assertEqual(0, self.manager.get_card_shipments(user_id=1)["total"])
+        self.assertEqual(1, self.manager.get_card_shipments(user_id=2)["total"])
 
     def test_delivery_flow_does_not_partially_consume_batch_inventory(self):
         from XianyuAutoAsync import XianyuLive

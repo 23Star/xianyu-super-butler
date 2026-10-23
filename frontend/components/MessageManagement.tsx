@@ -46,7 +46,7 @@ import {
   toggleMessageFilter,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { EmptyState, SectionHeader } from './ui';
+import { EmptyState, Popover, SectionHeader } from './ui';
 
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
@@ -850,6 +850,17 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                               <span className="whitespace-pre-wrap break-words">{message.text}</span>
                             </div>
                           </div>
+                        ) : message.type === 'card' ? (
+                          <div className="flex justify-center">
+                            <div className="max-w-[76%] rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-center shadow-[var(--shadow-sm)]">
+                              <p className="text-[10px] font-bold tracking-[0.15em] text-[var(--text-soft)]">
+                                官方卡片
+                              </p>
+                              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text)]">
+                                {message.text}
+                              </p>
+                            </div>
+                          </div>
                         ) : (
                           <div className={`flex items-start gap-2.5 ${message.isSelf ? 'justify-end' : ''}`}>
                             {!message.isSelf && renderAvatar(
@@ -919,41 +930,43 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     event.target.value = '';
                   }}
                 />
-                <div className="relative">
-                  <button
-                    type="button"
-                    title="快捷短语"
-                    onClick={() => setShowPhrases(value => !value)}
-                    className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
-                  >
-                    <Zap className="h-5 w-5" />
-                  </button>
-                  {showPhrases && (
-                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg">
-                      {quickPhrases.length === 0 ? (
-                        <p className="px-2 py-3 text-xs text-gray-500">
-                          还没有快捷短语，可在「设置」中添加。
-                        </p>
-                      ) : (
-                        quickPhrases.map(phrase => (
-                          <button
-                            key={phrase.id}
-                            type="button"
-                            onClick={() => insertPhrase(phrase)}
-                            className="block w-full rounded-md px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
-                          >
-                            <span className="block text-xs font-semibold text-[var(--text)]">
-                              [{phrase.category}] {phrase.title}
-                            </span>
-                            <span className="mt-0.5 block truncate text-xs text-gray-500">
-                              {phrase.content}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
+                <Popover
+                  open={showPhrases}
+                  onClose={() => setShowPhrases(false)}
+                  placement="top"
+                  trigger={
+                    <button
+                      type="button"
+                      title="快捷短语"
+                      onClick={() => setShowPhrases(value => !value)}
+                      className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
+                    >
+                      <Zap className="h-5 w-5" />
+                    </button>
+                  }
+                >
+                  {quickPhrases.length === 0 ? (
+                    <p className="px-2 py-3 text-xs text-gray-500">
+                      还没有快捷短语，可在「设置」中添加。
+                    </p>
+                  ) : (
+                    quickPhrases.map(phrase => (
+                      <button
+                        key={phrase.id}
+                        type="button"
+                        onClick={() => insertPhrase(phrase)}
+                        className="block w-full rounded-md px-2 py-2 text-left hover:bg-[var(--surface-hover)]"
+                      >
+                        <span className="block text-xs font-semibold text-[var(--text)]">
+                          [{phrase.category}] {phrase.title}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-gray-500">
+                          {phrase.content}
+                        </span>
+                      </button>
+                    ))
                   )}
-                </div>
+                </Popover>
               </div>
               {pendingImages.length > 0 && (
                 <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--surface-strong)] p-2">

@@ -6428,8 +6428,18 @@ class XianyuLive:
                         delivery_content = None
 
                 if delivery_content:
-                    # 处理备注信息和变量替换
-                    final_content = self._process_delivery_content_with_description(delivery_content, rule.get('card_description', ''))
+                    # 发货文案模板优先生效，未启用时回退到备注变量替换
+                    final_content = self._render_delivery_payload(
+                        delivery_content,
+                        rule,
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=send_user_id,
+                        item_title=item_title,
+                        spec_name=spec_name,
+                        spec_value=spec_value,
+                        quantity=requested_item_quantity,
+                    )
 
                     # 增加对应规则或商品规格绑定的发货次数统计。
                     if rule.get("rule_kind") == "variant_binding":
@@ -6453,6 +6463,44 @@ class XianyuLive:
             return None
 
 
+
+    def _render_delivery_payload(
+        self,
+        delivery_content: str,
+        rule: dict,
+        *,
+        order_id: str = None,
+        item_id: str = None,
+        buyer_id: str = None,
+        item_title: str = None,
+        spec_name: str = None,
+        spec_value: str = None,
+        quantity: int = None,
+    ) -> str:
+        """启用发货文案模板时按模板渲染，否则回退到备注变量替换。"""
+        if delivery_content.startswith("__IMAGE_SEND__"):
+            # 图片卡密本身是序列化协议串，套模板会破坏协议。
+            return delivery_content
+        try:
+            from app.delivery_template import build_card_delivery_payload, is_template_enabled
+
+            if is_template_enabled(rule):
+                return build_card_delivery_payload(
+                    rule,
+                    delivery_content,
+                    order_id=order_id,
+                    item_id=item_id,
+                    buyer_id=buyer_id,
+                    item_title=item_title,
+                    spec_name=spec_name,
+                    spec_value=spec_value,
+                    quantity=quantity,
+                )
+        except Exception as e:
+            logger.warning(f"发货文案模板渲染失败，回退默认内容: {self._safe_str(e)}")
+        return self._process_delivery_content_with_description(
+            delivery_content, rule.get('card_description', '')
+        )
 
     def _process_delivery_content_with_description(self, delivery_content: str, card_description: str) -> str:
         """处理发货内容和备注信息，实现变量替换"""
@@ -9728,6 +9776,12 @@ class XianyuLive:
             "source_message": send_message,
         }
         try:
+            from utils.message_utils import is_official_card_message
+
+            if is_official_card_message(message_data):
+                # 官方卡片只承载平台状态（评价/收货通知等），不进入任何回复链路
+                logger.debug(f"跳过官方卡片消息，不生成回复: chat_id={chat_id}, item_id={item_id}")
+                return
 
             from app.db_manager import db_manager
             matched_filter = db_manager.matches_message_filter(
@@ -10394,6 +10448,21 @@ class XianyuLive:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
+            # 买家赠送小红花的系统卡片通常会带订单号；收到后立即尝试收花。
+            if '收到小红花' in str(send_message):
+                import re
+                flower_order = next((m for m in re.findall(r'\d{6,24}', str(send_message))), None)
+                if flower_order:
+                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+                    if interaction.get('auto_receive_flower_enabled'):
+                        try:
+                            from utils.xianyu_seller_api import XianyuSellerAPI
+                            flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+                            await flower_api.receive_flower(flower_order)
+                            await flower_api.close()
+                            logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花')
+                        except Exception as exc:
+                            logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
             if self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
                 await self._handle_auto_delivery(

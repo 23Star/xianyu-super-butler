@@ -1,5 +1,5 @@
 import asyncio
-import websockets
+from websockets.legacy.client import WebSocketClientProtocol, connect
 from typing import Optional, Dict, Any, Callable
 from loguru import logger
 
@@ -9,14 +9,14 @@ class WebSocketClient:
         self.url = url
         self.headers = headers
         self.on_message = on_message
-        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self.websocket: Optional[WebSocketClientProtocol] = None
         self.is_connected = False
         self.reconnect_delay = 5  # 重连延迟，单位秒
         
     async def connect(self):
         """建立WebSocket连接"""
         try:
-            self.websocket = await websockets.connect(
+            self.websocket = await connect(
                 self.url,
                 extra_headers=self.headers,
                 ping_interval=None,
@@ -86,4 +86,4 @@ class WebSocketClient:
             except Exception as e:
                 logger.error(f"消息处理失败: {e}")
                 await self.disconnect()
-                await self.reconnect() 
+                await self.reconnect()
