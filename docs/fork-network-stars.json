@@ -1,14 +1,14 @@
 {
   "repository": "23Star/xianyu-super-butler",
-  "main_stars": 1339,
+  "main_stars": 1340,
   "fork_count": 805,
   "starred_fork_count": 20,
-  "fork_stars": 2357,
-  "total_stars": 3696,
+  "fork_stars": 2359,
+  "total_stars": 3699,
   "top_forks": [
     {
       "repository": "Mxucc/xianyu-super-butler",
-      "stars": 2336,
+      "stars": 2338,
       "url": "https://github.com/Mxucc/xianyu-super-butler"
     },
     {
@@ -32,5 +32,5 @@
       "url": "https://github.com/Davyricardo/xianyu-super-butler"
     }
   ],
-  "updated_at": "2026-10-24 04:44"
+  "updated_at": "2026-10-24 11:12"
 }
