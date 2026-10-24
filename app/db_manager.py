@@ -809,6 +809,9 @@ class DBManager:
                 )
             ''')
 
+            # item_replay 历史数据去重并加 (cookie_id, item_id) 唯一索引
+            self._migrate_item_reply_unique_index(cursor)
+
             # 创建默认回复记录表（记录已回复的chat_id）
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS default_reply_records (
@@ -7673,34 +7676,40 @@ class DBManager:
         except Exception as e:
             logger.error(f"升级keywords表失败: {e}")
             raise
-    def get_item_replay(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """
-        根据商品ID获取商品回复信息，并返回统一格式
+    def _migrate_item_reply_unique_index(self, cursor):
+        """给 item_replay 表补上 (cookie_id, item_id) 唯一索引。
 
-        Args:
-            item_id (str): 商品ID
-
-        Returns:
-            Optional[Dict[str, Any]]: 商品回复信息字典（统一格式），找不到返回 None
+        历史版本的 update_item_reply 是先 UPDATE 后 INSERT，并发时同一
+        (cookie_id, item_id) 会插入多行；而读取走 fetchone 且无排序，取到哪一行
+        完全不确定，表现为商品回复时灵时不灵。迁移时先按 (cookie_id, item_id)
+        去重（保留 id 最大的一条，即最近写入的），再建唯一索引，之后写入统一走
+        ON CONFLICT upsert。
         """
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_item_replay_unique'"
+        )
+        if cursor.fetchone():
+            return
+
+        logger.info("开始迁移item_replay表唯一索引...")
+        self._execute_sql(
+            cursor,
+            '''
+            DELETE FROM item_replay
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM item_replay
+                GROUP BY cookie_id, item_id
+            )
+            ''',
+        )
         try:
-            with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute('''
-                    SELECT reply_content FROM item_replay
-                    WHERE item_id = ?
-                ''', (item_id,))
-
-                row = cursor.fetchone()
-                if row:
-                    (reply_content,) = row
-                    return {
-                        'reply_content': reply_content or ''
-                    }
-                return None
-        except Exception as e:
-            logger.error(f"获取商品回复失败: {e}")
-            return None
+            self._execute_sql(
+                cursor,
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_item_replay_unique "
+                "ON item_replay(cookie_id, item_id)",
+            )
+        except sqlite3.OperationalError as e:
+            logger.warning(f"创建item_replay唯一索引失败（可能存在历史重复数据）: {e}")
 
     def get_item_reply(self, cookie_id: str, item_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -7749,18 +7758,16 @@ class DBManager:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
+                # 依赖 (cookie_id, item_id) 唯一索引做原子 upsert。
+                # 原先的先 UPDATE 后 INSERT 在并发下会插入重复行，且读取时
+                # fetchone 无排序，结果不确定
                 cursor.execute('''
-                    UPDATE item_replay
-                    SET reply_content = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE cookie_id = ? AND item_id = ?
-                ''', (reply_content, cookie_id, item_id))
-
-                if cursor.rowcount == 0:
-                    # 如果没更新到，说明该条记录不存在，可以考虑插入
-                    cursor.execute('''
-                        INSERT INTO item_replay (item_id, cookie_id, reply_content, created_at, updated_at)
-                        VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ''', (item_id, cookie_id, reply_content))
+                    INSERT INTO item_replay (item_id, cookie_id, reply_content, created_at, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(cookie_id, item_id) DO UPDATE SET
+                        reply_content = excluded.reply_content,
+                        updated_at = CURRENT_TIMESTAMP
+                ''', (item_id, cookie_id, reply_content))
 
                 self.conn.commit()
             return True
@@ -7783,9 +7790,9 @@ class DBManager:
                 cursor.execute('''
                 SELECT r.item_id, r.cookie_id, r.reply_content, r.created_at, r.updated_at, i.item_title, i.item_detail
                     FROM item_replay r
-                    LEFT JOIN item_info i ON i.item_id = r.item_id
+                    LEFT JOIN item_info i ON i.item_id = r.item_id AND i.cookie_id = r.cookie_id
                     WHERE r.cookie_id = ?
-                    ORDER BY r.updated_at DESC
+                    ORDER BY r.updated_at DESC, r.id DESC
                 ''', (cookie_id,))
 
                 columns = [description[0] for description in cursor.description]

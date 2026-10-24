@@ -877,6 +877,8 @@ export const getReplyRules = async (cookieId?: string): Promise<ReplyRule[]> => 
         id: String(index),
         keyword: item.keyword || '',
         reply_content: item.reply || '',
+        // 透传商品绑定，编辑时据此保留 item_id，UI 也能看到已绑定商品
+        item_id: item.item_id || '',
         match_type: 'exact' as const,
         enabled: true
     }));
@@ -891,10 +893,13 @@ export const updateReplyRule = async (rule: Partial<ReplyRule>, cookieId: string
     if (rule.id) {
         const index = parseInt(rule.id);
         if (index >= 0 && index < keywords.length) {
+            // 编辑时保留原记录的 item_id（后端按 keyword+item_id 做唯一键），
+            // 否则商品专属关键词会被静默改成通用关键词；type/image_url 一并保留
             keywords[index] = {
+                ...keywords[index],
                 keyword: rule.keyword,
                 reply: rule.reply_content,
-                item_id: ''
+                item_id: rule.item_id ?? keywords[index].item_id ?? ''
             };
         }
     } else {

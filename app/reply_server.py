@@ -7523,6 +7523,8 @@ def get_items_by_cookie(cookie_id: str, current_user: Dict[str, Any] = Depends(g
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取商品信息失败: {str(e)}")
 
+ITEM_REPLY_CONTENT_MAX_LENGTH = 2000
+
 @app.put("/item-reply/{cookie_id}/{item_id}")
 def update_item_reply(
     cookie_id: str,
@@ -7542,11 +7544,27 @@ def update_item_reply(
         if cookie_id not in user_cookies:
             raise HTTPException(status_code=403, detail="无权限访问该Cookie")
 
-        reply_content = data.get("reply_content", "").strip()
+        raw_reply_content = data.get("reply_content")
+        if not isinstance(raw_reply_content, str):
+            raise HTTPException(status_code=400, detail="回复内容必须是字符串")
+
+        reply_content = raw_reply_content.strip()
         if not reply_content:
             raise HTTPException(status_code=400, detail="回复内容不能为空")
 
-        db_manager.update_item_reply(cookie_id=cookie_id, item_id=item_id, reply_content=reply_content)
+        if len(reply_content) > ITEM_REPLY_CONTENT_MAX_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"回复内容不能超过 {ITEM_REPLY_CONTENT_MAX_LENGTH} 个字符"
+            )
+
+        # 验证商品确实属于该账号，避免给别人的商品配回复
+        if db_manager.get_item_info(cookie_id, item_id) is None:
+            raise HTTPException(status_code=404, detail="商品不存在或不属于该账号")
+
+        success = db_manager.update_item_reply(cookie_id=cookie_id, item_id=item_id, reply_content=reply_content)
+        if not success:
+            raise HTTPException(status_code=500, detail="商品回复更新失败")
 
         return {"message": "商品回复更新成功"}
 

@@ -142,6 +142,18 @@ except Exception as e:
     print(f"{_WARN} 数据库迁移检查失败: {e}")
     # 继续启动，因为可能是首次运行
 
+# ==================== Chromium 布局目录解析 ====================
+# 新版 Playwright（1.53+，Windows x64 构建）把 Chromium 装在 chromium-*/chrome-win64/，
+# 旧版装在 chromium-*/chrome-win/。滑块回退与打包提取都依赖这个解析，
+# 两种布局都要认，否则新版装了浏览器也会被误判为「没装」。
+def _resolve_chrome_win_dir(chromium_dir: Path) -> Path:
+    # 返回 Chromium 可执行文件所在的布局目录（chrome-win64 或 chrome-win）
+    for layout in ('chrome-win64', 'chrome-win'):
+        layout_dir = chromium_dir / layout
+        if layout_dir.is_dir():
+            return layout_dir
+    return chromium_dir / 'chrome-win'
+
 # ==================== 检查并安装Playwright浏览器 ====================
 def _check_and_install_playwright():
     """检查Playwright浏览器是否存在，如果不存在则自动安装"""
@@ -175,7 +187,7 @@ def _check_and_install_playwright():
             chromium_dirs = list(playwright_dir.glob('chromium-*'))
             if chromium_dirs:
                 chromium_dir = chromium_dirs[0]
-                chrome_exe = chromium_dir / 'chrome-win' / 'chrome.exe'
+                chrome_exe = _resolve_chrome_win_dir(chromium_dir) / 'chrome.exe'
                 if chrome_exe.exists() and chrome_exe.stat().st_size > 0:
                     print(f"{_OK} 找到已提取的Playwright浏览器: {chrome_exe}")
                     print(f"{_INFO} 浏览器版本: {chromium_dir.name}")
@@ -219,8 +231,10 @@ def _check_and_install_playwright():
         possible_paths.append(Path.home() / '.cache' / 'ms-playwright')
 
     # 各平台的浏览器可执行文件相对路径。
-    # 新版 Playwright 在 macOS 上改用 Chrome for Testing，旧版是 Chromium。
+    # 新版 Playwright 在 macOS 上改用 Chrome for Testing，旧版是 Chromium；
+    # Windows 上新版（1.53+）装在 chrome-win64/，旧版在 chrome-win/，两种都认。
     browser_exe_candidates = (
+        Path('chrome-win64') / 'chrome.exe',
         Path('chrome-win') / 'chrome.exe',
         Path('chrome-mac') / 'Chromium.app' / 'Contents' / 'MacOS' / 'Chromium',
         Path('chrome-mac-arm64') / 'Chromium.app' / 'Contents' / 'MacOS' / 'Chromium',
@@ -285,7 +299,7 @@ def _check_and_install_playwright():
                         extracted_count = 0
                         
                         for temp_chromium_dir in temp_chromium_dirs:
-                            temp_chrome_win = temp_chromium_dir / 'chrome-win'
+                            temp_chrome_win = _resolve_chrome_win_dir(temp_chromium_dir)
                             
                             # 检查完整版或 headless_shell 版
                             temp_chrome_exe = temp_chrome_win / 'chrome.exe'
@@ -307,9 +321,9 @@ def _check_and_install_playwright():
                                         
                                         # 验证提取的文件
                                         if temp_chromium_dir.name.startswith('chromium_headless_shell'):
-                                            target_exe = target_chromium_dir / 'chrome-win' / 'headless_shell.exe'
+                                            target_exe = target_chromium_dir / temp_chrome_win.name / 'headless_shell.exe'
                                         else:
-                                            target_exe = target_chromium_dir / 'chrome-win' / 'chrome.exe'
+                                            target_exe = target_chromium_dir / temp_chrome_win.name / 'chrome.exe'
                                         
                                         if target_exe.exists() and target_exe.stat().st_size > 0:
                                             print(f"{_OK} 浏览器文件提取成功: {target_exe}")

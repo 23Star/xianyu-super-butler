@@ -4558,18 +4558,15 @@ class XianyuLive:
                 return "EMPTY_REPLY"  # 返回特殊标记表示不回复
 
             # 进行变量替换
+            # 注意：商品专属回复已在上方通过 get_item_reply(cookie_id, item_id) 按
+            # 账号隔离查询并完成变量替换；此处不再按 item_id 二次查询，避免跨账号
+            # 串用其他账号的商品回复、绕过占位符替换或用空内容覆盖账号默认回复
             try:
-                # 获取当前商品是否有设置自动回复
-                item_replay = db_manager.get_item_replay(item_id)
-
                 formatted_reply = reply_content.format(
                     send_user_name=send_user_name,
                     send_user_id=send_user_id,
                     send_message=send_message
                 ) if reply_content else ''
-
-                if item_replay:
-                    formatted_reply = item_replay.get('reply_content', '')
 
                 # 如果开启了"只回复一次"功能，记录这次回复
                 if default_reply_settings.get('reply_once', False) and chat_id:

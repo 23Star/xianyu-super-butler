@@ -491,6 +491,8 @@ export interface ReplyRule {
   reply_content: string;
   match_type: 'exact' | 'fuzzy';
   enabled: boolean;
+  /** 绑定的商品 ID；空串/未定义为通用关键词（后端按 keyword+item_id 做唯一键） */
+  item_id?: string;
 }
 
 // Stats

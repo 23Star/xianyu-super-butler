@@ -64,11 +64,13 @@ def find_chromium_executable() -> Optional[str]:
         roots.append(Path.home() / '.cache' / 'ms-playwright')      # Linux
         roots.append(Path.home() / 'Library' / 'Caches' / 'ms-playwright')  # macOS
 
-    # 只认完整版 Chromium：headless shell 缺少滑块页面需要的渲染能力
+    # 只认完整版 Chromium：headless shell 缺少滑块页面需要的渲染能力。
+    # Windows 上新旧 Playwright 布局（chrome-win64 / chrome-win）都要认。
     candidates = (
         'chrome-linux/chrome',
         'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
         'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+        'chrome-win64/chrome.exe',
         'chrome-win/chrome.exe',
     )
     for root in roots:
@@ -83,6 +85,17 @@ def find_chromium_executable() -> Optional[str]:
         except Exception:
             continue
     return None
+
+
+def resolve_chrome_win_dir(chromium_dir: Path) -> Path:
+    # Windows 下 Chromium 可执行文件所在的布局目录：
+    # 新版 Playwright（1.53+，Windows x64 构建）装在 chrome-win64/，旧版在 chrome-win/，
+    # 以磁盘上实际存在的目录为准；都不存在时回退旧布局，由调用方的 exists() 判定兜底。
+    for layout in ('chrome-win64', 'chrome-win'):
+        layout_dir = chromium_dir / layout
+        if layout_dir.is_dir():
+            return layout_dir
+    return chromium_dir / 'chrome-win'
 
 
 # 单次滑块流程的整体上限（秒）。正常一轮在 10-40 秒内结束，3 次重试也够用；
@@ -3095,7 +3108,7 @@ class XianyuSliderStealth:
                     chromium_dirs = list(playwright_dir.glob('chromium-*'))
                     # 找到第一个完整的浏览器目录
                     for chromium_dir in chromium_dirs:
-                        chrome_exe = chromium_dir / 'chrome-win' / 'chrome.exe'
+                        chrome_exe = resolve_chrome_win_dir(chromium_dir) / 'chrome.exe'
                         if chrome_exe.exists() and chrome_exe.stat().st_size > 0:
                             # 清除旧的环境变量，使用实际存在的浏览器
                             if 'PLAYWRIGHT_BROWSERS_PATH' in os.environ:

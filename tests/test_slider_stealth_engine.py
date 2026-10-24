@@ -98,5 +98,85 @@ class StealthEngineSelectionTests(unittest.TestCase):
         self.assertIn("patchright", text)
 
 
+
+
+# ---------- Windows 布局解析（chrome-win64 / chrome-win）回归 ----------
+# issue #102 附录：新版 Playwright（1.53+，Windows x64 构建）把 Chromium 装在
+# chromium-*/chrome-win64/，旧版在 chromium-*/chrome-win/。滑块回退与打包提取
+# 依赖的路径解析必须两种布局都认，否则新版装了浏览器也会被判定为「没装」。
+
+
+def test_find_chromium_executable_windows_new_layout(tmp_path):
+    executable = tmp_path / "chromium-1208" / "chrome-win64" / "chrome.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("stub")
+
+    with patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(tmp_path)}):
+        assert slider.find_chromium_executable() == str(executable)
+
+
+def test_find_chromium_executable_windows_legacy_layout(tmp_path):
+    executable = tmp_path / "chromium-1181" / "chrome-win" / "chrome.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("stub")
+
+    with patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(tmp_path)}):
+        assert slider.find_chromium_executable() == str(executable)
+
+
+def test_resolve_chrome_win_dir_prefers_existing_layout(tmp_path):
+    chromium_dir = tmp_path / "chromium-1208"
+    (chromium_dir / "chrome-win64").mkdir(parents=True)
+    assert slider.resolve_chrome_win_dir(chromium_dir) == chromium_dir / "chrome-win64"
+
+
+def test_resolve_chrome_win_dir_falls_back_to_legacy(tmp_path):
+    chromium_dir = tmp_path / "chromium-1181"
+    chromium_dir.mkdir()
+    assert slider.resolve_chrome_win_dir(chromium_dir) == chromium_dir / "chrome-win"
+
+
+def _load_start_resolver():
+    """只提取 Start.py 的 _resolve_chrome_win_dir 参与测试。
+
+    直接 import Start 会触发数据库迁移与浏览器自检等重副作用，
+    这里按函数名从源码里取出该函数单独执行。
+    """
+    import ast
+
+    source = (Path(__file__).resolve().parent.parent / "Start.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_resolve_chrome_win_dir":
+            module = ast.Module(body=[node], type_ignores=[])
+            ast.fix_missing_locations(module)
+            namespace = {"Path": Path}
+            exec(compile(module, "Start.py", "exec"), namespace)
+            return namespace["_resolve_chrome_win_dir"]
+    raise AssertionError("Start.py 中未找到 _resolve_chrome_win_dir")
+
+
+def test_start_resolver_matches_new_layout(tmp_path):
+    resolve = _load_start_resolver()
+    chromium_dir = tmp_path / "chromium-1208"
+    (chromium_dir / "chrome-win64").mkdir(parents=True)
+    assert resolve(chromium_dir) == chromium_dir / "chrome-win64"
+
+
+def test_start_resolver_matches_legacy_layout(tmp_path):
+    resolve = _load_start_resolver()
+    chromium_dir = tmp_path / "chromium-1181"
+    (chromium_dir / "chrome-win").mkdir(parents=True)
+    assert resolve(chromium_dir) == chromium_dir / "chrome-win"
+
+
+def test_start_resolver_defaults_to_legacy_when_missing(tmp_path):
+    resolve = _load_start_resolver()
+    chromium_dir = tmp_path / "chromium-9999"
+    chromium_dir.mkdir()
+    assert resolve(chromium_dir) == chromium_dir / "chrome-win"
+
+
 if __name__ == "__main__":
     unittest.main()
+
