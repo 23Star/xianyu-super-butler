@@ -1,4 +1,4 @@
-import { get, post, put, del, patch } from '../lib/request';
+import request, { get, post, put, del, patch } from '../lib/request';
 import {
   LoginResponse, AccountDetail, Order, PaginatedResponse,
   AdminStats, AdminUser, Card, CardShipment, SystemSettings, ApiResponse, OrderAnalytics,
@@ -261,6 +261,72 @@ export const importOrders = async (data: Partial<Order>[] | FormData): Promise<a
   });
   return response.json();
 }
+
+/** 从 Content-Disposition 解析文件名，兼容 filename="x" 与 filename*=UTF-8''x（中文会走后者）两种形式。 */
+const parseExportFilename = (disposition: string | undefined): string => {
+  if (!disposition) return '';
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = disposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1].trim() : '';
+};
+
+/**
+ * 导出订单为 CSV 并触发浏览器下载，返回实际使用的文件名。
+ * 筛选参数语义与 getOrders 一致：均可省略，status 为 'all' 或空表示全部状态。
+ * get() 只返回响应体拿不到 Content-Disposition，这里直接复用带 token
+ * 拦截器的 axios 实例以 Blob 形式取回文件流。
+ */
+export const exportOrders = async (params: {
+  cookie_id?: string;
+  status?: string;
+}): Promise<string> => {
+  const query: Record<string, string> = {};
+  if (params.cookie_id) query.cookie_id = params.cookie_id;
+  if (params.status && params.status !== 'all') query.status = params.status;
+
+  const response = await request.get<Blob>('/api/orders/export', {
+    params: query,
+    responseType: 'blob',
+  });
+
+  const blob = response.data;
+  if (!(blob instanceof Blob) || blob.size === 0) {
+    throw new Error('导出失败：服务器未返回有效文件');
+  }
+
+  // 后端出错时 200 + JSON 错误体会被当成 Blob 存成损坏的 csv，先识别出来转成报错
+  if (blob.type.includes('application/json')) {
+    let message = '导出失败';
+    try {
+      const parsed = JSON.parse(await blob.text());
+      message = parsed?.message || message;
+    } catch {
+      /* 保留默认报错文案 */
+    }
+    throw new Error(message);
+  }
+
+  const headerName = parseExportFilename(response.headers?.['content-disposition']);
+  const filename = /\.csv$/i.test(headerName) ? headerName : `orders_${Date.now()}.csv`;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  return filename;
+};
 
 // 卖家端订单同步与互动
 export const syncSoldOrders = async (cookieId?: string, days = 7): Promise<any> => {

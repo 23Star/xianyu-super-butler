@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item, AccountDetail } from '../types';
-import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, getItems, syncSoldOrders, getAccountDetails, requireOrderFlower, rateOrders, getSellerFeatureFlags } from '../services/api';
+import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, exportOrders, getItems, syncSoldOrders, getAccountDetails, requireOrderFlower, rateOrders, getSellerFeatureFlags } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList, Flower2, Star } from 'lucide-react';
+import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList, Flower2, Star, Download } from 'lucide-react';
 import { EmptyState, PageHeader, PageTabs } from './ui';
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
@@ -45,6 +45,7 @@ const OrderList: React.FC = () => {
   const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [syncSoldLoading, setSyncSoldLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   // 各状态的全量条数，由后端统计，避免只按当前页计算
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   // 账号维度：多账号时需要区分订单归属
@@ -293,6 +294,24 @@ const OrderList: React.FC = () => {
       }
   };
 
+  // 导出 CSV：与列表查询一致携带账号 + 状态筛选（filter 的取值就是后端原始状态值）。
+  // 搜索框是本地过滤，导出接口不支持关键字，导出结果不受其影响。
+  const handleExport = async () => {
+      setExporting(true);
+      try {
+          const filename = await exportOrders({
+              cookie_id: accountFilter || undefined,
+              status: filter,
+          });
+          notify(`订单导出完成：${filename}`);
+      } catch (error: any) {
+          console.error('订单导出失败:', error);
+          notify(error?.message || '订单导出失败，请重试', 'error');
+      } finally {
+          setExporting(false);
+      }
+  };
+
   const handleShip = (id: string) => {
       setShipOrderId(id);
       setShipResult(null);
@@ -481,6 +500,15 @@ const OrderList: React.FC = () => {
             <button onClick={handleSync} className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm">
                 <Truck className="h-4 w-4" />
                 刷新状态
+            </button>
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-60"
+              title="按当前账号与状态筛选导出全部订单为 CSV（搜索关键字不参与导出）"
+            >
+              <Download className="h-4 w-4" />
+              {exporting ? '导出中…' : '导出'}
             </button>
             <button
               onClick={handleSyncSold}

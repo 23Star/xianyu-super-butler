@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, Body, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import List, Tuple, Optional, Dict, Any
@@ -8118,6 +8118,123 @@ def get_user_orders(
     except Exception as e:
         log_with_user('error', f"查询用户订单失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=f"查询订单失败: {str(e)}")
+
+
+@app.get('/api/orders/export')
+def export_orders(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    cookie_id: Optional[str] = Query(None, description="筛选Cookie ID"),
+    status: Optional[str] = Query(None, description="筛选状态")
+):
+    """导出当前用户的订单为 CSV 文件（带 UTF-8 BOM，Excel 直接打开中文不乱码）"""
+    import csv
+    from datetime import datetime, timedelta, timezone
+
+    from app.db_manager import db_manager
+
+    try:
+        user_id = current_user['user_id']
+        log_with_user('info', f"导出用户订单 CSV (cookie_id={cookie_id}, status={status})", current_user)
+
+        # 获取用户的所有Cookie（权限过滤：只能导出当前用户所属账号的订单）
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        # 指定了cookie_id时只导出该账号；cookie_id不属于当前用户时导出空表
+        # （比列表接口更严格，避免传入他人账号ID时误导出自己的全部订单）
+        if cookie_id:
+            if cookie_id not in user_cookies:
+                user_cookies = {}
+            else:
+                user_cookies = {cookie_id: user_cookies[cookie_id]}
+
+        # 商品标题映射（订单表不存标题，从 item_info 带出）
+        item_titles = {}
+        with db_manager.lock:
+            cursor = db_manager.conn.cursor()
+            cursor.execute('SELECT item_id, item_title FROM item_info')
+            for row in cursor.fetchall():
+                if row[1]:
+                    item_titles[row[0]] = row[1]
+
+        # 遍历用户账号取订单，导出用大 limit 覆盖全部订单
+        all_orders = []
+        for cid in user_cookies.keys():
+            orders = db_manager.get_orders_by_cookie(cid, limit=10000)
+            for order in orders:
+                order['item_title'] = item_titles.get(order.get('item_id'), '')
+                # 状态筛选与列表接口同口径（用规范化后的状态值比较）
+                if status and get_order_status(order) != status:
+                    continue
+                all_orders.append(order)
+
+        # 按下单时间倒序，与订单列表展示顺序一致
+        all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+
+        def sanitize_cell(value) -> str:
+            """CSV 注入防护：以 = + - @ 开头的值前加单引号，防止 Excel 公式注入"""
+            text = '' if value is None else str(value)
+            if text[:1] in ('=', '+', '-', '@'):
+                return "'" + text
+            return text
+
+        def merge_spec(order) -> str:
+            """规格列 = spec_name:spec_value 合并（名称=值），只有一侧时保留那一侧"""
+            name = str(order.get('spec_name') or '').strip()
+            value = str(order.get('spec_value') or '').strip()
+            if name and value:
+                return f'{name}={value}'
+            return value or name
+
+        # 中文表头，列顺序与前端导出需求一致
+        csv_headers = [
+            '订单号', '商品ID', '商品标题', '买家ID', '规格', '数量', '单价', '运费',
+            '订单状态', '收货人', '收货人电话', '收货地址', '城市', '是否议价', '下单时间', '更新时间'
+        ]
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(csv_headers)
+        for order in all_orders:
+            # 数量优先 buy_num，兼容旧数据只有 quantity 的情况
+            quantity = order.get('buy_num') or order.get('quantity')
+            writer.writerow([
+                sanitize_cell(order.get('order_id')),
+                sanitize_cell(order.get('item_id')),
+                sanitize_cell(order.get('item_title')),
+                sanitize_cell(order.get('buyer_id')),
+                sanitize_cell(merge_spec(order)),
+                sanitize_cell(quantity),
+                sanitize_cell(order.get('amount')),
+                sanitize_cell(order.get('post_fee')),
+                sanitize_cell(order.get('order_status')),
+                sanitize_cell(order.get('receiver_name')),
+                sanitize_cell(order.get('receiver_phone')),
+                sanitize_cell(order.get('receiver_address')),
+                sanitize_cell(order.get('receiver_city')),
+                '是' if order.get('is_bargain') else '否',
+                sanitize_cell(order.get('created_at')),
+                sanitize_cell(order.get('updated_at')),
+            ])
+
+        # 内容以 UTF-8 BOM 开头，保证 Excel 直接双击打开中文不乱码
+        csv_content = '\ufeff' + buffer.getvalue()
+
+        # 文件名使用 UTC+8 当前时间
+        now_utc8 = datetime.now(timezone(timedelta(hours=8)))
+        filename = now_utc8.strftime('orders_%Y%m%d_%H%M%S.csv')
+
+        log_with_user('info', f"用户订单导出成功，共 {len(all_orders)} 条记录", current_user)
+        return Response(
+            content=csv_content.encode('utf-8'),
+            media_type='text/csv; charset=utf-8',
+            headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"导出用户订单失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=f"导出订单失败: {str(e)}")
 
 
 @app.get('/api/seller-features')

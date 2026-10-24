@@ -7498,7 +7498,8 @@ class DBManager:
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
                        quantity, amount, order_status, is_bargain, created_at, updated_at,
-                       receiver_name, receiver_phone, receiver_address
+                       receiver_name, receiver_phone, receiver_address,
+                       buy_num, post_fee, receiver_city
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
                 ''', (cookie_id, limit))
@@ -7521,7 +7522,11 @@ class DBManager:
                         'updated_at': row[10],
                         'receiver_name': row[11],
                         'receiver_phone': row[12],
-                        'receiver_address': row[13]
+                        'receiver_address': row[13],
+                        # 补充导出等消费方需要的字段
+                        'buy_num': row[14],
+                        'post_fee': row[15],
+                        'receiver_city': row[16]
                     })
 
                 return orders
