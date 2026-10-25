@@ -8623,6 +8623,55 @@ async def update_order(
         raise HTTPException(status_code=500, detail=f"更新订单失败: {str(e)}")
 
 
+@app.put('/api/orders/{order_id}/note')
+def update_order_note(
+    order_id: str,
+    payload: dict = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    更新订单的卖家备注
+    备注仅保存在本地数据库（seller_note），空串表示清空备注
+    """
+    try:
+        from app.db_manager import db_manager
+
+        user_id = current_user['user_id']
+
+        note = payload.get('note')
+        # 备注必须是字符串（空串表示清空备注）
+        if not isinstance(note, str):
+            raise HTTPException(status_code=400, detail="备注内容必须是字符串")
+        # 备注长度上限 500 字
+        if len(note) > 500:
+            raise HTTPException(status_code=400, detail="备注内容不能超过500字")
+
+        log_with_user('info', f"更新订单备注: {order_id}", current_user)
+
+        # 获取用户的所有Cookie
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        # 验证订单存在且属于当前用户（订单 -> cookie_id -> 用户名下账号）
+        order = db_manager.get_order_by_id(order_id)
+        if not order or order.get('cookie_id') not in user_cookies:
+            log_with_user('warning', f"订单不存在或无权访问: {order_id}", current_user)
+            raise HTTPException(status_code=404, detail="订单不存在或无权访问")
+
+        # 写入备注
+        success = db_manager.update_order_note(order_id, note)
+        if not success:
+            raise HTTPException(status_code=500, detail="备注更新失败")
+
+        log_with_user('info', f"订单备注更新成功: {order_id}", current_user)
+        return {"success": True, "seller_note": note}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"更新订单备注失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=f"更新订单备注失败: {str(e)}")
+
+
 @app.post('/api/orders/refresh')
 async def refresh_orders_status(
     cookie_id: Optional[str] = Form(None),

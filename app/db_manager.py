@@ -284,6 +284,7 @@ class DBManager:
                 system_shipped INTEGER DEFAULT 0,
                 version INTEGER DEFAULT 1,
                 chat_id TEXT DEFAULT '',
+                seller_note TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
@@ -1081,6 +1082,14 @@ class DBManager:
             if 'user_agent' not in ai_setting_columns:
                 cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN user_agent TEXT")
                 logger.info("数据库迁移完成：添加AI设置列 user_agent")
+
+            # 检查orders表是否存在seller_note列（卖家手动备注，空串=无备注）
+            cursor.execute("PRAGMA table_info(orders)")
+            order_columns = [column[1] for column in cursor.fetchall()]
+            if 'seller_note' not in order_columns:
+                logger.info("添加orders表的seller_note列...")
+                cursor.execute("ALTER TABLE orders ADD COLUMN seller_note TEXT DEFAULT ''")
+                logger.info("数据库迁移完成：添加seller_note列")
 
             # 确保商品同步配置存在
             cursor.execute("SELECT key FROM system_settings WHERE key IN ('item_sync_enabled', 'item_sync_interval', 'item_sync_max_pages')")
@@ -7399,7 +7408,8 @@ class DBManager:
                 # 先尝试查询包含version的订单
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at, version, chat_id,
+                       seller_note
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
@@ -7421,7 +7431,8 @@ class DBManager:
                         'created_at': row[10],
                         'updated_at': row[11],
                         'version': row[12] if len(row) > 12 else 1,  # 默认版本为1
-                        'chat_id': row[13] if len(row) > 13 else ''
+                        'chat_id': row[13] if len(row) > 13 else '',
+                        'seller_note': row[14] or '' if len(row) > 14 else ''
                     }
                 return None
 
@@ -7499,7 +7510,7 @@ class DBManager:
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
                        quantity, amount, order_status, is_bargain, created_at, updated_at,
                        receiver_name, receiver_phone, receiver_address,
-                       buy_num, post_fee, receiver_city
+                       buy_num, post_fee, receiver_city, seller_note
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
                 ''', (cookie_id, limit))
@@ -7526,7 +7537,8 @@ class DBManager:
                         # 补充导出等消费方需要的字段
                         'buy_num': row[14],
                         'post_fee': row[15],
-                        'receiver_city': row[16]
+                        'receiver_city': row[16],
+                        'seller_note': row[17] or ''
                     })
 
                 return orders
@@ -8441,6 +8453,32 @@ class DBManager:
 
             except Exception as e:
                 logger.error(f"更新订单地址失败: {order_id} - {e}")
+                self.conn.rollback()
+                return False
+
+    def update_order_note(self, order_id: str, note: str):
+        """
+        更新订单的卖家备注
+
+        Args:
+            order_id: 订单ID
+            note: 备注内容（允许空串，表示清空备注）
+
+        Returns:
+            bool: 更新是否成功（订单不存在时返回 False）
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "UPDATE orders SET seller_note = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE order_id = ?",
+                    (note, order_id)
+                )
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新订单备注失败: {order_id} - {e}")
                 self.conn.rollback()
                 return False
 

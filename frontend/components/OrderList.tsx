@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Order, OrderStatus, Item, AccountDetail } from '../types';
-import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, deleteOrder, importOrders, exportOrders, getItems, syncSoldOrders, getAccountDetails, requireOrderFlower, rateOrders, getSellerFeatureFlags } from '../services/api';
+import { getOrders, syncOrders, syncSingleOrder, manualShipOrder, updateOrder, updateOrderNote, deleteOrder, importOrders, exportOrders, getItems, syncSoldOrders, getAccountDetails, requireOrderFlower, rateOrders, getSellerFeatureFlags } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList, Flower2, Star, Download } from 'lucide-react';
+import { Search, Truck, RefreshCw, ChevronLeft, ChevronRight, PackageCheck, Edit, Eye, Plus, Save, X, ExternalLink, Trash2, ClipboardList, Flower2, Star, Download, StickyNote } from 'lucide-react';
 import { EmptyState, PageHeader, PageTabs } from './ui';
 
 const StatusBadge: React.FC<{ status: OrderStatus }> = ({ status }) => {
@@ -63,6 +63,10 @@ const OrderList: React.FC = () => {
   const [shipResult, setShipResult] = useState<{success: boolean; message: string} | null>(null);
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  // 订单备注：正在编辑的订单与草稿，noteSaving 期间禁用保存按钮
+  const [noteOrder, setNoteOrder] = useState<Order | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
   // 买家互动：这两项对买家有不可撤销的实际动作，按设置页开关决定是否展示入口
   const [sellerFeatures, setSellerFeatures] = useState<{
     auto_rate_enabled: boolean;
@@ -433,6 +437,31 @@ const OrderList: React.FC = () => {
     }
   };
 
+  // 保存订单备注：只本地更新对应订单的 seller_note，不为一条备注整表刷新。
+  // orders 由 allOrders 派生（见上方 effect），改 allOrders 即可同步列表。
+  const handleSaveNote = async () => {
+    if (!noteOrder || noteSaving) return;
+    setNoteSaving(true);
+    try {
+      const note = noteDraft.trim();
+      const res = await updateOrderNote(noteOrder.order_id, note);
+      if (res?.success === false) {
+        notify(res?.message || '备注保存失败', 'error');
+        return;
+      }
+      // 以后端返回值为准（可能对内容做修剪），缺省时回退到提交值
+      const sellerNote = res?.seller_note ?? note;
+      setAllOrders(prev => prev.map(o => o.order_id === noteOrder.order_id ? { ...o, seller_note: sellerNote } : o));
+      notify('备注已保存');
+      setNoteOrder(null);
+    } catch (error: any) {
+      console.error('保存订单备注失败:', error);
+      notify(error?.message || '备注保存失败', 'error');
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
   const accountMap = React.useMemo(
     () => new Map(accounts.map(a => [a.id, a])),
     [accounts],
@@ -628,6 +657,15 @@ const OrderList: React.FC = () => {
                         </div>
                         <div className="text-xs text-gray-500 mt-1 font-medium">订单ID: {order.order_id}</div>
                         <div className="text-xs text-gray-400 mt-0.5">数量: {order.quantity} • {order.created_at}</div>
+                        {order.seller_note?.trim() && (
+                          <div
+                            className="mt-1.5 flex items-start gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-1"
+                            title={order.seller_note}
+                          >
+                            <StickyNote className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />
+                            <span className="line-clamp-2 break-all text-xs text-amber-800">{order.seller_note}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -653,7 +691,7 @@ const OrderList: React.FC = () => {
                     <StatusBadge status={order.status} />
                   </td>
                   <td data-label="操作" className="text-right">
-                    <div className="flex items-center justify-end gap-1">
+                    <div className="flex flex-wrap items-center justify-end gap-1">
                     {order.status === 'pending_ship' && (
                         <button
                             onClick={() => handleShip(order.order_id)}
@@ -713,6 +751,15 @@ const OrderList: React.FC = () => {
                       title="编辑订单"
                     >
                       <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => { setNoteOrder(order); setNoteDraft(order.seller_note || ''); }}
+                      className={`rounded-md p-2 transition-colors hover:bg-amber-50 hover:text-amber-700 ${
+                        order.seller_note?.trim() ? 'text-amber-500' : 'text-gray-500'
+                      }`}
+                      title={order.seller_note?.trim() ? '编辑订单备注' : '添加订单备注'}
+                    >
+                      <StickyNote className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => handleSyncSingle(order.order_id)}
@@ -834,6 +881,14 @@ const OrderList: React.FC = () => {
                     <div className="text-xs text-gray-500 mb-1">创建时间</div>
                     <div className="text-sm font-medium text-gray-700">{selectedOrder.created_at}</div>
                   </div>
+                  {selectedOrder.seller_note?.trim() && (
+                    <div className="col-span-2">
+                      <div className="text-xs text-gray-500 mb-1">备注</div>
+                      <div className="whitespace-pre-wrap break-all rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+                        {selectedOrder.seller_note}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1194,6 +1249,69 @@ const OrderList: React.FC = () => {
                 >
                   <Save className="w-4 h-4" />
                   保存更改
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 订单备注弹窗 - 使用 Portal */}
+      {noteOrder && createPortal(
+        <div className="modal-overlay">
+          <div className="modal-container" style={{ maxWidth: '480px' }}>
+            <div className="modal-header">
+              <div className="flex w-full items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">订单备注</h3>
+                  <p className="mt-1 break-all text-xs text-gray-500">{noteOrder.order_id}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNoteOrder(null)}
+                  className="rounded-md p-2 hover:bg-gray-100"
+                  aria-label="关闭订单备注"
+                >
+                  <X className="w-5 h-5 text-gray-600" />
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-body space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-gray-700">备注内容</label>
+                <textarea
+                  value={noteDraft}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  rows={5}
+                  maxLength={500}
+                  autoFocus
+                  placeholder="记录发货进度、买家约定等备忘信息，仅自己可见"
+                  className="ios-input w-full resize-y rounded-md px-3 py-2 text-sm"
+                />
+                <p className="mt-1 text-right text-xs text-gray-400">{noteDraft.length}/500</p>
+              </div>
+              <p className="text-xs text-gray-500">保存空内容即清空备注；备注不会发送给买家。</p>
+            </div>
+
+            <div className="modal-footer">
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNoteOrder(null)}
+                  className="ios-btn-secondary flex-1 rounded-md px-4 py-2.5 text-sm"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveNote}
+                  disabled={noteSaving}
+                  className="ios-btn-primary flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  {noteSaving ? '保存中…' : '保存备注'}
                 </button>
               </div>
             </div>

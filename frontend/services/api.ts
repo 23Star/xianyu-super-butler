@@ -216,6 +216,11 @@ export const updateOrder = async (orderId: string, data: Partial<Order>): Promis
   return put(`/api/orders/${orderId}`, data);
 };
 
+/** 更新订单备注：卖家自用备忘，不发送给买家；空串即清空，上限 500 字。 */
+export const updateOrderNote = async (orderId: string, note: string): Promise<ApiResponse & { seller_note?: string }> => {
+  return put(`/api/orders/${orderId}/note`, { note });
+};
+
 export const deleteOrder = async (orderId: string): Promise<ApiResponse> => {
   return del(`/api/orders/${orderId}`);
 };

@@ -90,6 +90,8 @@ export interface Order {
   receiver_name?: string;
   receiver_phone?: string;
   receiver_address?: string;
+  /** 卖家自用订单备注，不会发送给买家；空串/未定义表示无备注 */
+  seller_note?: string;
   created_at?: string;
   updated_at?: string;
 }
