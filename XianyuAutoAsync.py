@@ -284,8 +284,8 @@ class XianyuLive:
         self.relogin_terminal_until = 0.0
         self.password_login_failures = 0
         self._relogin_notification_sent = False
-        self.connection_failures = 0
         if was_marked:
+            self.connection_failures = 0
             logger.info(f"【{self.cookie_id}】人工登录已完成，清除重新登录终态")
 
     def _record_password_login_failure(self, reason: str) -> bool:
@@ -2375,6 +2375,11 @@ class XianyuLive:
                     )
                     
                     res_json = await response.json()
+                    # 请求进行期间可能已由另一恢复路径进入人工终态；
+                    # 迟到的自动响应不能写回 Cookie 或解除人工锁。
+                    if self._is_relogin_terminal():
+                        self.last_token_refresh_status = "relogin_required"
+                        return None
                     response_keys = sorted(res_json.keys()) if isinstance(res_json, dict) else []
                     response_data = res_json.get("data") if isinstance(res_json, dict) else None
                     data_keys = sorted(response_data.keys()) if isinstance(response_data, dict) else []
@@ -2591,7 +2596,9 @@ class XianyuLive:
                                 # 否则用户只看到「连接中/重连」，会一直等一个不会好的状态。
                                 # 已发起的密码登录由连续失败阈值决定终态；
                                 # 没有可用账密时，会话过期只能交给人工。
-                                if not getattr(self, 'password_login_failures', 0):
+                                from app.db_manager import db_manager
+                                login_info = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+                                if login_info is not None and not (login_info.get('username') and login_info.get('password')):
                                     self._mark_relogin_required('闲鱼登录态已过期，请重新扫码登录')
                                     await self._notify_relogin_required()
                                 if self._is_relogin_terminal():
@@ -8100,6 +8107,7 @@ class XianyuLive:
 
     async def cookie_refresh_loop(self):
         """Cookie刷新定时任务 - 每小时执行一次"""
+        refresh_task = None
         try:
             while True:
                 try:
@@ -8125,12 +8133,12 @@ class XianyuLive:
                             remaining_seconds = int(remaining_time % 60)
                             logger.warning(f"【{self.cookie_id}】收到消息后冷却中，还需等待 {remaining_minutes}分{remaining_seconds}秒 才能执行Cookie刷新")
                         # 检查是否已有Cookie刷新任务在执行
-                        elif self.cookie_refresh_lock.locked():
+                        elif self.cookie_refresh_lock.locked() or (refresh_task and not refresh_task.done()):
                             logger.warning(f"【{self.cookie_id}】Cookie刷新任务已在执行中，跳过本次触发")
                         else:
                             logger.info(f"【{self.cookie_id}】开始执行Cookie刷新任务...")
                             # 在独立的任务中执行Cookie刷新，避免阻塞主循环
-                            asyncio.create_task(self._execute_cookie_refresh(current_time))
+                            refresh_task = asyncio.create_task(self._execute_cookie_refresh(current_time))
 
                     # 每分钟检查一次是否需要执行
                     await self._interruptible_sleep(60)
@@ -8151,7 +8159,10 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】Cookie刷新循环已取消，正在退出...")
             raise
         finally:
-            # 确保任务能正常结束
+            # 子任务归属本循环；人工终态取消循环时必须一并停止浏览器刷新。
+            if refresh_task and not refresh_task.done():
+                refresh_task.cancel()
+                await asyncio.gather(refresh_task, return_exceptions=True)
             logger.info(f"【{self.cookie_id}】Cookie刷新循环已退出")
 
     async def _execute_cookie_refresh(self, current_time):

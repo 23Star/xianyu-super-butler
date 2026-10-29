@@ -23,12 +23,14 @@
 执行：
 
 ```bash
-DSH_TEST_LOG=1 PYTHONUTF8=1 ../xianyu-super-butler/.venv/Scripts/python.exe -m unittest discover -s tests -p 'test_relogin*.py' -q
-../xianyu-super-butler/.venv/Scripts/python.exe -m py_compile XianyuAutoAsync.py tests/test_relogin_terminal.py tests/test_relogin_flag_lifecycle.py
+DSH_TEST_LOG=1 PYTHONUTF8=1 python -m unittest discover -s tests -p 'test_relogin*.py' -q
+python -m py_compile XianyuAutoAsync.py tests/test_relogin_terminal.py tests/test_relogin_flag_lifecycle.py
 git diff --check
 ```
 
-结果：20 个测试通过（13 个新增真实方法行为测试 + 7 个原生命周期测试），语法和差异检查通过。
+结果：24 个测试通过（17 个新增真实方法行为测试 + 7 个原生命周期测试），语法和差异检查通过。
+
+提交前复审补充：冷却/更新失败不误标人工终态，普通 Token 成功不清零 WebSocket 失败计数，周期 Cookie 刷新的在途子任务随父任务取消，迟到 Token 响应不解除新进入的人工终态。
 
 新增测试从源码 AST 提取并执行原方法（不复制实现），只替换数据库、浏览器、网络等外部边界，避免导入生产模块时初始化真实数据库和日志；使用受控时钟验证超时不解除终态、人工更新 Cookie 解锁、任务取消不算登录失败、后台退出与主循环保留失败计数。
 

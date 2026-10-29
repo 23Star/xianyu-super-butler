@@ -15,7 +15,7 @@ METHODS = {
     '_relogin_cooldown_remaining', '_mark_relogin_required',
     '_clear_relogin_required', '_record_password_login_failure',
     '_notify_relogin_required', '_hold_relogin_terminal',
-    '_try_password_login_refresh', 'refresh_token', 'token_refresh_loop', 'main',
+    '_try_password_login_refresh', 'refresh_token', 'token_refresh_loop', 'cookie_refresh_loop', 'main',
 }
 
 
@@ -159,16 +159,38 @@ class ReloginTerminalTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.live.needs_relogin)
         self.assertEqual(self.live.password_login_failures, 1)
 
+    async def test_session_expired_during_cooldown_is_not_manual_terminal(self):
+        self.Live._last_password_login_time[self.live.cookie_id] = self.clock
+        await self.session_expired_response()
+        self.assertFalse(self.live.needs_relogin)
+        self.slider.login_with_password_playwright.assert_not_called()
+
+    async def test_cookie_update_failure_after_browser_success_is_not_manual_terminal(self):
+        self.slider.login_with_password_playwright.return_value = {'cookie2': 'new'}
+        self.live._update_cookies_and_restart.return_value = False
+        await self.session_expired_response()
+        self.assertFalse(self.live.needs_relogin)
+        self.assertEqual(self.live.password_login_failures, 0)
+
     async def test_successful_token_refresh_resets_failure_streak(self):
+        await self.token_success_response(False)
+
+    async def test_inflight_token_success_cannot_unlock_new_manual_terminal(self):
+        await self.token_success_response(True)
+
+    async def token_success_response(self, enter_terminal):
         live = self.live
         live.password_login_failures = 2
+        live.connection_failures = 4
         live.max_captcha_verification_count = 3
         live.last_message_received_time = 0
         live.device_id = 'test-device'
         response = mock.Mock(headers={}, status=200)
-        response.json = mock.AsyncMock(return_value={
-            'ret': ['SUCCESS::调用成功'], 'data': {'accessToken': 'new-token'},
-        })
+        async def payload():
+            if enter_terminal:
+                live._mark_relogin_required('new manual terminal')
+            return {'ret': ['SUCCESS::调用成功'], 'data': {'accessToken': 'new-token'}}
+        response.json = payload
         response_cm = mock.MagicMock()
         response_cm.__aenter__.return_value = response
         session = mock.Mock()
@@ -178,8 +200,14 @@ class ReloginTerminalTests(unittest.IsolatedAsyncioTestCase):
         risk = types.SimpleNamespace(registry=types.SimpleNamespace(get=lambda _: mock.Mock(is_blocked=False)))
         self.ns['aiohttp'] = types.SimpleNamespace(ClientSession=lambda: session_cm, ClientTimeout=lambda **kwargs: None)
         with mock.patch.dict('sys.modules', {'utils': types.SimpleNamespace(risk_control=risk)}):
-            self.assertEqual(await live.refresh_token(), 'new-token')
+            result = await live.refresh_token()
+        if enter_terminal:
+            self.assertIsNone(result)
+            self.assertTrue(live.needs_relogin, 'late automatic response unlocked manual terminal')
+            return
+        self.assertEqual(result, 'new-token')
         self.assertEqual(live.password_login_failures, 0)
+        self.assertEqual(live.connection_failures, 4, 'Token success must not reset failed WS initialization')
         self.assertFalse(live.needs_relogin)
 
     async def test_background_loop_does_not_send_retry_notice_after_terminal(self):
@@ -198,6 +226,39 @@ class ReloginTerminalTests(unittest.IsolatedAsyncioTestCase):
             self.fail('terminal background loop kept scheduling retries')
         self.live.send_token_refresh_notification.assert_not_awaited()
         self.live.ws.close.assert_awaited_once()
+
+    async def test_cookie_loop_cancellation_cancels_inflight_browser_child(self):
+        live = self.live
+        live.cookie_refresh_enabled = True
+        live.last_cookie_refresh_time = 0
+        live.cookie_refresh_interval = 1
+        live.last_message_received_time = 0
+        live.message_cookie_refresh_cooldown = 0
+        live.cookie_refresh_lock = asyncio.Lock()
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        async def refresh(_):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        live._execute_cookie_refresh = refresh
+        async def sleep(_):
+            await asyncio.sleep(3600)
+        live._interruptible_sleep = sleep
+        before = set(asyncio.all_tasks())
+        loop_task = asyncio.create_task(live.cookie_refresh_loop())
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            loop_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await loop_task
+            self.assertTrue(cancelled.is_set(), 'browser refresh outlived cancelled periodic task')
+        finally:
+            remaining = set(asyncio.all_tasks()) - before
+            for task in remaining:
+                task.cancel()
+            await asyncio.gather(*remaining, return_exceptions=True)
 
     async def test_terminal_blocks_token_network_even_after_cooldown(self):
         self.live._mark_relogin_required('manual login required')
