@@ -952,6 +952,8 @@ class XianyuLive:
         self.buyer_interaction_task = None
         self._auto_rated_orders = set()
         self._auto_flowered_orders = set()
+        # 已自动收下小红花的订单：只记成功，失败不记（可重试）
+        self._auto_received_flowers = set()
         # 已发过确认收货致谢的会话/订单，避免同一笔交易的多条系统消息各发一次
         self._thanked_receipts = set()
         # 买家互动即时触发的去重标记
@@ -1509,6 +1511,112 @@ class XianyuLive:
             return AIReplyEngine.is_system_or_order_event(message)
         except Exception as e:
             logger.warning(f"【{self.cookie_id}】系统事件识别失败: {self._safe_str(e)}")
+            return False
+
+    def _flower_message_detail(self, message: dict):
+        """返回送花/收花消息的详情字典，不是这类消息返回 None。
+
+        消息详情在 ``message['1']['10']``——**不是** ``message['10']``，顶层
+        没有 '10' 这个键。买家送花卡片与领花回执卡片都带 ``RED_FLOWER:``
+        bizTag，用本方法区分不出，要再看有没有订单号（见
+        ``_extract_flower_order_id``）。
+        """
+        try:
+            if not isinstance(message, dict):
+                return None
+            message_1 = message.get("1")
+            if not isinstance(message_1, dict):
+                return None
+            message_10 = message_1.get("10")
+            if not isinstance(message_10, dict):
+                return None
+            if "RED_FLOWER:" not in str(message_10.get("bizTag") or ""):
+                return None
+            return message_10
+        except Exception:
+            return None
+
+    def _extract_flower_order_id(self, message: dict) -> str:
+        """从「买家送花」卡片提取订单号；非送花消息或取不到订单号时返回空串。
+
+        送花卡片是 contentType=26 的 dxCard，**文本里没有任何数字**，订单号只
+        存在于两个地方：卡片「立即收下」按钮 targetUrl 的 ``orderId=`` 参数，
+        以及 ``message['1']['10'].extJson`` 的
+        ``updateKey: "<chat_id>:<order_id>:received_red_flower"``。
+        领取成功后的自侧确认卡片同样带 RED_FLOWER，但这两处都没有订单号，
+        会在这里返回空串，因而不会重复领取。
+        """
+        try:
+            message_10 = self._flower_message_detail(message)
+            if message_10 is None:
+                return ""
+
+            # 来源1：卡片「立即收下」按钮 targetUrl 的 orderId 参数
+            order_id = self._extract_order_id(message)
+            if order_id:
+                return order_id
+
+            # 来源2：extJson.updateKey = "<chat_id>:<order_id>:received_red_flower"
+            ext_json = str(message_10.get("extJson") or "")
+            match = re.search(
+                r'"updateKey"\s*:\s*"[^":]*:(\d+):received_red_flower"', ext_json
+            )
+            if match:
+                return match.group(1)
+            return ""
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】解析送花消息失败: {self._safe_str(e)}")
+            return ""
+
+    def _is_flower_confirmation_card(self, message: dict) -> bool:
+        """是否是平台推送的「已收到小红花」领花回执卡片。
+
+        买家送花被领取后，平台会往卖家会话里推一张确认卡片，senderUserId 就是
+        卖家本人，因此它会混进自发消息分支。它与买家送花卡片同样带 RED_FLOWER
+        bizTag，**区别是不含订单号**（没有按钮 URL 的 orderId，extJson 里也没有
+        updateKey）——所以判定 = 带 RED_FLOWER 且取不到订单号。
+
+        它是领花回执而不是人工操作，不能据此暂停该会话的自动回复：否则每自动领
+        一朵花，就把买家接下来几分钟的话全憋回去。
+        """
+        if self._flower_message_detail(message) is None:
+            return False
+        return not self._extract_flower_order_id(message)
+
+    async def _auto_receive_flower(self, order_id: str) -> bool:
+        """自动收下买家赠送的小红花（受自动收花开关控制）。
+
+        失败不登记去重集，下一条同订单消息可以重试；风控冷却期跳过，
+        不调接口也不登记。返回是否本次真实调用了领取接口。
+        """
+        if not order_id:
+            return False
+        try:
+            if order_id in self._auto_received_flowers:
+                return False
+            # 函数内延迟导入：模块级单例的绑定时机不可控（测试需要能替换）
+            from app.db_manager import db_manager
+            interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
+            if not interaction.get('auto_receive_flower_enabled'):
+                return False
+            from utils import risk_control
+            risk = risk_control.registry.get(self.cookie_id)
+            if risk is not None and getattr(risk, 'is_blocked', False):
+                logger.info(
+                    f"【{self.cookie_id}】风控冷却中，跳过自动收花: {order_id}"
+                )
+                return False
+            from utils.xianyu_seller_api import XianyuSellerAPI
+            api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+            try:
+                await api.receive_flower(order_id)
+            finally:
+                await api.close()
+            self._auto_received_flowers.add(order_id)
+            logger.info(f"【{self.cookie_id}】已自动收下订单 {order_id} 的小红花")
+            return True
+        except Exception as exc:
+            logger.warning(f"【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}")
             return False
 
     def _extract_order_id(self, message: dict) -> str:
@@ -10372,6 +10480,16 @@ class XianyuLive:
 
             # 判断消息方向
             if send_user_id == self.myid:
+                # 平台推送的「已收到小红花」确认卡片同样是自发消息（senderUserId
+                # 就是卖家本人），但它是领花回执而不是人工操作——不能据此暂停该
+                # 会话的自动回复，否则每自动领一朵花就把买家接下来几分钟的话全
+                # 憋回去。见 _is_flower_confirmation_card。
+                if self._is_flower_confirmation_card(message):
+                    logger.info(
+                        f"[{msg_time}] 【{self.cookie_id}】小红花领取回执: {send_message}"
+                    )
+                    return
+
                 logger.info(f"[{msg_time}] 【手动发出】 商品({item_id}): {send_message}")
 
                 # 暂停该chat_id的自动回复10分钟
@@ -10446,20 +10564,15 @@ class XianyuLive:
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
             # 买家赠送小红花的系统卡片通常会带订单号；收到后立即尝试收花。
-            if '收到小红花' in str(send_message):
-                import re
-                flower_order = next((m for m in re.findall(r'\d{6,24}', str(send_message))), None)
-                if flower_order:
-                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
-                    if interaction.get('auto_receive_flower_enabled'):
-                        try:
-                            from utils.xianyu_seller_api import XianyuSellerAPI
-                            flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
-                            await flower_api.receive_flower(flower_order)
-                            await flower_api.close()
-                            logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花')
-                        except Exception as exc:
-                            logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
+            #
+            # 判定不能按文本：买家送花卡片文本是「你人真不错，送你闲鱼小红花」，
+            # 既不含「收到小红花」也不含任何数字——按 '收到小红花' in send_message
+            # 匹配永远不命中，按 re.findall(r'\d{6,24}') 抓数字也永远抓不到。
+            # 正确做法是认卡片结构：bizTag 带 RED_FLOWER:，订单号从按钮 targetUrl
+            # 的 orderId= 或 extJson.updateKey 取（见 _extract_flower_order_id）。
+            flower_order = self._extract_flower_order_id(message)
+            if flower_order:
+                await self._auto_receive_flower(flower_order)
             if self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
                 await self._handle_auto_delivery(
