@@ -28,7 +28,7 @@ python -m py_compile XianyuAutoAsync.py tests/test_relogin_terminal.py tests/tes
 git diff --check
 ```
 
-结果：24 个测试通过（17 个新增真实方法行为测试 + 7 个原生命周期测试），语法和差异检查通过。
+结果：25 个测试通过（18 个新增真实方法行为测试 + 7 个原生命周期测试），语法和差异检查通过。
 
 提交前复审补充：冷却/更新失败不误标人工终态，普通 Token 成功不清零 WebSocket 失败计数，周期 Cookie 刷新的在途子任务随父任务取消，迟到 Token 响应不解除新进入的人工终态。
 

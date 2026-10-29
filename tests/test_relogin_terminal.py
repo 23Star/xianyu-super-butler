@@ -116,6 +116,15 @@ class ReloginTerminalTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.live.needs_relogin)
         self.slider.login_with_password_playwright.assert_not_called()
 
+    async def test_late_browser_success_cannot_unlock_new_manual_terminal(self):
+        def login(**kwargs):
+            self.live._mark_relogin_required('another attempt reached terminal')
+            return {'cookie2': 'late'}
+        self.slider.login_with_password_playwright.side_effect = login
+        self.assertFalse(await self.attempt())
+        self.assertTrue(self.live.needs_relogin)
+        self.live._update_cookies_and_restart.assert_not_awaited()
+
     async def test_success_breaks_failure_streak(self):
         await self.attempt()
         self.slider.login_with_password_playwright.return_value = {'cookie2': 'new'}

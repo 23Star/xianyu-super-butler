@@ -3213,6 +3213,11 @@ class XianyuLive:
                 notification_callback=notification_callback_wrapper
             )
             
+            if self._is_relogin_terminal():
+                # 其它恢复任务可能在等待浏览器期间已进入终态；迟到结果
+                # 不能替代用户的人工恢复，也不重复累计这次已作废的尝试。
+                login_attempted = False
+                return False
             if result:
                 login_succeeded = True
                 self._clear_relogin_required()
