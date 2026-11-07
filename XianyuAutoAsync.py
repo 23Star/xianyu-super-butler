@@ -284,13 +284,13 @@ class XianyuLive:
         self.relogin_terminal_until = 0.0
         self.password_login_failures = 0
         self._relogin_notification_sent = False
-        self.connection_failures = 0
         if was_marked:
+            self.connection_failures = 0
             logger.info(f"【{self.cookie_id}】人工登录已完成，清除重新登录终态")
 
     def _record_password_login_failure(self, reason: str) -> bool:
         """记录一次自动密码登录失败，达到阈值后进入人工重登终态。"""
-        self.password_login_failures += 1
+        self.password_login_failures = getattr(self, 'password_login_failures', 0) + 1
         logger.warning(
             f"【{self.cookie_id}】自动密码登录失败 "
             f"({self.password_login_failures}/{self._password_login_fail_threshold})：{reason}"
@@ -339,8 +339,25 @@ class XianyuLive:
 
         # 终态期间不保留心跳、Token/Cookie 刷新及业务同步任务。
         await self._cancel_background_tasks()
+        await self._notify_relogin_required()
         last_log_time = 0.0
         while self._is_relogin_terminal():
+            # 只读本地配置，不发平台请求。人工更新 Cookie 后允许恢复；
+            # 冷却计时到零本身绝不解除终态。
+            from app.cookie_manager import manager as cookie_manager
+            if cookie_manager and not cookie_manager.get_cookie_status(self.cookie_id):
+                return
+            try:
+                from app.db_manager import db_manager
+                account_info = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+                new_cookie = (account_info or {}).get('cookie_value', '')
+                if new_cookie and new_cookie != self.cookies_str:
+                    self.cookies_str = new_cookie
+                    self.cookies = trans_cookies(new_cookie)
+                    self._clear_relogin_required()
+                    break
+            except Exception as reload_error:
+                logger.warning(f"【{self.cookie_id}】等待人工登录时读取Cookie失败: {self._safe_str(reload_error)}")
             now = time.time()
             if now - last_log_time >= 60:
                 remaining = self._relogin_cooldown_remaining()
@@ -985,6 +1002,9 @@ class XianyuLive:
         # 会话过期只能重新扫码，界面必须给出不同的指引。
         self.needs_relogin = False
         self.relogin_reason = ''
+        self.password_login_failures = 0
+        self.relogin_terminal_until = 0.0
+        self._relogin_notification_sent = False
 
         # 后台任务追踪（用于清理未等待的任务）
         self.background_tasks = set()  # 追踪所有后台任务
@@ -2195,6 +2215,10 @@ class XianyuLive:
         Args:
             captcha_retry_count: 滑块验证重试次数，用于防止无限递归
         """
+        if self._is_relogin_terminal():
+            self.last_token_refresh_status = "relogin_required"
+            return None
+
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
         # 本轮是否已经记过一次风控熔断。滑块失败分支和后面基于 ret 的通用分支
@@ -2351,6 +2375,11 @@ class XianyuLive:
                     )
                     
                     res_json = await response.json()
+                    # 请求进行期间可能已由另一恢复路径进入人工终态；
+                    # 迟到的自动响应不能写回 Cookie 或解除人工锁。
+                    if self._is_relogin_terminal():
+                        self.last_token_refresh_status = "relogin_required"
+                        return None
                     response_keys = sorted(res_json.keys()) if isinstance(res_json, dict) else []
                     response_data = res_json.get("data") if isinstance(res_json, dict) else None
                     data_keys = sorted(response_data.keys()) if isinstance(response_data, dict) else []
@@ -2408,8 +2437,7 @@ class XianyuLive:
                                         f"【{self.cookie_id}】登录态已恢复，"
                                         f"清除「需重新扫码」标记"
                                     )
-                                self.needs_relogin = False
-                                self.relogin_reason = ''
+                                self._clear_relogin_required()
                                 risk_control.registry.get(self.cookie_id).reset()
                                 return new_token
 
@@ -2566,12 +2594,17 @@ class XianyuLive:
                                 # 会话过期和风控是两回事：滑块过了也救不回来，只能重新登录。
                                 # 打上终态标记，让界面能明确提示"请重新扫码"，
                                 # 否则用户只看到「连接中/重连」，会一直等一个不会好的状态。
-                                self.needs_relogin = True
-                                self.relogin_reason = '闲鱼登录态已过期，请重新扫码登录'
-                                logger.error(
-                                    f"【{self.cookie_id}】登录态已过期且无法自动续期"
-                                    f"（未配置账号密码或密码登录失败），需要重新扫码登录"
-                                )
+                                # 已发起的密码登录由连续失败阈值决定终态；
+                                # 没有可用账密时，会话过期只能交给人工。
+                                from app.db_manager import db_manager
+                                login_info = await asyncio.to_thread(db_manager.get_cookie_details, self.cookie_id)
+                                if login_info is not None and not (login_info.get('username') and login_info.get('password')):
+                                    self._mark_relogin_required('闲鱼登录态已过期，请重新扫码登录')
+                                    await self._notify_relogin_required()
+                                if self._is_relogin_terminal():
+                                    logger.error(f"【{self.cookie_id}】登录态已过期，需要人工重新登录")
+                                else:
+                                    logger.warning(f"【{self.cookie_id}】密码登录暂未成功，保留失败计数等待下次尝试")
                                 # 标记已发送通知，避免重复通知
                                 notification_sent = True
                                 # 返回None，让调用者知道刷新失败
@@ -3097,6 +3130,10 @@ class XianyuLive:
         Returns:
             bool: 是否成功刷新Cookie
         """
+        if self._is_relogin_terminal():
+            return False
+        login_attempted = False
+        login_succeeded = False
         logger.warning(f"【{self.cookie_id}】检测到{trigger_reason}，准备刷新Cookie并重启实例...")
 
         # 检查是否在密码登录冷却期内，避免重复登录
@@ -3130,6 +3167,7 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】检测到数据库中的cookie已更新，重新加载cookie")
                 self.cookies_str = db_cookie_value
                 self.cookies = trans_cookies(self.cookies_str)
+                self._clear_relogin_required()
                 logger.info(f"【{self.cookie_id}】Cookie已从数据库重新加载，跳过密码登录刷新")
                 return True
             
@@ -3164,8 +3202,9 @@ class XianyuLive:
                 )
             
             # 在单独的线程中运行同步的登录方法
-            import asyncio
             slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=not show_browser)
+            login_attempted = True
+            XianyuLive._last_password_login_time[self.cookie_id] = time.time()
             result = await asyncio.to_thread(
                 slider.login_with_password_playwright,
                 account=username,
@@ -3174,7 +3213,14 @@ class XianyuLive:
                 notification_callback=notification_callback_wrapper
             )
             
+            if self._is_relogin_terminal():
+                # 其它恢复任务可能在等待浏览器期间已进入终态；迟到结果
+                # 不能替代用户的人工恢复，也不重复累计这次已作废的尝试。
+                login_attempted = False
+                return False
             if result:
+                login_succeeded = True
+                self._clear_relogin_required()
                 logger.info(f"【{self.cookie_id}】密码登录成功，获取到Cookie")
                 logger.info(
                     f"【{self.cookie_id}】Cookie读取完成: "
@@ -3232,11 +3278,27 @@ class XianyuLive:
                 logger.warning(f"【{self.cookie_id}】密码登录失败，未获取到Cookie")
                 return False
 
+        except asyncio.CancelledError:
+            # 停用账号、人工更新 Cookie 会取消旧任务，不是一次登录失败。
+            login_attempted = False
+            raise
         except Exception as refresh_e:
             logger.error(f"【{self.cookie_id}】Cookie刷新或实例重启失败: {self._safe_str(refresh_e)}")
             import traceback
             logger.error(f"【{self.cookie_id}】详细堆栈:\n{traceback.format_exc()}")
             return False
+        finally:
+            # 只统计真实启动的登录失败；成功后的写库/重启异常不是账密失败。
+            if login_attempted and not login_succeeded:
+                if self._record_password_login_failure('未获取到登录Cookie'):
+                    await self._notify_relogin_required()
+                # 后台刷新任务触发终态时，关闭连接让 main 接管停驻和任务清理，
+                # 不在当前后台任务内取消自己。
+                if self._is_relogin_terminal() and self.ws:
+                    try:
+                        await asyncio.wait_for(self.ws.close(), timeout=2.0)
+                    except Exception:
+                        pass
 
     async def _verify_cookie_validity(self) -> dict:
         """验证Cookie的有效性，通过实际调用API测试
@@ -6783,6 +6845,15 @@ class XianyuLive:
                             logger.info(f"【{self.cookie_id}】Token刷新完成，WebSocket将使用新Token重新连接")
                             break
                         else:
+                            if self._is_relogin_terminal():
+                                # 关闭连接唤醒 main，由 main 停驻并清理其它后台任务。
+                                # 不能在 Token 任务内调用完整清理，以免取消并等待自己。
+                                if self.ws:
+                                    try:
+                                        await asyncio.wait_for(self.ws.close(), timeout=2.0)
+                                    except Exception:
+                                        pass
+                                break
                             # 根据上一次刷新状态决定日志级别（冷却/已重启为正常情况）
                             if getattr(self, 'last_token_refresh_status', None) in ("skipped_cooldown", "restarted_after_cookie_refresh"):
                                 logger.info(f"【{self.cookie_id}】Token刷新未执行或已重启（正常），将在{self.token_retry_interval // 60}分钟后重试")
@@ -8041,6 +8112,7 @@ class XianyuLive:
 
     async def cookie_refresh_loop(self):
         """Cookie刷新定时任务 - 每小时执行一次"""
+        refresh_task = None
         try:
             while True:
                 try:
@@ -8066,12 +8138,12 @@ class XianyuLive:
                             remaining_seconds = int(remaining_time % 60)
                             logger.warning(f"【{self.cookie_id}】收到消息后冷却中，还需等待 {remaining_minutes}分{remaining_seconds}秒 才能执行Cookie刷新")
                         # 检查是否已有Cookie刷新任务在执行
-                        elif self.cookie_refresh_lock.locked():
+                        elif self.cookie_refresh_lock.locked() or (refresh_task and not refresh_task.done()):
                             logger.warning(f"【{self.cookie_id}】Cookie刷新任务已在执行中，跳过本次触发")
                         else:
                             logger.info(f"【{self.cookie_id}】开始执行Cookie刷新任务...")
                             # 在独立的任务中执行Cookie刷新，避免阻塞主循环
-                            asyncio.create_task(self._execute_cookie_refresh(current_time))
+                            refresh_task = asyncio.create_task(self._execute_cookie_refresh(current_time))
 
                     # 每分钟检查一次是否需要执行
                     await self._interruptible_sleep(60)
@@ -8092,7 +8164,10 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】Cookie刷新循环已取消，正在退出...")
             raise
         finally:
-            # 确保任务能正常结束
+            # 子任务归属本循环；人工终态取消循环时必须一并停止浏览器刷新。
+            if refresh_task and not refresh_task.done():
+                refresh_task.cancel()
+                await asyncio.gather(refresh_task, return_exceptions=True)
             logger.info(f"【{self.cookie_id}】Cookie刷新循环已退出")
 
     async def _execute_cookie_refresh(self, current_time):
@@ -10636,6 +10711,10 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】账号已禁用，停止主循环")
                         break
 
+                    if self._is_relogin_terminal():
+                        await self._hold_relogin_terminal()
+                        continue
+
                     headers = WEBSOCKET_HEADERS.copy()
                     headers['Cookie'] = self.cookies_str
 
@@ -10785,6 +10864,9 @@ class XianyuLive:
                                 logger.info(f"【{self.cookie_id}】WebSocket连接已退出，引用已清理")
 
                 except Exception as e:
+                    if self._is_relogin_terminal():
+                        # init/后台刷新刚进入终态，不再覆盖成 RECONNECTING。
+                        continue
                     error_msg = self._safe_str(e)
                     import traceback
                     error_type = type(e).__name__
@@ -10851,11 +10933,20 @@ class XianyuLive:
                                 await asyncio.sleep(2)
                                 continue
                             else:
-                                logger.warning(f"【{self.cookie_id}】❌ 密码登录刷新失败，将重启实例...")
+                                logger.warning(f"【{self.cookie_id}】❌ 密码登录刷新未成功，检查人工终态与失败计数")
                         except Exception as refresh_e:
                             logger.error(f"【{self.cookie_id}】密码登录刷新过程异常: {self._safe_str(refresh_e)}")
                             logger.warning(f"【{self.cookie_id}】将重启实例...")
                         
+                        if self._is_relogin_terminal():
+                            continue
+                        if getattr(self, 'password_login_failures', 0):
+                            # 在同一实例内累计连续失败。重建实例会把计数清零，
+                            # 让三次失败阈值永远无法到达。
+                            await self._cancel_background_tasks()
+                            await self._interruptible_sleep(self._password_login_cooldown)
+                            continue
+
                         # 如果密码登录刷新失败或异常，则重启实例
                         logger.error(f"【{self.cookie_id}】准备重启实例...")
                         self.connection_failures = 0  # 重置失败计数
