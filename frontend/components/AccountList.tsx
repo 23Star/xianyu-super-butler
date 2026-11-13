@@ -23,6 +23,7 @@ import {
 import { confirmAction, notify } from '../services/feedback';
 import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
+import CookieLoginDialog from './CookieLoginDialog';
 
 type ModalType = 'edit' | 'ai-settings' | null;
 
@@ -39,6 +40,7 @@ const AccountList: React.FC = () => {
     verification_url?: string;
   }>>([]);
   const [showQRModal, setShowQRModal] = useState(false);
+  const [cookieLogin, setCookieLogin] = useState<{ accountId?: string } | null>(null);
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [qrStatus, setQrStatus] = useState<string>('pending');
   const [qrMessage, setQrMessage] = useState<string>('');
@@ -562,10 +564,10 @@ const AccountList: React.FC = () => {
     if (account.runtime_state === 'running') {
       return { label: '监听中', className: 'bg-green-100 text-green-700' };
     }
-    // 登录态过期是终态：等待和过验证都没用，必须重新扫码。
+    // 登录态过期需要重新登录，不能只等待普通重连。
     // 与「连接中」分开显示，否则用户会一直等一个不会变好的状态。
     if (account.runtime_state === 'need_relogin') {
-      return { label: '需重新扫码', className: 'bg-red-100 text-red-700' };
+      return { label: '需重新登录', className: 'bg-red-100 text-red-700' };
     }
     if (account.runtime_state === 'failed') {
       return { label: '监听异常', className: 'bg-red-100 text-red-700' };
@@ -615,13 +617,19 @@ const AccountList: React.FC = () => {
         icon={Users}
         badge={<span className="status-badge status-badge-info">{accounts.length} 个账号</span>}
         actions={(
-          <button
-            onClick={startQRLogin}
-            className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
-          >
-            <QrCode className="h-4 w-4" />
-            扫码添加账号
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => setCookieLogin({})}
+              className="ios-btn-secondary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm">
+              <Key className="h-4 w-4" />Cookie 登录
+            </button>
+            <button
+              onClick={startQRLogin}
+              className="ios-btn-primary flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm"
+            >
+              <QrCode className="h-4 w-4" />
+              扫码添加账号
+            </button>
+          </div>
         )}
       />
 
@@ -702,8 +710,7 @@ const AccountList: React.FC = () => {
                 {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
                 {account.runtime_state === 'need_relogin' && (
                   <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
-                    闲鱼登录态已过期，人机验证和等待都无法恢复。请点右上角「扫码添加账号」
-                    用同一个闲鱼账号重新扫码，即可覆盖并恢复该账号。
+                    闲鱼登录态已过期。请使用该账号的新 Cookie 重新登录，或点右上角「扫码添加账号」重新扫码。
                   </p>
                 )}
                 {/* 闲鱼要求人机验证时给出「自己浏览器打开」的入口。
@@ -732,6 +739,11 @@ const AccountList: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center justify-end gap-1 border-t border-gray-100 pt-3 sm:border-0 sm:pt-0">
+                <button onClick={() => setCookieLogin({ accountId: account.id })}
+                    className="rounded-md p-2.5 text-amber-700 hover:bg-amber-50"
+                    title="使用 Cookie 重新登录" aria-label="使用 Cookie 重新登录">
+                    <Key className="h-5 w-5" />
+                </button>
                 <button
                     onClick={() => handleManualCaptcha(account)}
                     disabled={manualCaptchaId !== null || !blockedState}
@@ -793,16 +805,24 @@ const AccountList: React.FC = () => {
         {accounts.length === 0 && (
             <EmptyState
               title="暂无闲鱼账号"
-              description="扫码登录后，系统会保存授权并开始获取账号资料、商品、消息和订单状态。"
+              description="支持扫码或 Cookie 登录，登录后可查看账号连接与监听状态。"
               icon={User}
               action={(
-                <button type="button" onClick={startQRLogin} className="ios-btn-primary rounded-md px-4 py-2 text-sm">
-                  扫码添加账号
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setCookieLogin({})} className="ios-btn-secondary rounded-md px-4 py-2 text-sm">
+                    Cookie 登录
+                  </button>
+                  <button type="button" onClick={startQRLogin} className="ios-btn-primary rounded-md px-4 py-2 text-sm">
+                    扫码添加账号
+                  </button>
+                </div>
               )}
             />
         )}
       </div>
+
+      {cookieLogin && <CookieLoginDialog accountId={cookieLogin.accountId}
+        onClose={() => setCookieLogin(null)} onSaved={() => { void loadAccounts({ silent: true }); }} />}
 
       {/* QR Code Modal */}
       {showQRModal && createPortal(
