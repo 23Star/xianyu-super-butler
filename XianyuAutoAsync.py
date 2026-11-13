@@ -7866,6 +7866,32 @@ class XianyuLive:
         finally:
             logger.info(f"【{self.cookie_id}】买家互动任务已退出")
 
+    # 评价/求花接口报错时的最大尝试次数。超过后记为已处理，避免对同一单无限重试。
+    BUYER_INTERACTION_MAX_ATTEMPTS = 3
+
+    def _interaction_state(self, name: str):
+        state = getattr(self, name, None)
+        if state is None:
+            state = {} if name == '_interaction_failures' else set()
+            setattr(self, name, state)
+        return state
+
+    def _record_interaction_failure(self, kind: str, order_id: str, done: set, error) -> None:
+        """记录一次评价/求花失败；达到上限后放弃该单，未达上限下一轮重试。"""
+        failures = self._interaction_state('_interaction_failures')
+        key = (kind, order_id)
+        failures[key] = failures.get(key, 0) + 1
+        label = '评价' if kind == 'rate' else '求花'
+        if failures[key] >= self.BUYER_INTERACTION_MAX_ATTEMPTS:
+            done.add(order_id)
+            logger.warning(
+                f"【{self.cookie_id}】订单 {order_id} {label}失败 {failures[key]} 次，不再重试: {error}"
+            )
+        else:
+            logger.warning(
+                f"【{self.cookie_id}】订单 {order_id} {label}失败（第 {failures[key]} 次），下一轮重试: {error}"
+            )
+
     # 确认收货致谢的默认文案。留空则不发。
     DEFAULT_THANKS_TEMPLATE = '亲，感谢支持！有任何问题随时找我~'
 
@@ -8007,25 +8033,46 @@ class XianyuLive:
 
                 if rate_on and order_id not in self._auto_rated_orders:
                     # sellerRateStatus 为 4 表示已评价过
-                    if parsed.get('seller_rate_status') != 4:
+                    if parsed.get('seller_rate_status') == 4:
+                        self._auto_rated_orders.add(order_id)
+                    else:
                         try:
                             result = await api.create_rate([order_id], feedback=rate_content, rate=1)
                             if result.get('success'):
                                 rated += 1
+                                self._auto_rated_orders.add(order_id)
                                 logger.info(f"【{self.cookie_id}】订单 {order_id} 已自动评价")
+                            else:
+                                self._record_interaction_failure(
+                                    'rate', order_id, self._auto_rated_orders,
+                                    f"接口未返回成功: {result.get('fail_orders') or result}",
+                                )
                         except SellerApiError as exc:
-                            logger.warning(f"【{self.cookie_id}】订单 {order_id} 评价失败: {exc}")
-                    self._auto_rated_orders.add(order_id)
+                            self._record_interaction_failure(
+                                'rate', order_id, self._auto_rated_orders, exc
+                            )
 
                 if flower_on and order_id not in self._auto_flowered_orders:
+                    # 求花动作可能在确认收货后稍晚才开放：没有 REQUIRE_FLOWER 时不能
+                    # 把订单记为已处理，否则之后动作开放了也不会再试（重启前一直是 0）。
                     if 'REQUIRE_FLOWER' in actions:
                         try:
                             await api.require_flower(order_id)
                             flowered += 1
+                            self._auto_flowered_orders.add(order_id)
                             logger.info(f"【{self.cookie_id}】订单 {order_id} 已发送求花")
                         except SellerApiError as exc:
-                            logger.warning(f"【{self.cookie_id}】订单 {order_id} 求花失败: {exc}")
-                    self._auto_flowered_orders.add(order_id)
+                            self._record_interaction_failure(
+                                'flower', order_id, self._auto_flowered_orders, exc
+                            )
+                    else:
+                        waiting = self._interaction_state('_flower_not_ready_logged')
+                        if order_id not in waiting:
+                            waiting.add(order_id)
+                            logger.info(
+                                f"【{self.cookie_id}】订单 {order_id} 暂不可求花"
+                                f"（可执行动作: {actions or '无'}），后续轮询继续检查"
+                            )
 
             if api.cookies_str and api.cookies_str != self.cookies_str:
                 self.cookies_str = api.cookies_str
