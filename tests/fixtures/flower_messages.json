@@ -1,0 +1,103 @@
+{
+ "_comment": "从生产 data/xianyu_data.db chat_message_archive 逐字导出（2026-10-29）。WS 信封形态（顶层键 1/3），是 XianyuLive.handle_message 的真实入参。消息详情在 message[\"1\"][\"10\"]，不是 message[\"10\"]。buyer=买家送花卡片；confirm=领花后平台回执卡片（自发消息）。",
+ "buyer": {
+  "desc": "买家送花卡片（有按钮URL, senderUserId=买家）",
+  "chat_id": "67745913640",
+  "is_self": false,
+  "text": "你人真不错，送你闲鱼小红花",
+  "msg_type": "text",
+  "raw_json": {
+   "1": {
+    "1": {
+     "1": "2654984885@goofish"
+    },
+    "2": "67745913640@goofish",
+    "3": "4375873306236.PNM",
+    "4": 0,
+    "5": 1793227590252,
+    "6": {
+     "1": 101,
+     "3": {
+      "1": "",
+      "2": "你人真不错，送你闲鱼小红花",
+      "3": "",
+      "4": 26,
+      "5": "{\"contentType\":26,\"dxCard\":{\"item\":{\"main\":{\"clickParam\":{\"arg1\":\"MsgCard\",\"args\":{\"task_id\":\"6Vn9xthdWg5D\",\"source\":\"im\",\"msg_id\":\"129fd1036a1e4602bf475651397e8377\"}},\"exContent\":{\"bgColor\":\"#FFEAE5\",\"bgImageGravity\":\"leftBottom\",\"bgImageHeight\":\"40\",\"bgImageUrl\":\"https://gw.alicdn.com/imgextra/i4/O1CN01HxeF911K6iabkECDt_!!6000000001115-2-tps-186-120.png\",\"bgImageWidth\":\"62\",\"bgSecColor\":\"#FFF5F2\",\"button\":{\"bgColor\":\"#FF3131\",\"borderColor\":\"#FF3131\",\"clickParam\":{\"arg1\":\"MsgCardAction\",\"args\":{\"task_id\":\"6Vn9xthdWg5D\",\"source\":\"im\",\"msg_id\":\"129fd1036a1e4602bf475651397e8377\"}},\"fontColor\":\"#FFFFFF\",\"targetUrl\":\"https://h5.m.goofish.com/wow/moyu/moyu-project/temp-pages/pages/red-flower-play?kun=true&opaque=false&role=seller&confirm=false&orderId=5127876325109104901\",\"text\":\"立即收下\"},\"desc\":\"买卖换真心，鼓励你一下~\",\"descColor\":\"#A3A3A3\",\"title\":\"你人真不错，送你闲鱼小红花\",\"upgrade\":{\"targetUrl\":\"https://h5.m.goofish.com/app/idleFish-F2e/fm-downlaod/home.html?noRedriect=true&canBack=true&checkVersion=true\",\"version\":\"7.7.90\"}}}},\"template\":{\"name\":\"idlefish_message_common_card\",\"url\":\"https://dinamicx.alibabausercontent.com/pub/idlefish_message_common_card/1722183660991/idlefish_message_common_card.zip\",\"version\":\"1722183660991\"}}}"
+     }
+    },
+    "7": 1,
+    "8": 1,
+    "9": 0,
+    "10": {
+     "bizTag": "{\"sourceId\":\"RED_FLOWER:6Vn9xthdWg5D\",\"taskName\":\"收到小红花-卖家\",\"materialId\":\"6Vn9xthdWg5D\",\"taskId\":\"6Vn9xthdWg5D\"}",
+     "closePushReceiver": "false",
+     "closeUnreadNumber": "false",
+     "detailNotice": "你人真不错，送你闲鱼小红花",
+     "extJson": "{\"msgArgs\":{\"task_id\":\"6Vn9xthdWg5D\",\"source\":\"im\",\"msg_id\":\"129fd1036a1e4602bf475651397e8377\"},\"quickReply\":\"1\",\"msgArg1\":\"MsgCard\",\"updateKey\":\"67745913640:5127876325109104901:received_red_flower\",\"messageId\":\"129fd1036a1e4602bf475651397e8377\",\"multiChannel\":{\"huawei\":\"MARKETING\",\"xiaomi\":\"108005\",\"honor\":\"LOW\",\"agoo\":\"product\",\"oppo_category\":\"ACCOUNT\",\"vivo\":\"MARKETING\"},\"contentType\":\"26\"}",
+     "receiver": "2206719251036",
+     "reminderContent": "你人真不错，送你闲鱼小红花",
+     "reminderNotice": "买卖换真心，鼓励你一下",
+     "reminderTitle": "你人真不错，送你闲鱼小红花",
+     "reminderUrl": "fleamarket://message_chat?itemId=919213071790&peerUserId=2654984885&sid=67745913640&messageId=129fd1036a1e4602bf475651397e8377&adv=no",
+     "senderUserId": "2654984885",
+     "senderUserType": "0",
+     "sessionType": "1"
+    },
+    "12": 1
+   },
+   "3": {
+    "needPush": "true"
+   }
+  }
+ },
+ "confirm": {
+  "desc": "领花后平台回执卡片（自发消息 senderUserId=卖家, 无按钮URL也无updateKey）",
+  "chat_id": "67553675626",
+  "is_self": true,
+  "text": "已收到小红花",
+  "msg_type": "text",
+  "raw_json": {
+   "1": {
+    "1": {
+     "1": "2206719251036@goofish"
+    },
+    "2": "67553675626@goofish",
+    "3": "4370656757397.PNM",
+    "4": 0,
+    "5": 1793255973108,
+    "6": {
+     "1": 101,
+     "3": {
+      "1": "",
+      "2": "已收到小红花",
+      "3": "",
+      "4": 26,
+      "5": "{\"contentType\":26,\"dxCard\":{\"item\":{\"main\":{\"clickParam\":{\"arg1\":\"MsgCard\",\"args\":{\"task_id\":\"wn6oXR1InvdL\",\"source\":\"im\",\"msg_id\":\"9e3ce8d3285b4280ba5c69a5d5282c4d\"}},\"exContent\":{\"bgColor\":\"#FFE60F\",\"desc\":\"你的小红花是我最好的奖励，谢谢支持！\",\"descColor\":\"#9A333333\",\"title\":\"收到小红花，心里乐开花！\",\"upgrade\":{\"targetUrl\":\"https://h5.m.goofish.com/app/idleFish-F2e/fm-downlaod/home.html?noRedriect=true&canBack=true&checkVersion=true\",\"version\":\"7.7.90\"}}}},\"template\":{\"name\":\"idlefish_message_trade_chat_card\",\"url\":\"https://dinamicx.alibabausercontent.com/pub/idlefish_message_trade_chat_card/1667222052767/idlefish_message_trade_chat_card.zip\",\"version\":\"1667222052767\"}}}"
+     }
+    },
+    "7": 1,
+    "8": 1,
+    "9": 1,
+    "10": {
+     "bizTag": "{\"sourceId\":\"RED_FLOWER:wn6oXR1InvdL\",\"taskName\":\"收到小红花-卖家侧\",\"materialId\":\"wn6oXR1InvdL\",\"taskId\":\"wn6oXR1InvdL\"}",
+     "closePushReceiver": "true",
+     "closeUnreadNumber": "true",
+     "detailNotice": "已收到小红花",
+     "extJson": "{\"msgArgs\":{\"task_id\":\"wn6oXR1InvdL\",\"source\":\"im\",\"msg_id\":\"9e3ce8d3285b4280ba5c69a5d5282c4d\"},\"msgArg1\":\"MsgCard\",\"messageId\":\"9e3ce8d3285b4280ba5c69a5d5282c4d\",\"contentType\":\"26\"}",
+     "receiver": "2206719251036",
+     "reminderContent": "已收到小红花",
+     "reminderNotice": "发来一条新消息",
+     "reminderTitle": "沧吟星海",
+     "reminderUrl": "fleamarket://message_chat?itemId=918674872116&peerUserId=2206719251036&sid=67553675626&messageId=9e3ce8d3285b4280ba5c69a5d5282c4d&adv=no",
+     "senderUserId": "2206719251036",
+     "senderUserType": "0",
+     "sessionType": "1"
+    },
+    "12": 1
+   },
+   "3": {
+    "needPush": "false"
+   }
+  }
+ }
+}
