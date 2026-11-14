@@ -1774,6 +1774,22 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】保存订单事件快照失败 {order_id}: {self._safe_str(e)}")
             return False
 
+    def _is_unowned_order_item(self, item_id: str) -> bool:
+        """商品确定不在本账号的商品列表里时返回 True。
+
+        商品 ID 缺失、是自动生成的占位值或查询出错时一律返回 False（不确定就照常
+        建单），只有明确查无此商品才判定为非本账号订单。
+        """
+        if not item_id or str(item_id).startswith('auto_') or item_id == '未知商品':
+            return False
+        try:
+            from app.db_manager import db_manager
+
+            return not db_manager.get_item_info(self.cookie_id, str(item_id))
+        except Exception as exc:
+            logger.debug(f"【{self.cookie_id}】查询商品 {item_id} 归属失败: {self._safe_str(exc)}")
+            return False
+
     async def fetch_order_real_values(self, order_id: str) -> dict:
         """通过卖家端 sold.get 获取订单的真实成交数据。
 
@@ -5956,7 +5972,14 @@ class XianyuLive:
                     try:
                         # 检查cookie_id是否在cookies表中存在
                         cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
-                        if not cookie_info:
+                        if result.get('page_empty'):
+                            # 页面根本没渲染出来，所有字段都是空的：照常写库会留下
+                            # 「未知商品、无金额」的空白订单，而且之后不会再被补全。
+                            # 结果仍返回给调用方，发货链路靠 page_empty 判断转人工。
+                            logger.error(
+                                f"【{self.cookie_id}】订单 {order_id} 详情页为空白页，不写入数据库"
+                            )
+                        elif not cookie_info:
                             logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
                         else:
                             # 先保存订单基本信息（包含时间和收货人信息）
@@ -10242,19 +10265,33 @@ class XianyuLive:
                         # 交易卡片只提供订单号、商品、买家和状态，金额与数量必须走卖家端接口。
                         # 先拉真实成交数据暂存，再落库；接口失败时仅保留状态，不伪造金额。
                         real_values = await self.fetch_order_real_values(order_id)
+                        unowned_order = False
                         if real_values:
                             self._pending_order_real_values[order_id] = real_values
+                        elif self._is_unowned_order_item(temp_item_id):
+                            # 卖家端接口确认不了这笔订单，商品也不在本账号的商品列表里：
+                            # 多半是本账号作为买家下的单（例如测试号买东西）。这类订单
+                            # 拿不到成交详情，落库只会留下「未知商品、无金额」的空白记录。
+                            # 只跳过建单和拉详情，消息本身的后续处理照常进行。
+                            unowned_order = True
+                            logger.warning(
+                                f'[{msg_time}] 【{self.cookie_id}】订单 {order_id} 的商品 {temp_item_id} '
+                                f'不属于本账号且卖家端查不到，判定为非本账号卖出的订单，不建单'
+                            )
 
-                        self._save_order_event_snapshot(
-                            order_id=order_id,
-                            message=message,
-                            item_id=temp_item_id,
-                            buyer_id=temp_user_id,
-                        )
+                        if not unowned_order:
+                            self._save_order_event_snapshot(
+                                order_id=order_id,
+                                message=message,
+                                item_id=temp_item_id,
+                                buyer_id=temp_user_id,
+                            )
 
                         # 检查是否已经在获取该订单详情
                         order_detail_lock = self._order_detail_locks[order_id]
-                        if order_detail_lock.locked():
+                        if unowned_order:
+                            pass
+                        elif order_detail_lock.locked():
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】🔒 订单 {order_id} 详情正在被其他任务获取，跳过重复请求')
                         else:
                             # 调用订单详情获取方法
