@@ -26,6 +26,7 @@ from collections import defaultdict
 from app.db_manager import db_manager
 from app.specification import combine_legacy_specification
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
+from utils.message_utils import extract_received_flower_order
 from utils.user_agents import CHROME_UA, SEC_CH_UA
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
@@ -7866,6 +7867,43 @@ class XianyuLive:
         finally:
             logger.info(f"【{self.cookie_id}】买家互动任务已退出")
 
+    async def _auto_receive_flower(self, order_id: str) -> bool:
+        """收到买家赠送的小红花后自动收下（需按账号开启自动收花）。
+
+        同一订单的送花卡片可能被重复推送，这里按订单去重；收花失败不登记，
+        下一次推送到达时还能再试。
+        """
+        from app.db_manager import db_manager
+
+        if not db_manager.get_buyer_interaction_settings(self.cookie_id).get(
+            'auto_receive_flower_enabled'
+        ):
+            logger.info(f'【{self.cookie_id}】收到订单 {order_id} 的小红花，自动收花未开启')
+            return False
+
+        received = getattr(self, '_received_flower_orders', None)
+        if received is None:
+            received = self._received_flower_orders = set()
+        if order_id in received:
+            logger.debug(f'【{self.cookie_id}】订单 {order_id} 的小红花已收过，跳过')
+            return False
+
+        from utils.xianyu_seller_api import XianyuSellerAPI
+
+        flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
+        try:
+            await flower_api.receive_flower(order_id)
+        except Exception as exc:
+            logger.warning(f'【{self.cookie_id}】自动收花失败: 订单 {order_id}: {self._safe_str(exc)}')
+            return False
+        finally:
+            if flower_api.cookies_str and flower_api.cookies_str != self.cookies_str:
+                self.cookies_str = flower_api.cookies_str
+            await flower_api.close()
+        received.add(order_id)
+        logger.info(f'【{self.cookie_id}】已自动收下订单 {order_id} 的小红花')
+        return True
+
     # 确认收货致谢的默认文案。留空则不发。
     DEFAULT_THANKS_TEMPLATE = '亲，感谢支持！有任何问题随时找我~'
 
@@ -10445,21 +10483,12 @@ class XianyuLive:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
-            # 买家赠送小红花的系统卡片通常会带订单号；收到后立即尝试收花。
-            if '收到小红花' in str(send_message):
-                import re
-                flower_order = next((m for m in re.findall(r'\d{6,24}', str(send_message))), None)
-                if flower_order:
-                    interaction = db_manager.get_buyer_interaction_settings(self.cookie_id)
-                    if interaction.get('auto_receive_flower_enabled'):
-                        try:
-                            from utils.xianyu_seller_api import XianyuSellerAPI
-                            flower_api = XianyuSellerAPI(self.cookie_id, self.cookies_str)
-                            await flower_api.receive_flower(flower_order)
-                            await flower_api.close()
-                            logger.info(f'【{self.cookie_id}】已自动收下订单 {flower_order} 的小红花')
-                        except Exception as exc:
-                            logger.warning(f'【{self.cookie_id}】自动收花失败: {self._safe_str(exc)}')
+            # 买家赠送小红花的卡片标题是「你人真不错，送你闲鱼小红花」，正文里既没有
+            # 「收到小红花」也没有订单号；标识和订单号在 bizTag/extJson 与卡片 targetUrl
+            # 里，必须用 extract_received_flower_order 解析整条消息，不能只看 send_message。
+            flower_order = extract_received_flower_order(message)
+            if flower_order:
+                await self._auto_receive_flower(flower_order)
             if self._is_auto_delivery_trigger(send_message):
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到自动发货触发消息，进入订单校验')
                 await self._handle_auto_delivery(
