@@ -7984,7 +7984,13 @@ class XianyuLive:
             parse_sold_order,
         )
 
-        rate_content = db_manager.get_system_setting('auto_rate_content') or '感谢惠顾，欢迎下次光临！'
+        # 买家互动页保存的键是 auto_rate_template；auto_rate_content 是旧键名，
+        # 只作兼容回退。之前只读旧键，导致用户编辑的评价文案从未生效。
+        rate_content = (
+            str(db_manager.get_system_setting('auto_rate_template') or '').strip()
+            or str(db_manager.get_system_setting('auto_rate_content') or '').strip()
+            or '感谢惠顾，欢迎下次光临！'
+        )
         rated = 0
         flowered = 0
 
