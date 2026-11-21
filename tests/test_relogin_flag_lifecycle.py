@@ -93,18 +93,23 @@ class ReloginFlagLifecycleTests(unittest.TestCase):
 
     def test_source_clears_flag_on_success(self):
         """源码层面确认：成功路径真的清了标记，而不是只在测试里模拟。"""
-        import inspect
-        import XianyuAutoAsync
+        import ast
+        from pathlib import Path
 
-        source = inspect.getsource(XianyuAutoAsync.XianyuLive.refresh_token)
+        # 不 import 生产模块，避免日志/数据库的模块级初始化副作用。
+        text = (Path(__file__).resolve().parents[1] / 'XianyuAutoAsync.py').read_text(encoding='utf-8')
+        tree = ast.parse(text)
+        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'XianyuLive')
+        method = next(node for node in cls.body if isinstance(node, ast.AsyncFunctionDef) and node.name == 'refresh_token')
+        source = ast.get_source_segment(text, method)
         success_marker = 'self.last_token_refresh_status = "success"'
         self.assertIn(success_marker, source)
 
         after_success = source.split(success_marker, 1)[1]
         # 成功之后、函数返回 new_token 之前必须清标记
         upto_return = after_success.split('return new_token', 1)[0]
-        self.assertIn('self.needs_relogin = False', upto_return,
-                      "Token 刷新成功后没有清除「需重新扫码」标记")
+        self.assertIn('self._clear_relogin_required()', upto_return,
+                      "Token 刷新成功后没有清除完整人工重登状态")
 
 
 if __name__ == "__main__":
