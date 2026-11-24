@@ -20,6 +20,7 @@ from collections import defaultdict, OrderedDict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from app import cookie_manager
+from app.cookie_login import CookieLoginError, login_with_cookie
 from app.db_manager import db_manager
 from app.delivery_template import send_payload as send_delivery_payload
 from app.product_automation import ProductAutomationService
@@ -1990,6 +1991,27 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'login_password': cookie_details.get('password', '') or cookie_details.get('login_password', ''),
             'show_browser': bool(cookie_details.get('show_browser', False)),
         })
+    return result
+
+
+@app.post("/cookie-login")
+async def cookie_login(request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """验证网页 Cookie 后添加账号或恢复同一账号的监听。"""
+    # 手动解析，避免请求校验错误把敏感的原始输入回显到响应中。
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="请求格式不正确") from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("cookie"), str):
+        raise HTTPException(status_code=400, detail="请提供完整的闲鱼 Cookie")
+    try:
+        result = await login_with_cookie(
+            payload["cookie"], current_user["user_id"], db_manager,
+            cookie_manager.manager, account_id=payload.get("account_id"),
+        )
+    except CookieLoginError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    log_with_user('info', f"Cookie登录已保存: 账号={result['account_id']}", current_user)
     return result
 
 

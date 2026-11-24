@@ -124,6 +124,17 @@ export const refreshAccountProfile = async (id: string): Promise<{ success: bool
   return post(`/cookies/${id}/refresh-profile`);
 };
 
+export const loginWithCookie = async (cookie: string, accountId?: string): Promise<{
+  success: boolean;
+  account_id: string;
+  is_new_account: boolean;
+  enabled: boolean;
+  connection_started: boolean;
+  message: string;
+}> => {
+  return post('/cookie-login', { cookie, account_id: accountId }, { timeout: 45000 });
+};
+
 export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string }> => {
   return post('/qr-login/generate');
 };
